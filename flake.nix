@@ -89,6 +89,26 @@
           checks = {
             build = stoke;
             inherit quality docs;
+            helpers =
+              pkgs.runCommand "stoke-helpers"
+                {
+                  nativeBuildInputs = [ pkgs.python3 ];
+                  src = pkgs.lib.fileset.toSource {
+                    root = ./.;
+                    fileset = pkgs.lib.fileset.unions [
+                      ./scripts/nix-workflow.py
+                      ./scripts/run-nix-check.py
+                      ./scripts/test-nix-workflow.py
+                      ./scripts/cache-performance.py
+                      ./scripts/tests/test_cache_performance.py
+                    ];
+                  };
+                }
+                ''
+                  python3 -B "$src/scripts/test-nix-workflow.py"
+                  python3 -B "$src/scripts/tests/test_cache_performance.py"
+                  touch "$out"
+                '';
             workflows = pkgs.runCommand "stoke-workflows" { nativeBuildInputs = [ pkgs.actionlint ]; } ''
               actionlint -config-file ${./.github/actionlint.yaml} ${./.github/workflows}/*.yml
               touch "$out"

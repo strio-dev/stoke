@@ -40,6 +40,7 @@ const maxNativeInputEnvBytes = 1 << 20
 type Config struct {
 	JobContainerImage   string            `json:"jobContainerImage,omitempty"`
 	JobContainerOptions string            `json:"jobContainerOptions,omitempty"`
+	GitHubTokenAuth     bool              `json:"githubTokenAuth,omitempty"`
 	Workflow            string            `json:"workflow"`
 	Context             string            `json:"context"`
 	Targets             []string          `json:"targets,omitempty"`

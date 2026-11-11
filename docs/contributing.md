@@ -72,10 +72,10 @@ The repository follows Coopr/Bale's Go CLI layout, Nix flakes, Just recipes and 
 
 ## Checks
 
-`just test`, `just vet` and `just lint` run targeted Go checks. `just check` builds the CLI, runs Go tests/vet/lint, checks Go/Nix/Just formatting, validates workflow files and builds the documentation. Runtime acceptance also needs a host that permits rootless namespaces and native container execution; a successful compiler/unit-test check alone does not prove that host path. Report architecture-specific skips and runtime blockers explicitly.
+`just test`, `just vet` and `just lint` run targeted Go checks. `just check` builds the CLI, runs Go tests/vet/lint and Python helper tests, checks Go/Nix/Just formatting, validates workflow files and builds the documentation. Runtime acceptance also needs a host that permits rootless namespaces and native container execution; a successful compiler/unit-test check alone does not prove that host path. Report architecture-specific skips and runtime blockers explicitly.
 
-The example Nix-check provenance helper and cache-performance evaluator have
-small standalone Python suites, separate from those five flake checks:
+The `helpers` flake check runs the existing Nix-check provenance and
+cache-performance evaluator Python suites. To run those suites directly:
 
 ```sh
 python3 scripts/test-nix-workflow.py

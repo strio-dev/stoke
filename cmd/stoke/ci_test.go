@@ -264,12 +264,12 @@ func TestCIContainerGenerationChecksExactImageAndOptions(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeCIFile(t, "stoke.yaml", "version: 1\ntasks: {test: {image: scratch}}\n")
 	image := "registry.example.test/team/stoke@sha256:" + strings.Repeat("a", 64)
-	args := []string{"ci", "generate", "--job-container-image", image, "--job-container-options", "--user=1001:1001"}
+	args := []string{"ci", "generate", "--job-container-image", image, "--job-container-options", "--user=1001:1001", "--github-token-auth"}
 	if code, _, stderr := invokeCI(args); code != 0 {
 		t.Fatal(stderr)
 	}
 	plan, err := ci.Decode(bytes.NewReader(readCIFile(t, ".stoke/ci-plan.json")))
-	if err != nil || plan.Config.JobContainerImage != image || plan.Config.JobContainerOptions != "--user=1001:1001" {
+	if err != nil || plan.Config.JobContainerImage != image || plan.Config.JobContainerOptions != "--user=1001:1001" || !plan.Config.GitHubTokenAuth {
 		t.Fatal("container flags not recorded", plan, err)
 	}
 	if code, _, stderr := invokeCI(append(slices.Clone(args), "--check")); code != 0 {

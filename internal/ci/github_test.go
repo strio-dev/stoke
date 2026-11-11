@@ -249,11 +249,18 @@ func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
 		base := buildPlanFixture(t, w, Config{})
 		image := "registry.example.test/team/stoke@sha256:" + strings.Repeat("a", 64)
 		previous := base.ID
-		for _, config := range []Config{{}, {JobContainerImage: image}, {JobContainerImage: image, JobContainerOptions: "--user=1001:1001 --cpus=2"}} {
+		for _, config := range []Config{
+			{},
+			{GitHubTokenAuth: true},
+			{JobContainerImage: image},
+			{JobContainerImage: image, JobContainerOptions: "--user=1001:1001 --cpus=2"},
+			{JobContainerImage: image, GitHubTokenAuth: true},
+			{JobContainerImage: "ghcr.io/team/stoke@sha256:" + strings.Repeat("a", 64), GitHubTokenAuth: true},
+		} {
 			p := buildPlanFixture(t, w, config)
 			data, rendered := renderFixture(t, p, ".stoke/ci-plan.json")
-			if config.JobContainerImage != "" && p.ID == previous {
-				t.Fatal("job container image/options missing from plan identity")
+			if (config.JobContainerImage != "" || config.GitHubTokenAuth) && p.ID == previous {
+				t.Fatal("job container or authentication missing from plan identity")
 			}
 			previous = p.ID
 			for id, job := range renderedJobs(t, rendered) {
@@ -261,8 +268,41 @@ func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
 					if job.Container != nil {
 						t.Fatalf("implicit container on %s", id)
 					}
-				} else if job.Container == nil || job.Container.Image != image || job.Container.Options != config.JobContainerOptions {
+				} else if job.Container == nil || job.Container.Image != config.JobContainerImage || job.Container.Options != config.JobContainerOptions {
 					t.Fatalf("container selection changed on %s: %#v", id, job.Container)
+				}
+				if job.Container != nil {
+					wantCredentials := config.GitHubTokenAuth && strings.HasPrefix(config.JobContainerImage, "ghcr.io/")
+					if (len(job.Container.Credentials) != 0) != wantCredentials {
+						t.Fatalf("container pull authentication crossed registry/opt-in boundary on %s", id)
+					}
+				}
+				login, cleanup, execution := 0, 0, false
+				for _, step := range job.Steps {
+					if step.ID == "stoke" {
+						execution = true
+						if strings.Contains(step.Run, "--authfile") != config.GitHubTokenAuth {
+							t.Fatalf("execution authentication mismatch on %s", id)
+						}
+					}
+					if step.Name == "Authenticate GHCR" {
+						login++
+						if step.Env["STOKE_GHCR_TOKEN"] != "${{ secrets.GITHUB_TOKEN }}" || !strings.Contains(step.Run, "--password-stdin ghcr.io") || !strings.Contains(step.Run, "mktemp -d") {
+							t.Fatalf("authentication lost private path or native stdin login on %s", id)
+						}
+					} else if step.Env["STOKE_GHCR_TOKEN"] != "" {
+						t.Fatalf("credential environment escaped login step on %s", id)
+					}
+					if step.Name == "Remove registry credentials" && step.If == "${{ always() && steps.stoke_auth.outputs.directory != '' }}" && step.Env["STOKE_GHCR_AUTH_DIR"] == "${{ steps.stoke_auth.outputs.directory }}" {
+						cleanup++
+					}
+				}
+				wantLogin := 0
+				if execution && config.GitHubTokenAuth {
+					wantLogin = 1
+				}
+				if login != wantLogin || cleanup != wantLogin || len(rendered.Permissions) != 0 {
+					t.Fatalf("authentication lifecycle or caller-owned permissions changed on %s", id)
 				}
 			}
 			if bytes.Contains(data, []byte("--privileged")) || bytes.Contains(data, []byte("security-opt")) {
@@ -273,7 +313,7 @@ func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
 				t.Fatal(err)
 			}
 			round, err := Decode(bytes.NewReader(encoded))
-			if err != nil || round.ID != p.ID || round.Config.JobContainerImage != config.JobContainerImage || round.Config.JobContainerOptions != config.JobContainerOptions {
+			if err != nil || round.ID != p.ID || round.Config.JobContainerImage != config.JobContainerImage || round.Config.JobContainerOptions != config.JobContainerOptions || round.Config.GitHubTokenAuth != config.GitHubTokenAuth {
 				t.Fatal("container configuration did not roundtrip", err)
 			}
 		}

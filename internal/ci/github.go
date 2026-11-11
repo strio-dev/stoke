@@ -25,8 +25,9 @@ type githubWorkflow struct {
 }
 
 type githubContainer struct {
-	Image   string `yaml:"image"`
-	Options string `yaml:"options,omitempty"`
+	Image       string            `yaml:"image"`
+	Options     string            `yaml:"options,omitempty"`
+	Credentials map[string]string `yaml:"credentials,omitempty"`
 }
 
 type githubJob struct {
@@ -49,13 +50,14 @@ type githubStrategy struct {
 }
 
 type githubStep struct {
-	ID    string         `yaml:"id,omitempty"`
-	Name  string         `yaml:"name,omitempty"`
-	If    string         `yaml:"if,omitempty"`
-	Uses  string         `yaml:"uses,omitempty"`
-	With  map[string]any `yaml:"with,omitempty"`
-	Shell string         `yaml:"shell,omitempty"`
-	Run   string         `yaml:"run,omitempty"`
+	ID    string            `yaml:"id,omitempty"`
+	Name  string            `yaml:"name,omitempty"`
+	If    string            `yaml:"if,omitempty"`
+	Uses  string            `yaml:"uses,omitempty"`
+	With  map[string]any    `yaml:"with,omitempty"`
+	Env   map[string]string `yaml:"env,omitempty"`
+	Shell string            `yaml:"shell,omitempty"`
+	Run   string            `yaml:"run,omitempty"`
 }
 
 // RenderGitHub emits a separately owned reusable workflow. Caller-owned triggers,
@@ -72,6 +74,12 @@ func RenderGitHub(p *Plan, planPath string) ([]byte, error) {
 	add := func(id string, job githubJob) error {
 		if p.Config.JobContainerImage != "" {
 			job.Container = &githubContainer{Image: p.Config.JobContainerImage, Options: p.Config.JobContainerOptions}
+			if p.Config.GitHubTokenAuth && strings.HasPrefix(p.Config.JobContainerImage, "ghcr.io/") {
+				job.Container.Credentials = map[string]string{
+					"username": "${{ github.actor }}",
+					"password": "${{ secrets.GITHUB_TOKEN }}",
+				}
+			}
 		}
 		var value yaml.Node
 		if err := value.Encode(job); err != nil {
@@ -163,7 +171,31 @@ fi
 		}
 		job.Steps = []githubStep{
 			{Name: "Check out source", Uses: checkoutAction, With: map[string]any{"persist-credentials": false}},
-			{ID: "stoke", Name: "Run Stoke job", Shell: "bash", Run: run},
+		}
+		if p.Config.GitHubTokenAuth {
+			job.Steps = append(job.Steps, githubStep{
+				ID: "stoke_auth", Name: "Authenticate GHCR", Shell: "bash",
+				Env: map[string]string{"STOKE_GHCR_USER": "${{ github.actor }}", "STOKE_GHCR_TOKEN": "${{ secrets.GITHUB_TOKEN }}"},
+				Run: `auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr.XXXXXXXX")
+printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
+printf '%s' "$STOKE_GHCR_TOKEN" | "${STOKE_COOPR_BINARY:-coopr}" login \
+  --authfile "$auth_dir/auth.json" \
+  --username "$STOKE_GHCR_USER" --password-stdin ghcr.io`,
+			})
+			run += " \\\n  --authfile \"$STOKE_GHCR_AUTH_DIR/auth.json\""
+		}
+		execute := githubStep{ID: "stoke", Name: "Run Stoke job", Shell: "bash", Run: run}
+		if p.Config.GitHubTokenAuth {
+			execute.Env = map[string]string{"STOKE_GHCR_AUTH_DIR": "${{ steps.stoke_auth.outputs.directory }}"}
+		}
+		job.Steps = append(job.Steps, execute)
+		if p.Config.GitHubTokenAuth {
+			job.Steps = append(job.Steps, githubStep{
+				Name: "Remove registry credentials", If: "${{ always() && steps.stoke_auth.outputs.directory != '' }}", Shell: "bash",
+				Env: map[string]string{"STOKE_GHCR_AUTH_DIR": "${{ steps.stoke_auth.outputs.directory }}"},
+				Run: `rm -f -- "$STOKE_GHCR_AUTH_DIR/auth.json"
+rmdir -- "$STOKE_GHCR_AUTH_DIR"`,
+			})
 		}
 		if err := add(group.ID, job); err != nil {
 			return nil, err

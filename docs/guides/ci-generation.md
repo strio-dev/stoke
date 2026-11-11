@@ -111,13 +111,23 @@ implicitly. GitHub's restrictions on job-container options still apply, includin
 its unsupported `--network` and `--entrypoint` options. Keep credentials out of
 these recorded arguments.
 
+For private GHCR images and GHCR result/cache repositories, explicitly add
+`--github-token-auth`. Every GHCR job-container pull then uses GitHub's native
+container credentials. Execution jobs use the provisioned Coopr's `login`
+command with the token on stdin, keep its standard auth file in a fresh private
+runner-temp directory, and remove that file after execution. Coopr login is an
+additional prerequisite for an opted-in host-only workflow. Token permissions
+remain in the handwritten caller. Grant package access only to trusted jobs
+and the intended test repositories. The option records the authentication mode
+in the plan without recording credential values.
+
 This is an experimental deployment choice, not a qualified hosted-runner profile:
 
 - The runner must support Linux Docker job containers and the image's native
-  architecture. Pull access must exist **before** steps start. No container
-  credentials or token permissions are generated; use an accessible image or
-  provisioned runner pull credentials. Registry access from Stoke/Coopr inside
-  the job is a separate credential requirement.
+  architecture. Pull access must exist **before** steps start. Use an accessible
+  image, provisioned pull credentials, or the explicit GHCR authentication
+  option above. The caller grants token permissions. Runtime registry access
+  requires authentication inside each execution job too.
 - The image process must be able to write the runner's checkout, temp, GitHub
   HOME and existing file-command files such as `GITHUB_OUTPUT`. Match the actual
   runner ownership when building the image; changing only Docker's `--user` does

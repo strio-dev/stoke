@@ -66,6 +66,7 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&config.Context, "context", "", "checkout-relative input directory (default: workflow directory)")
 		fs.StringVar(&config.JobContainerImage, "job-container-image", "", "digest-pinned tools image for every generated GitHub job")
 		fs.StringVar(&config.JobContainerOptions, "job-container-options", "", "explicit Docker job-container options; no security options are added automatically")
+		fs.BoolVar(&config.GitHubTokenAuth, "github-token-auth", false, "authenticate GHCR using the caller-granted GitHub job token and provisioned Coopr login")
 		fs.IntVar(&config.TimeoutMinutes, "timeout", 45, "generated job timeout in minutes")
 		fs.Func("runner", "provisioned GitHub runner label (repeatable; default: self-hosted, linux)", func(label string) error {
 			config.Runners = append(config.Runners, label)

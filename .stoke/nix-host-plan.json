@@ -1,7 +1,7 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "96399ebe875785f3e3009bebefdff486b189ad47393164187ae4aace389798b4",
+  "id": "bae469f8173352939e1cbfcf5193762ba5a825b95afbf718344c89e4eb645674",
   "config": {
     "workflow": ".stoke/nix-host.yaml",
     "context": ".",
@@ -16,7 +16,7 @@
     ],
     "timeoutMinutes": 45
   },
-  "workflowDigest": "628265df9dd8ef7254c8483be7ed506b5936a9209017be5eedebe11f2af5bbb9",
+  "workflowDigest": "4c0249c18f4d7ef0e0991531d1d7f8cf1c3c15a4015edb75125dc0e40526df89",
   "engine": {
     "apiVersion": 1,
     "capabilities": null,
@@ -69,6 +69,18 @@
             "nix-checks--matrix-c0ee4729f855236a"
           ],
           "outputKey": "result_3acf52844931b46a8c4c7cf1e4539495d6bd8c3f76f2dd9f80276f1a159bce5c"
+        },
+        {
+          "id": "nix-checks--matrix-bbb27bfa43091503",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "helpers",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-bbb27bfa43091503"
+          ],
+          "outputKey": "result_c8f1fbe303cf8d4361e4b6b7ba8ea28d2b649b2dfcdadf2ac4ad0b20c85707f1"
         },
         {
           "id": "nix-checks--matrix-b51694680430311d",
@@ -136,6 +148,18 @@
       "cache": false
     },
     "nix-checks--matrix-b51694680430311d": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "nix-checks--matrix-bbb27bfa43091503": {
       "platform": "linux/amd64",
       "tools": [
         "nix",

@@ -24,6 +24,8 @@ STOKE_INPUTS = [
     "flake.nix", "flake.lock", "nix", "cmd", "internal", "go.mod", "go.sum",
     "LICENSE", ".github", "docs", "zensical.toml", "Justfile", "README.md",
     "CONTRIBUTING.md", "scripts/nix-workflow.py", "scripts/run-nix-check.py",
+    "scripts/test-nix-workflow.py", "scripts/cache-performance.py",
+    "scripts/tests/test_cache_performance.py",
 ]
 
 

@@ -10,6 +10,11 @@ and reviewed executable hashes, and installs nothing. Existing
 `.github/workflows/ci.yml` is unchanged. A local registry proof does not establish
 GHCR behavior, hosted runner capabilities or GitHub retry-output retention.
 
+GitHub's manual-run interface requires the workflow on the default branch.
+While `main` contains only a stub README, a hosted qualification from `initial`
+needs an explicitly enabled push caller on that branch. Enable publication or
+container security options only after approval for their concrete targets.
+
 The opt-in [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
 is now available. It covers every generated job, but does not rewrite this
 handwritten caller's host-provisioned validation job. A container-based hosted
@@ -67,9 +72,12 @@ credentials through the runner's normal credential configuration, with only the
 access each stage needs. Do not place credentials in plan inputs, registry URLs,
 command arguments or diagnostic logs. Native output references and repositories
 are configuration, not a secret channel. Masked outputs must fail clearly.
-Current generated jobs do not supply `--authfile`; provision the default
-Docker-compatible credential configuration on every selected runner and verify
-that both result transport and Coopr cache access use it.
+By default, provision Docker-compatible credentials on every selected runner.
+For GHCR, `ci generate --github-token-auth` instead uses each execution job's
+token through Coopr login and passes the private auth file to result transport
+and Coopr cache access. It also supplies native credentials for GHCR tools-image
+pulls before steps start. The selected Coopr executable must be provisioned for
+login, including for an opted-in host-only workflow.
 
 If a future authorized GHCR run uses `GITHUB_TOKEN`, the caller must explicitly
 add the required package publication permission and arrange package access and
@@ -96,9 +104,10 @@ GitHub combines matrix outputs and warns that duplicate names can be overwritten
 by the last finishing variant; generated output names are unique. This remains a
 hosted qualification item, not merely a YAML-lint assertion. See [matrix job
 outputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs).
-GitHub documents rerunning workflows or selected jobs with the original SHA/ref;
-that does not document preservation of all prior-attempt `needs.outputs`. Record
-actual output availability and fail-closed recovery in the hosted test. See
+GitHub documents that omitted jobs retain their previous-attempt outputs for
+newly run jobs. Record actual variant output availability, secret masking and
+lineage validation in the hosted test. Missing inputs still require a clear
+failure and an explicit producer/dependent-gates rerun. See
 [reruns](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
 
 Developer reports may be exported separately after review. No CI artifact

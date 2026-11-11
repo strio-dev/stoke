@@ -118,6 +118,7 @@ symlink traversal. Native CI owns success gates and credentials.
 | `--runner LABEL` | Existing runner label, repeatable; replaces `self-hosted`, `linux`. |
 | `--job-container-image REF` | Opt-in digest-pinned tools image for every generated job, including setup/result checks. |
 | `--job-container-options TEXT` | Explicit Docker job-container options; requires an image and adds no security options implicitly. |
+| `--github-token-auth` | Opt in to GHCR image pulls and per-job registry login with the caller-granted GitHub token. Requires provisioned Coopr for login and caller-owned package permissions. |
 | `--timeout MINUTES` | Native job timeout, 1–360; defaults to 45. |
 | `--cache-from REPOSITORY`, `--cache-to REPOSITORY` | Independent Coopr registry-cache directions, repeatable. |
 | `--network MODE` | Record the container RUN default in the plan and generated jobs. |

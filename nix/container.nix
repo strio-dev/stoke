@@ -42,6 +42,7 @@ let
       pkgs.gnutar
       pkgs.gzip
       pkgs.gnugrep
+      pkgs.python3
     ];
     pathsToLink = [
       "/bin"
@@ -73,6 +74,7 @@ nix2container.buildImage {
     }
   ];
   config = {
+    Labels."org.opencontainers.image.source" = "https://github.com/strio-dev/stoke";
     User = "${toString uid}:${toString gid}";
     WorkingDir = "/work";
     Entrypoint = [ "/bin/bash" ];

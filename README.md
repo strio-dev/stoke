@@ -40,4 +40,4 @@ options require Coopr’s `registry-cache` API capability. See
 
 Task mounts require Coopr’s `run-mounts` capability. Local contexts are snapshotted inputs; explicit live host binds and disposable cache volumes have separate side-effect and lifetime rules. See [mount inputs and caches](docs/guides/mounts.md).
 
-Changes in this checkout remain uncommitted for review. No hosted Stoke release or installation endpoint is asserted.
+No hosted Stoke release or installation endpoint is asserted.
