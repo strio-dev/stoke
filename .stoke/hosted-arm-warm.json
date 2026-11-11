@@ -1,9 +1,9 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "adcdfb5c5ea71b2fc0030a068ca23524b9c46335dc537e1bfbe757ab9a20939b",
+  "id": "813e17a64dd5e4e7f672fc7a6cb54353de93b6b4d179d1fa6f24d899e0d46c29",
   "config": {
-    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:05413ec4b4845db9983b059c34785ccb321ad78c8ac04fb9ef891cb097befa96",
+    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:875e36d66d5e10ff394f1a262f463c76ab0408d47f8a7e63b13ccb009a349d7a",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
     "githubTokenAuth": true,
     "workflow": "examples/ci/stoke.yaml",
@@ -14,7 +14,7 @@
     "runners": [
       "ubuntu-24.04-arm"
     ],
-    "timeoutMinutes": 45,
+    "timeoutMinutes": 7,
     "cacheFrom": [
       "ghcr.io/strio-dev/stoke-qualification-tools"
     ],
