@@ -1,14 +1,10 @@
 # Prepare a hosted CI qualification
 
-The prepared manual test exercises container tasks without granting
-host-execution authority. Hosted qualification requires an authorized push and
-dispatch, plus provisioned runners and test registry access.
-
-The caller is `.github/workflows/stoke-dogfood.yml`. It preserves the separate
-validation and reusable-workflow jobs, requires explicit registry destinations
-and reviewed executable hashes, and installs nothing. Existing
-`.github/workflows/ci.yml` is unchanged. A local registry proof does not establish
-GHCR behavior, hosted runner capabilities or GitHub retry-output retention.
+Container-first qualification uses a prebuilt tools image with the existing
+generated jobs, native dependencies and job-token authentication. Ordinary
+`.github/workflows/ci.yml` runs flake checks only. A local registry proof or
+successful image build does not establish hosted execution, GHCR cache behavior
+or GitHub retry-output retention.
 
 GitHub's manual-run interface requires the workflow on the default branch.
 While `main` contains only a stub README, an already registered workflow can be
@@ -16,54 +12,42 @@ dispatched through the API against `initial`. Unregistered, dispatch-only files
 cannot bootstrap themselves. Enable publication or container security options
 only after approval for their concrete targets.
 
-## Private tools-image transport
+## Existing tools image and container-first preparation
 
-The registered `ci.yml` has an explicit `registry_qualification` dispatch input,
-disabled by default. When enabled on `strio-dev/stoke`'s `initial` branch, ordinary
-checks must pass before the reusable `stoke-registry-qualification.yml` starts.
-It builds the AMD64 tools image, publishes only to
-`ghcr.io/strio-dev/stoke-qualification-tools`, and fetches the emitted immutable
-manifest digest on a fresh hosted job. It never loads or starts the image.
+The tools package was verified private on 2026-11-11 after its owner changed the
+unintended initial public visibility. The existing AMD64 manifest is:
 
-Before the first publication, an authorized organization-wide inventory must
-confirm the approved name is unused. The workflow's explicit bootstrap check
-allows a 404; that repository-scoped response alone does not prove absence.
-GitHub documents new container packages as private by default. The post-write
-check requires private visibility and association with `strio-dev/stoke` before
-emitting the digest or admitting the read-only consumer. Unexpected metadata
-stops the run; it changes no package permissions or visibility and deletes nothing.
-
-The writer uses its short-lived job token with `packages: write`; the independent
-consumer has `packages: read` and its own temporary auth file. These permissions
-apply to the whole job. Trusted source, fixed destinations and dispatch/ref guards
-constrain the qualification; GitHub does not scope the token to a repository-name
-allowlist. No CLI credential is passed into a workflow. Package access inheritance
-is separate from visibility; GitHub warns that linking a private package to a
-public repository can also permit fork access.
-
-For an authorized run:
-
-```sh
-gh workflow run ci.yml --repo strio-dev/stoke --ref initial \
-  -f registry_qualification=true
+```text
+ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
 ```
 
-Successful publication/readback proves private registry transport and static
-image configuration, not nested Coopr execution, generated job-container startup
-or Coopr registry-cache reuse. Cache/results packages are not written by this
-tools-only qualifier. Their host/container workflow gates remain separate. The
-current image and hosted AppArmor execution restrictions remain in force.
+Reuse that digest; qualification does not require republishing it. Visibility and
+access belong to GitHub package settings. Neither image labels nor token scopes
+set private visibility. There is no custom privacy gate or first-push bootstrap.
+`stoke-tools-prepare.yml` remains build-only.
 
-The opt-in [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
-is now available. It covers every generated job, but does not rewrite this
-handwritten caller's host-provisioned validation job. A container-based hosted
-qualification must review that caller too, select an already available image,
-and verify its runner identity, pull credentials and nested OCI security profile.
-No new image is published and no hosted container profile is qualified here.
+Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
+options `--runner ubuntu-24.04`, `--job-container-image` and
+`--github-token-auth`. They cover every generated job without per-job installers.
+The handwritten caller's validation job must use the same image and compatible
+permissions; changing the generated jobs alone does not configure that caller.
+Configure cache and result destinations explicitly. They may use the same
+authorized OCI repository; their tag namespaces are distinct.
 
-## Before an authorized push
+Actual image execution still requires approval of the concrete container profile
+and runner-supplied mounts. Nested Coopr execution, private image pulls, cache
+reuse, retries and native ARM workloads remain separate qualification results. No runtime
+security option is enabled by these generation flags.
 
-Choose an authorized cache repository and a separate result repository. Keep
+## Dormant self-hosted example
+
+`.github/workflows/stoke-dogfood.yml` is an existing, unconfigured self-hosted
+example, not the container-first qualification path. Its separate validation and
+reusable-workflow jobs require reviewed executable hashes, explicit registry
+destinations and already-provisioned tools. The following instructions describe
+that example; they do not install tools or enable it.
+
+Choose authorized cache and result destinations, which may share a repository. Keep
 result objects through the supported retry window; do not apply disposable-cache
 retention to them. The generator currently records cache directions as literal
 configuration. It does not accept them as reusable-workflow inputs. Generate the
@@ -118,10 +102,12 @@ and Coopr cache access. It also supplies native credentials for GHCR tools-image
 pulls before steps start. The selected Coopr executable must be provisioned for
 login, including for an opted-in host-only workflow.
 
-If a future authorized GHCR run uses `GITHUB_TOKEN`, the caller must explicitly
-add the required package publication permission and arrange package access and
-per-job authentication. An authentication step in `validate-generated` does not
-provision other jobs' runners. No such login propagation is implemented here.
+For an authorized GHCR run, the caller owns package access and the required
+`packages: read` or `packages: write` permissions. The existing
+`--github-token-auth` option supplies per-job authentication; it grants neither
+package access nor publication permission. The dormant self-hosted example does
+not enable that option. Authentication in `validate-generated` alone does not
+authenticate other jobs.
 GitHub documents workflow-token publication for associated packages and separate
 access rules for private packages. See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
 

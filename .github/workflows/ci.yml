@@ -4,11 +4,6 @@ on:
     branches: [main, initial]
   pull_request:
   workflow_dispatch:
-    inputs:
-      registry_qualification:
-        description: Publish and read back the approved private tools package without executing it
-        type: boolean
-        default: false
 permissions:
   contents: read
 concurrency:
@@ -31,10 +26,3 @@ jobs:
           enable_kvm: false
       - name: Check workflows and docs
         run: nix flake check --no-update-lock-file --print-build-logs path:.
-  registry:
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.registry_qualification && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' }}
-    needs: [check]
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/stoke-registry-qualification.yml
