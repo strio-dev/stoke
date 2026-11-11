@@ -1,5 +1,13 @@
 # Qualify registry transport across isolated guest users
 
+The separate `Stoke native runtime` workflow runs existing mount and local
+registry suites on native GitHub-hosted x86_64 and ARM runners. Each job uses
+the checksum-pinned Coopr `0.6.0` archive, a source-built Stoke package and its
+own loopback registry. It installs no mapping helper or security-policy
+workaround. Job results establish support only for the runner and package
+actually tested. Cross-machine shared-registry reuse and GHCR remain separate
+from these per-host tests.
+
 `nix/registry-portability.nix` is an optional local acceptance fixture. Import it
 with already selected local `pkgs`, `stoke` and `coopr` derivations; it adds no
 Coopr production pin or flake input. Coopr must expose its current `buildImage`

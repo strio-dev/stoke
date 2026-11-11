@@ -433,7 +433,7 @@ func newCIRegistryFixture(t *testing.T) *ciRegistryFixture {
 	t.Cleanup(func() {
 		f.write(filepath.Join(work, "summary.json"), f.encode(map[string]any{
 			"passed": !t.Failed(), "evidence": work, "checks": f.checks, "reports": f.reports,
-			"scope": "independent checkout/native/cache stores on the same configured x86_64 host; no hosted CI or cross-hardware claim",
+			"scope": "independent checkout/native/cache stores on one " + runtime.GOOS + "/" + runtime.GOARCH + " host; provider admission is local to this fixture",
 		}), 0600)
 		f.mu.Lock()
 		defer f.mu.Unlock()

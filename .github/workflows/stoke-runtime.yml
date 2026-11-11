@@ -1,0 +1,73 @@
+name: Stoke native runtime
+on:
+  push:
+    branches: [initial]
+permissions:
+  contents: read
+jobs:
+  runtime:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+            sha256: d8db82fe51ef2ba3b2c7deaeb68a42d2daaa44f23cc22b666582e9d8aa082558
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            sha256: 2f45e43a21320cb4f35093a60a12319ef2004f80c2d7e0c461a77e7525337dee
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    env:
+      COOPR_ARCH: ${{ matrix.arch }}
+      COOPR_SHA256: ${{ matrix.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Verify runner mapping helpers and install the checked Coopr package
+        shell: bash
+        run: |
+          test "$(id -u)" -ne 0
+          id
+          for helper in newuidmap newgidmap; do
+            path=$(command -v "$helper")
+            stat -c '%a %u %g %n' "$path"
+          done
+          mkdir -m 700 "$RUNNER_TEMP/coopr-package"
+          archive="$RUNNER_TEMP/coopr-linux-$COOPR_ARCH.tar.gz"
+          curl --fail --location --retry 3 \
+            "https://github.com/strio-dev/coopr/releases/download/0.6.0/coopr-linux-$COOPR_ARCH.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$COOPR_SHA256" "$archive" | sha256sum --check
+          tar --no-same-owner -xzf "$archive" -C "$RUNNER_TEMP/coopr-package" coopr libexec
+          "$RUNNER_TEMP/coopr-package/coopr" --version
+      - name: Build Stoke from this commit
+        shell: bash
+        run: nix build --no-update-lock-file --max-jobs 1 --cores 2 path:.#stoke --out-link "$RUNNER_TEMP/stoke"
+      - name: Run native mounts and isolated registry roundtrips
+        shell: bash
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/stoke-runtime-evidence" "$RUNNER_TEMP/stoke-runtime-tmp"
+          nix develop --no-update-lock-file --max-jobs 1 --cores 2 path:. -c env \
+            STOKE_BINARY="$RUNNER_TEMP/stoke/bin/stoke" \
+            STOKE_COOPR_BINARY="$RUNNER_TEMP/coopr-package/coopr" \
+            STOKE_CACHE_CI_EVIDENCE_DIR="$RUNNER_TEMP/stoke-runtime-evidence" \
+            TMPDIR="$RUNNER_TEMP/stoke-runtime-tmp" \
+            GOMAXPROCS=1 GOMEMLIMIT=768MiB GOFLAGS=-p=1 \
+            go test -count=1 -v -timeout=12m -parallel=1 ./internal/artifact \
+              -run '^(TestMountsAndEnvironmentsWithCoopr|TestRegistryCacheWithCoopr|TestCIRegistryCacheRoundTripWithCoopr)$'
+      - name: Record bounded runtime summaries
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          for name in ("stoke-runtime-evidence", "stoke-runtime-tmp"):
+              for path in sorted((Path(os.environ["RUNNER_TEMP"]) / name).glob("*/summary.json")):
+                  print(path.read_text())
+          PY
