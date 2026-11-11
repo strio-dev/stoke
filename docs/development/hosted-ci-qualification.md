@@ -40,8 +40,14 @@ failed before Go execution because Pasta could not open `/dev/net/tun` in the
 outer container. The approved continuation appends only
 `--device=/dev/net/tun:/dev/net/tun:rw` to the three options above. It preserves
 private RUN networking, without added capabilities or privileged mode. Device
-exposure is a separate approval from the earlier offline test; its successful
-use remains to be qualified. Do not substitute host networking on failure.
+exposure is a separate approval from the earlier offline test.
+[Run 43089151406](https://github.com/strio-dev/stoke/actions/runs/43089151406)
+then completed Go dependency downloads and the build, before cache publication
+failed with GHCR `MANIFEST_BLOB_UNKNOWN`. That establishes online RUN networking,
+not cache reuse or a successful workflow. Coopr [PR #24](https://github.com/strio-dev/coopr/pull/24)
+repairs the cache publication path. Qualification must use images containing that
+fix; the previously published images do not. Do not substitute host networking
+on failure.
 
 ## Native caller and batch bounds
 
@@ -63,40 +69,39 @@ gets its own scope, and each job gets independent native/cache/output stores.
 The generic example and host-workflow pairs remain separate.
 
 The registered `.github/workflows/stoke-runtime.yml` admits these cases only
-through manual dispatch on `strio-dev/stoke`'s `initial` branch. `prepare-arm`
+through manual dispatch on `strio-dev/stoke`'s `initial` branch. `prepare-images`
 selects the separate image-preparation caller; other scenarios go through the
 dogfood caller, whose validation rejects unknown names before admitting tasks.
 Push branch changes with `[skip ci]` during qualification to avoid starting the
 unrelated push-triggered native runtime matrix.
 
-The original batch ceiling remains 54 container-job starts, including the four
-already consumed by the failed path. Its deadline remains
-**2026-11-11 23:03:49 UTC**. The continuation plans six full invocations and two
-selective native reruns, omitting the producer rerun: 48 new job slots and 52
-total including the failed starts. It retains two concurrent workflows, matrix
-parallelism two and 45-minute job limits. Before a selective rerun, reserve its
-whole original workflow's possible fanout; omit remaining optional cases if
-actual use consumes their budget, and report that gap. Never reset the counter
-or deadline. The `roundtrip` case combines cold and concurrent warm AMD64 runs;
-`failure` must fail one fresh matrix variant and skip package. Native ARM cold
-and warm calls require their own pinned tools image. Count actual job starts
-across every attempt. Select retry jobs inside the first warm invocation;
-rerunning cold also admits its dependent warm calls and exceeds that retry plan.
-Provider fanout is qualification evidence, not a guaranteed count. Stop further
-admission on unexpected failure or fanout rather than silently retrying.
+The original batch ceiling remains 54 container-job starts, including eight
+already consumed by the two failed paths. Its deadline remains
+**2026-11-11 23:03:49 UTC**. The remaining core plan reserves 22 starts for AMD64
+cold and two concurrent warm invocations, 14 for ARM cold/warm, and seven for the
+intentional failure: at most 43 new starts and 51 cumulative. It retains two
+concurrent workflows, matrix parallelism two and 45-minute job limits.
+
+Selective retries are omitted from this reduced plan. Three nominally spare
+slots do not safely cover provider rerun fanout. A future rerun requires reserving
+its whole original workflow's possible fanout and dropping other cases if needed;
+never reset the counter or deadline. The failure case must fail one fresh matrix
+variant and skip package. Count actual job starts across every attempt and stop
+further admission on unexpected failure or fanout rather than silently retrying.
 
 Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
-with `--runner ubuntu-24.04`, the digest and exact options above, and
-`--github-token-auth`. These settings cover generated setup, execution and
+with `--runner ubuntu-24.04`, the new candidate digest, the three security
+options plus the approved TUN mapping, and `--github-token-auth`. These settings cover generated setup, execution and
 final-gate jobs. The caller's validation job uses the same image with default
-container security options and does not execute nested tasks. Reuse the AMD64
-digest. `prepare-arm` builds one native ARM64 image with the existing recipe,
-public Stoke source and Coopr commit
-`35871e4b01e60657b45fd17e04ac1db119f839e6`. It uses a normal hosted job, not a
-relaxed job container, and disables both the installer's KVM setup and optional
-runner trust grant. Its only publication destination is the existing private
-tools package, under a distinct `tools-arm64-SOURCE-RUN-ATTEMPT` tag. Record the
-source and returned manifest digest before generating ARM calls. ARM preparation
+container security options and does not execute nested tasks. Keep the older
+digests only as historical evidence. `prepare-images` builds matching native
+AMD64 and ARM64 images with the existing recipe, public Stoke source and Coopr
+commit `2f371c53c4f406c705f2311088dfd213968a9c04`. Its two normal hosted jobs
+use no relaxed container profile and disable both the installer's KVM setup
+and optional runner trust grant. They publish only to the existing private tools
+package, under distinct `tools-ARCH-SOURCE-RUN-ATTEMPT` tags. Record each source
+and returned manifest digest, then regenerate all five caller pairs before
+runtime qualification. ARM preparation
 [run 43083643695](https://github.com/strio-dev/stoke/actions/runs/43083643695)
 published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c346907fa89f88ad85500d`:
 
@@ -104,8 +109,9 @@ published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c3469
 ghcr.io/strio-dev/stoke-qualification-tools@sha256:dc7e3f11e097922e8ba5b5f9bb14e9853f5ba0ad12590622d3e1140657aec71d
 ```
 
-The ARM cold/warm pairs pin that digest and the TUN-only continuation profile.
-Reuse the published image; a runtime device mapping requires no image rebuild.
+That historical ARM image contains released Coopr, so it must be replaced for
+the cache-fix qualification. A runtime device mapping alone requires no image
+rebuild; changing the engine source does.
 Do not reuse the AMD64 digest as an ARM image or create a new package or multiarch
 index. ARM runtime success remains separate from image publication.
 
@@ -117,7 +123,7 @@ stoke check -f examples/ci/failure.yaml --context .
 ```
 
 The caller contains the complete `stoke ci generate --check` commands for all
-three pairs, also with `--context .`. Omitting that option selects the workflow
+five pairs, also with `--context .`. Omitting that option selects the workflow
 directory and does not validate the real example's repository-root inputs.
 
 Cache directions are literal plan configuration. Configure cold cache export,
@@ -137,9 +143,7 @@ authenticate other jobs.
 
 The execution callers grant `contents: read` and `packages: write`; the
 validation job retains `packages: read`. These are short-lived GitHub job tokens,
-not new PATs or persistent scope changes. The pinned Nix installer also uses
-that job's token for GitHub source retrieval on the disposable image-build
-runner; do not print its configuration. The caller owns package access and
+not new PATs or persistent scope changes. The caller owns package access and
 any approved `packages: write` permission;
 the generator grants neither access nor authorization to publish. Package
 visibility remains a GitHub setting, independent of image labels and token
@@ -155,8 +159,8 @@ or masked native outputs must fail clearly. See [GHCR authentication](https://do
 | Cold run | Visible build, environment, test/vet matrix and package jobs; native `needs` gates; exact producer/input-set references; fresh checks actually execute. |
 | Warm run | Independent stores and matching inputs restore build cache; tests remain fresh; package uses the exact tested producer. |
 | Failed test | The native matrix/group fails and blocks package; existing result objects do not assert success. |
-| Consumer-only retry | Reuse an explicitly supplied prior-attempt reference in the same scope, or fail clearly if GitHub omits it. |
-| Partial matrix retry | Preserve every unique variant output; missing/masked metadata fails without scanning registry tags. |
+| Consumer-only retry | Reuse an explicitly supplied prior-attempt reference in the same scope, or fail clearly if GitHub omits it. Omitted from this reduced batch. |
+| Partial matrix retry | Preserve every unique variant output; missing/masked metadata fails without scanning registry tags. Omitted from this reduced batch. |
 | Producer rerun | New execution bindings conflict with old tests, even for identical bytes; deliberately rerun dependent gates. Omitted from this continuation's hosted budget. |
 | Concurrent invocations | Separate invocation scopes; no mutable latest/winner lookup; no output-key collisions. |
 | Missing result | A cache miss may execute a producer before gates; a missing exact consumer result must not replay it after tests. |
