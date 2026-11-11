@@ -152,8 +152,8 @@ func TestGitHubVisibleJobsNativeMatrixOutputsAndAggregate(t *testing.T) {
 		}
 	}
 	result := jobs["stoke_result"]
-	if len(result.Needs) != len(p.Groups)+1 || result.If != "${{ !cancelled() }}" || result.Env["STOKE_CI_RESULTS"] != "${{ toJSON(needs.*.result) }}" {
-		t.Fatal("aggregate does not use compact native statuses")
+	if len(result.Needs) != len(p.Groups)+1 || result.If != "${{ !cancelled() }}" || result.Env["STOKE_CI_SUCCESS"] == "" || result.Container != nil {
+		t.Fatal("aggregate does not use native success conditions")
 	}
 	for _, forbidden := range []string{"upload-artifact", "download-artifact", "--receipt", "--handoffs", "--bundle", "always()", "continue-on-error"} {
 		if bytes.Contains(data, []byte(forbidden)) {
@@ -243,7 +243,7 @@ func TestGeneratedArgumentsRemainLiteral(t *testing.T) {
 	}
 }
 
-func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
+func TestJobContainerIsExplicitAndCoversStokeExecution(t *testing.T) {
 	for _, source := range []string{graphFixture, hostGraphFixture} {
 		w := decodeWorkflow(t, source)
 		base := buildPlanFixture(t, w, Config{})
@@ -264,7 +264,7 @@ func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
 			}
 			previous = p.ID
 			for id, job := range renderedJobs(t, rendered) {
-				if config.JobContainerImage == "" {
+				if config.JobContainerImage == "" || id == "stoke_result" {
 					if job.Container != nil {
 						t.Fatalf("implicit container on %s", id)
 					}
@@ -275,6 +275,18 @@ func TestJobContainerIsExplicitAndCoversEveryGeneratedJob(t *testing.T) {
 					wantCredentials := config.GitHubTokenAuth && strings.HasPrefix(config.JobContainerImage, "ghcr.io/")
 					if (len(job.Container.Credentials) != 0) != wantCredentials {
 						t.Fatalf("container pull authentication crossed registry/opt-in boundary on %s", id)
+					}
+				}
+				if id == "stoke_result" {
+					if job.If != "${{ !cancelled() }}" || len(job.Steps) != 1 || job.Steps[0].Run != `test "$STOKE_CI_SUCCESS" = true` {
+						t.Fatalf("native result gate changed: %#v", job)
+					}
+					conditions := make([]string, 0, len(job.Needs))
+					for _, need := range job.Needs {
+						conditions = append(conditions, "needs."+need+".result == 'success'")
+					}
+					if len(conditions) == 0 || job.Env["STOKE_CI_SUCCESS"] != "${{ "+strings.Join(conditions, " && ")+" }}" {
+						t.Fatalf("native result gate omits prerequisite success: %#v", job)
 					}
 				}
 				login, cleanup, execution := 0, 0, false

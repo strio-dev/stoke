@@ -97,11 +97,12 @@ attestations. The earlier Nix-specific executor draft is not used.
 
 ## Opt-in tools containers
 
-Use `--job-container-image REGISTRY/REPOSITORY@sha256:DIGEST` to put **every**
-generated job in the same tools image, including invocation setup and the final
-result check. This supplies Stoke and compatible Coopr without installing them
-in job steps. The image reference must be digest-pinned and literal; generation
-neither builds nor publishes it. The default remains ordinary runner jobs.
+Use `--job-container-image REGISTRY/REPOSITORY@sha256:DIGEST` to put invocation
+setup and task execution jobs in the same tools image. This supplies Stoke and
+compatible Coopr without installing them in job steps. The final status gate
+uses GitHub's native prerequisite results and the runner's shell; it needs no
+tools container, checkout or registry credentials. The image reference must be
+digest-pinned and literal; generation neither builds nor publishes it. The default remains ordinary runner jobs.
 
 `--job-container-options '...'` passes explicitly selected Docker options to
 GitHub's `jobs.<job>.container.options`. It requires an image. Both values are
@@ -136,9 +137,10 @@ This is an experimental deployment choice, not a qualified hosted-runner profile
   `allow_host` and capability attestations. Their declared tools must be in that
   image. This does not provide host Nix, binfmt/QEMU or arbitrary project tools.
 - Nested Coopr OCI execution requires a separately qualified outer security
-  profile. The ordinary default profile failed the local proof. Only the earlier
-  explicitly privileged disposable Docker VM profile passed; it is not enabled
-  by this option and is not a least-privilege or GitHub-hosted qualification.
+  profile. The default profile remains unqualified for nested execution. The
+  [hosted qualification record](../development/hosted-ci-qualification.md)
+  identifies the explicitly approved profile and the behavior actually tested;
+  the generator does not enable that profile implicitly.
 
 ### Build a development tools image
 
@@ -184,12 +186,13 @@ paths owned by UID 1001. Writes to UID 1000-owned paths failed with `EACCES`.
 The privileged Docker VM proof used a separate prototype. A later offline probe
 of the release-based image failed UID/GID map writes even with explicitly relaxed
 seccomp, AppArmor and system-path restrictions. Static inspection identified
-missing capability-aware helper code. The packaging correction still needs
-behavioral qualification; building or inspecting it does not establish successful
-nested OCI execution. Hosted
-qualification also covers checkout, the runner's read-only Node mount, image
-pull, registry credentials, cache and results, workflow cancellation and native
-ARM.
+missing capability-aware helper code. With the packaging correction, native
+AMD64 and ARM64 hosted jobs completed networked Go builds under the explicitly
+approved profile. The ARM run then failed exact-result publication and the AMD
+run was cancelled. This establishes nested execution on those runners, not a
+successful build/test/package handoff or cache restoration. See the
+[qualification record](../development/hosted-ci-qualification.md) for exact images,
+runs and remaining coverage.
 
 ## Visible stages, matrices and environments
 
@@ -207,7 +210,9 @@ gates; it does not implement another component planner.
 
 A small setup job creates a unique invocation scope. This separates two calls of
 the same reusable workflow within one GitHub run. An aggregate job requires all
-generated jobs to succeed. Pure workflow gates are native CI dependencies and
+generated jobs to succeed using native `needs.<job>.result == 'success'`
+conditions. It fails for failed, cancelled or skipped prerequisites without
+starting Stoke or a tools container. Pure workflow gates are native CI dependencies and
 are not executed again merely to recover another job's data.
 
 ## Exact selection and retry behavior
@@ -219,7 +224,14 @@ selected input bindings. Local storage IDs are never result identities.
 
 The registry stores actual image/component output and immutable input sets.
 Native job outputs carry small references to those input sets. They contain no
-success field. A gate-only job can forward its input bindings **before it runs**;
+success field. CI wire format v2 uses standard OCI indexes: a result index
+references its typed metadata artifact, canonical output manifest and optional
+input-set index. An input-set index references its typed metadata artifact and
+bound result indexes. Only actual file blobs, such as an original component
+archive, are artifact layers. The canonical output bytes and digest do not
+change. There is no legacy-envelope reader. Already-present nondistributable
+image layers are transferred as bounded payload bytes too; URLs are not followed.
+A gate-only job can forward its input bindings **before it runs**;
 that object therefore cannot be a success receipt. Native `needs` remains the
 only success authority.
 
@@ -297,8 +309,8 @@ stoke ci cleanup --results-repository registry.example.com/team/stoke-results \
   --scope "$INVOCATION_SCOPE_JSON" --result "$IMMUTABLE_METADATA_REFERENCE"
 ```
 
-Cleanup verifies scope and metadata type. It deletes the manifest by digest,
-including every tag that points to that same metadata manifest; it is not
+Cleanup verifies scope and metadata type. It deletes the selected metadata
+index by digest, including every tag that points to that same index; it is not
 tag-only removal. It does not delete shared image
 manifests, payload blobs or cache entries. Registry operators must expire payload
 retention tags and run their registry's supported garbage collection separately.

@@ -168,7 +168,7 @@ object. Empty/malformed values and every status except `success` fail, including
 skipped and cancelled jobs. `ci cleanup` deletes only one scope-validated metadata
 root. Call it after stopping writers and waiting out the retry window; the
 command does not establish those conditions. Digest deletion also
-removes every tag alias for that metadata manifest. It does not delete shared
+removes every tag alias for that metadata index. It does not delete shared
 payload manifests/blobs/cache entries; registry retention and deletion support
 remain operator-owned. See [CI generation](../guides/ci-generation.md) for trust,
 retention, import bounds, explicit co-location and provider/platform limitations.

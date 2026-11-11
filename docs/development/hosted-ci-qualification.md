@@ -77,12 +77,25 @@ strings select no jobs.
 Push branch changes with `[skip ci]` during qualification to avoid starting the
 unrelated push-triggered native runtime matrix.
 
-The original batch ceiling remains 54 container-job starts, including 13
-already consumed by failed or cancelled paths. Removing the duplicate
-regeneration-validation container jobs leaves at most 21 starts for AMD64 cold
-and two concurrent warm invocations, 14 for ARM cold/warm, and six for intentional
-failure: 41 new starts and 54 cumulative. Native producer, matrix, package and
-final-result gates remain.
+The original batch ceiling remains 54 container-job starts. At the current
+checkpoint, 18 have been consumed: 13 earlier starts, three in ARM
+[run 43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943),
+and two in the cancelled AMD
+[run 43114866113](https://github.com/strio-dev/stoke/actions/runs/43114866113).
+Both Go builds executed successfully. ARM then failed Stoke's exact-result
+manifest publication because its envelope referenced a manifest as a blob layer;
+AMD was cancelled under the stop-on-unexpected-failure rule. The package stayed
+private, owned container/network cleanup completed, and partial cache/payload
+objects were retained without deletion. Neither run proves downstream handoff
+or warm reuse.
+
+The candidate repairs result and input-set envelopes together using OCI indexes.
+The final status-only gate uses native GitHub conditions without a container.
+This retains all producer, matrix, package and failure gates while reducing the
+remaining core plan to at most 18 AMD64 starts (cold plus two concurrent warm
+invocations), 12 ARM64 starts (cold/warm), and five negative-case starts: at most
+35 new starts within the remaining 36. The embedded Stoke CLI must contain this
+repair, so the already-published images cannot qualify the new transport.
 Local regeneration checks still cover all five plan/workflow pairs.
 
 No selective retry belongs to this continuation. Keep two concurrent workflows
@@ -95,8 +108,9 @@ variant and skip package. This change adds no security permissions or options.
 
 Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
 with `--runner ubuntu-24.04`, the new candidate digest, the three security
-options plus the approved TUN mapping, and `--github-token-auth`. These settings cover generated setup, execution and
-final-gate jobs. Regeneration is checked locally; the duplicate hosted validator
+options plus the approved TUN mapping, and `--github-token-auth`. These settings
+cover generated setup and execution jobs. The native final status gate requires
+no container or package authentication. Regeneration is checked locally; the duplicate hosted validator
 is removed. Keep the older
 digests only as historical evidence. `prepare-images` builds matching native
 AMD64 and ARM64 images with the existing recipe, public Stoke source and Coopr
@@ -119,12 +133,12 @@ passed on both native architectures from public Stoke source
 | ARM64 | `sha256:875e36d66d5e10ff394f1a262f463c76ab0408d47f8a7e63b13ccb009a349d7a` |
 
 Both reside in the existing private `stoke-qualification-tools` package.
-Image publication establishes packaging. At this checkpoint, runtime roundtrip
-qualification remains pending. Native ARM roundtrip
+Image publication establishes packaging. These images contain the repaired
+Coopr cache path but predate the Stoke result-envelope repair. ARM roundtrip
 [run 43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943)
-is in progress at Stoke commit `207f8dd7b249f3cf9cb55a7de078cb2b1a2022d9`.
-Its already-dispatched plans retain their seven-minute job limits; the subsequent
-45-minute plans do not alter that run.
+failed exact-result publication at Stoke commit
+`207f8dd7b249f3cf9cb55a7de078cb2b1a2022d9`; it did not hit its seven-minute
+job limit. Subsequent plans use 45-minute bounds.
 
 Historical preparation
 [run 43098487812](https://github.com/strio-dev/stoke/actions/runs/43098487812)
@@ -229,7 +243,7 @@ Dispatches and reruns require approval for their complete bounded batch.
 ## GHCR cleanup qualification boundary
 
 Stoke's generic `ci cleanup` verifies scope/type and requests deletion of one OCI
-metadata manifest by digest. It does not discover safe candidates, enforce a
+metadata index by digest. It does not discover safe candidates, enforce a
 retry window, map GitHub package versions or garbage-collect shared blobs.
 The [OCI specification](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#content-management)
 permits registries to disable deletion; deleting a manifest can invalidate every

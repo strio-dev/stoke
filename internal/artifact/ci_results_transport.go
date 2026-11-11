@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/stoke/internal/hostfiles"
 	"github.com/strio-dev/stoke/internal/workflow"
@@ -121,21 +122,79 @@ func (s *ciReadSession) fetch(ctx context.Context, descriptor v1.Descriptor) ([]
 	return data, err
 }
 
-func (s *ciReadSession) object(ctx context.Context, reference, artifactType, configType string, target any) (v1.Manifest, error) {
+// CI metadata is one index member; other manifest/index members retain graph
+// relationships without requiring their envelope bytes in the blob namespace.
+type ciObject struct {
+	members []v1.Descriptor
+	layers  []v1.Descriptor
+}
+
+func (object ciObject) validateInputSet(repository string, set CIInputSet, scope CIScope) ([]string, error) {
+	if set.Version != CIVersion || set.Scope != scope || len(set.Bindings) > MaxCIBindings || len(object.members) != len(set.Bindings) || len(object.layers) != 0 {
+		return nil, errors.New("CI input set scope, version or binding count mismatch")
+	}
+	names := make([]string, 0, len(set.Bindings))
+	for name := range set.Bindings {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for index, name := range names {
+		if !ciText(name, 512) {
+			return nil, errors.New("invalid CI binding producer")
+		}
+		selected, err := ciReference(repository, set.Bindings[name])
+		if err != nil {
+			return nil, err
+		}
+		if object.members[index].MediaType != v1.MediaTypeImageIndex || object.members[index].Digest.String() != selected {
+			return nil, errors.New("CI input set descriptor does not match binding")
+		}
+	}
+	return names, nil
+}
+
+func (object ciObject) validateResult(repository string, result CIResult) error {
+	count := 1
+	if result.Inputs != "" {
+		count++
+	}
+	if len(object.members) != count || !content.Equal(object.members[0], result.Output) {
+		return errors.New("CI result graph does not select its canonical output")
+	}
+	if result.Archive != nil {
+		if len(object.layers) != 1 || !content.Equal(object.layers[0], *result.Archive) {
+			return errors.New("CI component archive descriptor mismatch")
+		}
+	} else if len(object.layers) != 0 {
+		return errors.New("CI image result must not contain archive layers")
+	}
+	if result.Inputs != "" {
+		selected, err := ciReference(repository, result.Inputs)
+		if err != nil {
+			return err
+		}
+		if object.members[1].Digest.String() != selected || object.members[1].MediaType != v1.MediaTypeImageIndex {
+			return errors.New("CI result input-set descriptor mismatch")
+		}
+	}
+	return nil
+}
+
+func (s *ciReadSession) object(ctx context.Context, reference, artifactType, configType string, target any) (ciObject, error) {
 	selected, err := ciReference(s.repository, reference)
 	if err != nil {
-		return v1.Manifest{}, err
+		return ciObject{}, err
 	}
 	if s.objects >= maxCIObjects {
-		return v1.Manifest{}, errors.New("too many CI metadata objects")
+		return ciObject{}, errors.New("too many CI metadata objects")
 	}
 	s.objects++
 	descriptor, err := s.repo.Resolve(ctx, selected)
 	if err != nil {
-		return v1.Manifest{}, fmt.Errorf("required exact CI result is unavailable; rerun producer and dependent gates: %w", err)
+		return ciObject{}, fmt.Errorf("required exact CI result is unavailable; rerun producer and dependent gates: %w", err)
 	}
-	if descriptor.Digest.String() != selected || descriptor.MediaType != v1.MediaTypeImageManifest {
-		return v1.Manifest{}, errors.New("CI metadata root descriptor mismatch")
+	if descriptor.Digest.String() != selected || descriptor.MediaType != v1.MediaTypeImageIndex {
+		return ciObject{}, errors.New("CI metadata root descriptor mismatch")
 	}
 	if s.descriptors == nil {
 		s.descriptors = map[string]v1.Descriptor{}
@@ -143,25 +202,55 @@ func (s *ciReadSession) object(ctx context.Context, reference, artifactType, con
 	s.descriptors[reference] = descriptor
 	data, err := s.fetch(ctx, descriptor)
 	if err != nil {
-		return v1.Manifest{}, err
+		return ciObject{}, err
+	}
+	var index v1.Index
+	if err := ciDecode(data, &index); err != nil {
+		return ciObject{}, err
+	}
+	if index.SchemaVersion != 2 || index.MediaType != v1.MediaTypeImageIndex || index.ArtifactType != artifactType || index.Subject != nil || len(index.Manifests) == 0 || len(index.Manifests) > MaxCIBindings+1 {
+		return ciObject{}, errors.New("not a supported CI metadata index")
+	}
+	for _, member := range index.Manifests {
+		if err := ciDescriptor(member); err != nil {
+			return ciObject{}, err
+		}
+		if member.MediaType != v1.MediaTypeImageManifest && member.MediaType != v1.MediaTypeImageIndex {
+			return ciObject{}, errors.New("CI index member must be a manifest or index")
+		}
+	}
+	if index.Manifests[0].MediaType != v1.MediaTypeImageManifest {
+		return ciObject{}, errors.New("CI index lacks its metadata manifest")
+	}
+	data, err = s.fetch(ctx, index.Manifests[0])
+	if err != nil {
+		return ciObject{}, err
 	}
 	var manifest v1.Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return manifest, err
+	if err := ciDecode(data, &manifest); err != nil {
+		return ciObject{}, err
 	}
 	if manifest.SchemaVersion != 2 || manifest.MediaType != v1.MediaTypeImageManifest ||
 		manifest.ArtifactType != artifactType || manifest.Config.MediaType != configType ||
-		manifest.Subject != nil || len(manifest.Layers) > MaxCIBindings {
-		return manifest, errors.New("not a supported CI result metadata artifact")
+		manifest.Subject != nil || manifest.Layers == nil || len(manifest.Layers) > 1 {
+		return ciObject{}, errors.New("not a supported CI result metadata artifact")
+	}
+	for _, layer := range manifest.Layers {
+		if err := ciDescriptor(layer); err != nil {
+			return ciObject{}, err
+		}
+		if layer.MediaType != CIComponentArchiveType {
+			return ciObject{}, errors.New("CI metadata layers may contain only the original component archive")
+		}
 	}
 	data, err = s.fetch(ctx, manifest.Config)
 	if err != nil {
-		return manifest, err
+		return ciObject{}, err
 	}
 	if err := ciDecode(data, target); err != nil {
-		return manifest, fmt.Errorf("CI metadata: %w", err)
+		return ciObject{}, fmt.Errorf("CI metadata: %w", err)
 	}
-	return manifest, nil
+	return ciObject{members: index.Manifests[1:], layers: manifest.Layers}, nil
 }
 
 func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInputSet, error) {
@@ -174,40 +263,22 @@ func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInput
 	s.active[reference] = true
 	defer delete(s.active, reference)
 	var set CIInputSet
-	manifest, err := s.object(ctx, reference, CIInputSetType, ciInputSetConfigType, &set)
+	object, err := s.object(ctx, reference, CIInputSetType, ciInputSetConfigType, &set)
 	if err != nil {
 		return set, err
 	}
-	if set.Version != CIVersion || set.Scope != s.scope || len(set.Bindings) > MaxCIBindings ||
-		len(manifest.Layers) != len(set.Bindings) {
-		return set, errors.New("CI input set scope, version or binding count mismatch")
+	names, err := object.validateInputSet(s.repository, set, s.scope)
+	if err != nil {
+		return set, err
 	}
-	names := make([]string, 0, len(set.Bindings))
-	for name := range set.Bindings {
-		names = append(names, name)
-	}
-	slices.Sort(names)
 	for index, name := range names {
-		if !ciText(name, 512) {
-			return set, errors.New("invalid CI binding producer")
-		}
 		ref := set.Bindings[name]
-		selected, err := ciReference(s.repository, ref)
-		if err != nil {
-			return set, err
-		}
-		layer := manifest.Layers[index]
-		if err := ciDescriptor(layer); err != nil {
-			return set, err
-		}
-		if layer.MediaType != v1.MediaTypeImageManifest || layer.Digest.String() != selected {
-			return set, errors.New("CI input set descriptor does not match binding")
-		}
+		member := object.members[index]
 		result, err := s.result(ctx, ref)
 		if err != nil {
 			return set, err
 		}
-		if !content.Equal(layer, s.descriptors[ref]) {
+		if !content.Equal(member, s.descriptors[ref]) {
 			return set, errors.New("CI input set descriptor size mismatch")
 		}
 		if result.Producer != name {
@@ -240,43 +311,22 @@ func (s *ciReadSession) result(ctx context.Context, reference string) (CIResult,
 	s.active[reference] = true
 	defer delete(s.active, reference)
 	var result CIResult
-	manifest, err := s.object(ctx, reference, CIResultType, ciResultConfigType, &result)
+	object, err := s.object(ctx, reference, CIResultType, ciResultConfigType, &result)
 	if err != nil {
 		return result, err
 	}
 	if err := result.validate(CIResultExpectation{Scope: s.scope}); err != nil {
 		return result, err
 	}
-	count := 1
-	if result.Archive != nil {
-		count++
+	if err := object.validateResult(s.repository, result); err != nil {
+		return result, err
 	}
 	if result.Inputs != "" {
-		count++
-	}
-	if len(manifest.Layers) != count || !content.Equal(manifest.Layers[0], result.Output) {
-		return result, errors.New("CI result graph does not select its canonical output")
-	}
-	inputIndex := 1
-	if result.Archive != nil {
-		if !content.Equal(manifest.Layers[1], *result.Archive) {
-			return result, errors.New("CI component archive descriptor mismatch")
-		}
-		inputIndex++
-	}
-	if result.Inputs != "" {
-		selected, err := ciReference(s.repository, result.Inputs)
-		if err != nil {
-			return result, err
-		}
-		if manifest.Layers[inputIndex].Digest.String() != selected || manifest.Layers[inputIndex].MediaType != v1.MediaTypeImageManifest {
-			return result, errors.New("CI result input-set descriptor mismatch")
-		}
 		parents, err := s.inputSet(ctx, result.Inputs)
 		if err != nil {
 			return result, err
 		}
-		if !content.Equal(manifest.Layers[inputIndex], s.descriptors[result.Inputs]) {
+		if !content.Equal(object.members[1], s.descriptors[result.Inputs]) {
 			return result, errors.New("CI input-set descriptor size mismatch")
 		}
 		if _, exists := parents.Bindings[result.Producer]; exists {
@@ -414,9 +464,27 @@ func (c Client) ReadCIResult(ctx context.Context, repository, reference string, 
 	return result, err
 }
 
-func (c Client) pushCIObject(ctx context.Context, repository, artifactType, configType string, scope CIScope, producer string, value any, layers []v1.Descriptor) (string, error) {
+func (c Client) pushCIObject(ctx context.Context, repository, artifactType, configType string, scope CIScope, producer string, value any, children []v1.Descriptor) (string, error) {
 	if err := scope.Validate(); err != nil {
 		return "", err
+	}
+	var members []v1.Descriptor
+	layers := []v1.Descriptor{}
+	for _, child := range children {
+		if err := ciDescriptor(child); err != nil {
+			return "", err
+		}
+		switch child.MediaType {
+		case v1.MediaTypeImageManifest, v1.MediaTypeImageIndex:
+			members = append(members, child)
+		case CIComponentArchiveType:
+			layers = append(layers, child)
+		default:
+			return "", errors.New("unsupported CI metadata child media type")
+		}
+	}
+	if len(members) > MaxCIBindings || len(layers) > 1 {
+		return "", errors.New("CI metadata child count exceeds limits")
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -433,10 +501,34 @@ func (c Client) pushCIObject(ctx context.Context, repository, artifactType, conf
 	if err := repo.Push(ctx, config, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return "", err
 	}
-	descriptor, err := oras.PackManifest(ctx, repo, oras.PackManifestVersion1_1, artifactType, oras.PackManifestOptions{
-		ConfigDescriptor: &config, Layers: layers, ManifestAnnotations: map[string]string{v1.AnnotationCreated: "1970-01-01T00:00:00Z"},
-	})
+	manifest := v1.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, ArtifactType: artifactType,
+		Config: config, Layers: layers, Annotations: map[string]string{v1.AnnotationCreated: "1970-01-01T00:00:00Z"},
+	}
+	data, err = json.Marshal(manifest)
 	if err != nil {
+		return "", err
+	}
+	if len(data) > MaxCIMetadataBytes {
+		return "", errors.New("CI metadata manifest exceeds size limit")
+	}
+	metadata := content.NewDescriptorFromBytes(v1.MediaTypeImageManifest, data)
+	if err := repo.Push(ctx, metadata, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
+		return "", err
+	}
+	index := v1.Index{
+		Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, ArtifactType: artifactType,
+		Manifests: append([]v1.Descriptor{metadata}, members...), Annotations: map[string]string{v1.AnnotationCreated: "1970-01-01T00:00:00Z"},
+	}
+	data, err = json.Marshal(index)
+	if err != nil {
+		return "", err
+	}
+	if len(data) > MaxCIMetadataBytes {
+		return "", errors.New("CI metadata index exceeds size limit")
+	}
+	descriptor := content.NewDescriptorFromBytes(v1.MediaTypeImageIndex, data)
+	if err := repo.Push(ctx, descriptor, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
 		return "", err
 	}
 	scopeHash, _ := scope.Hash()
@@ -685,6 +777,9 @@ func (c Client) PublishCIResult(ctx context.Context, repository string, result C
 	}
 
 	// Copy immutable bytes, not a storage ID or a newly committed representation.
+	if err := bounded.copyForeignLayers(ctx, repo); err != nil {
+		return "", err
+	}
 	copied, err := oras.Copy(ctx, bounded, manifestDigest, repo, manifestDigest, oras.DefaultCopyOptions)
 	if err != nil {
 		return "", err
@@ -785,6 +880,9 @@ func (c Client) FetchCIPayload(ctx context.Context, repository, reference string
 		if err != nil {
 			return payload, err
 		}
+		if err := bounded.copyForeignLayers(ctx, store); err != nil {
+			return payload, fmt.Errorf("required exact CI payload is unavailable; rerun producer and dependent gates: %w", err)
+		}
 		copied, err := oras.Copy(ctx, bounded, selected, store, "result", oras.DefaultCopyOptions)
 		if err != nil {
 			return payload, fmt.Errorf("required exact CI payload is unavailable; rerun producer and dependent gates: %w", err)
@@ -824,30 +922,38 @@ func (c Client) DeleteCIObject(ctx context.Context, repository, reference string
 	if err != nil {
 		return err
 	}
+	if descriptor.Digest.String() != selected || descriptor.MediaType != v1.MediaTypeImageIndex {
+		return errors.New("refusing to delete a non-CI metadata index")
+	}
 	data, err := session.fetch(ctx, descriptor)
 	if err != nil {
 		return err
 	}
-	var manifest v1.Manifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
+	var index v1.Index
+	if err := ciDecode(data, &index); err != nil {
 		return err
 	}
-	switch manifest.ArtifactType {
+	switch index.ArtifactType {
 	case CIResultType:
 		var result CIResult
-		if _, err := session.object(ctx, reference, CIResultType, ciResultConfigType, &result); err != nil {
+		object, err := session.object(ctx, reference, CIResultType, ciResultConfigType, &result)
+		if err != nil {
 			return err
 		}
 		if err := result.validate(CIResultExpectation{Scope: scope}); err != nil {
 			return err
 		}
-	case CIInputSetType:
-		var set CIInputSet
-		if _, err := session.object(ctx, reference, CIInputSetType, ciInputSetConfigType, &set); err != nil {
+		if err := object.validateResult(repository, result); err != nil {
 			return err
 		}
-		if set.Version != CIVersion || set.Scope != scope || len(set.Bindings) > MaxCIBindings {
-			return errors.New("CI cleanup input scope/version mismatch")
+	case CIInputSetType:
+		var set CIInputSet
+		object, err := session.object(ctx, reference, CIInputSetType, ciInputSetConfigType, &set)
+		if err != nil {
+			return err
+		}
+		if _, err := object.validateInputSet(repository, set, scope); err != nil {
+			return err
 		}
 	default:
 		return errors.New("refusing to delete a non-CI metadata object")

@@ -22,19 +22,21 @@ import (
 	"oras.land/oras-go/v2/content"
 )
 
-func ciPushTestBlob(t *testing.T, client Client, repository, media string, data []byte) v1.Descriptor {
+// Preflight cases model malformed content already retained by a registry.
+// Inject it directly rather than relaxing the fixture's publication checks.
+func ciStoreTestObject(t *testing.T, storage *registryStorage, repository, media string, data []byte) v1.Descriptor {
 	t.Helper()
-	repo, err := client.ciRepository(repository)
-	if err != nil {
-		t.Fatal(err)
-	}
 	descriptor := content.NewDescriptorFromBytes(media, data)
-	if err := repo.Push(t.Context(), descriptor, bytes.NewReader(data)); err != nil {
-		t.Fatal(err)
+	role := "blobs"
+	if media == v1.MediaTypeImageManifest || media == v1.MediaTypeImageIndex {
+		role = "manifests"
 	}
+	storage.mu.Lock()
+	storage.objects[strings.SplitN(repository, "/", 2)[1]+"/"+role+"/"+descriptor.Digest.String()] = registryObject{Data: data, MediaType: media}
+	storage.mu.Unlock()
 	return descriptor
 }
-func ciRawResult(t *testing.T, client Client, repository string, layers []v1.Descriptor, subject *v1.Descriptor, component bool, archive *v1.Descriptor) string {
+func ciRawResult(t *testing.T, storage *registryStorage, repository string, layers []v1.Descriptor, subject *v1.Descriptor, component bool, archive *v1.Descriptor) string {
 	t.Helper()
 	diffs := make([]digest.Digest, len(layers))
 	for i, layer := range layers {
@@ -51,29 +53,40 @@ func ciRawResult(t *testing.T, client Client, repository string, layers []v1.Des
 		configType, artifactType = ciComponentConfigType, ciComponentType
 		configData = []byte(`{"platform":{"os":"linux","architecture":"amd64"}}`)
 	}
-	config := ciPushTestBlob(t, client, repository, configType, configData)
+	config := ciStoreTestObject(t, storage, repository, configType, configData)
 	raw, err := json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, ArtifactType: artifactType, Config: config, Layers: layers, Subject: subject})
 	if err != nil {
 		t.Fatal(err)
 	}
-	output := ciPushTestBlob(t, client, repository, v1.MediaTypeImageManifest, raw)
+	output := ciStoreTestObject(t, storage, repository, v1.MediaTypeImageManifest, raw)
 	result.Output = output
 	result.Archive = archive
-	children := []v1.Descriptor{output}
-	if archive != nil {
-		children = append(children, *archive)
-	}
-	ref, err := client.pushCIObject(t.Context(), repository, CIResultType, ciResultConfigType, result.Scope, result.Producer, result, children)
+	raw, err = json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ref
+	config = ciStoreTestObject(t, storage, repository, ciResultConfigType, raw)
+	metadataLayers := []v1.Descriptor{}
+	if archive != nil {
+		metadataLayers = append(metadataLayers, *archive)
+	}
+	raw, err = json.Marshal(v1.Manifest{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageManifest, ArtifactType: CIResultType, Config: config, Layers: metadataLayers})
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := ciStoreTestObject(t, storage, repository, v1.MediaTypeImageManifest, raw)
+	raw, err = json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, ArtifactType: CIResultType, Manifests: []v1.Descriptor{metadata, output}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := ciStoreTestObject(t, storage, repository, v1.MediaTypeImageIndex, raw)
+	return repository + "@" + root.Digest.String()
 }
 
 func TestCIPayloadPreflightRejectsOversizeBeforeBlobDownloads(t *testing.T) {
 	for _, scenario := range []string{"aggregate", "archive", "depth", "nodes", "conflicting-size", "conflicting-type", "metadata"} {
 		t.Run(scenario, func(t *testing.T) {
-			base := registryFixture(t)
+			base, storage := registryFixtureStorage(t, false)
 			var mu sync.Mutex
 			reads := map[string]int{}
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -110,7 +123,7 @@ func TestCIPayloadPreflightRejectsOversizeBeforeBlobDownloads(t *testing.T) {
 				next := leaf
 				for i := 0; i < MaxCITransferDepth+1; i++ {
 					raw, _ := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: []v1.Descriptor{next}})
-					next = ciPushTestBlob(t, client, repository, v1.MediaTypeImageIndex, raw)
+					next = ciStoreTestObject(t, storage, repository, v1.MediaTypeImageIndex, raw)
 				}
 				subject = &next
 				neverRead = append(neverRead, leaf.Digest)
@@ -122,7 +135,7 @@ func TestCIPayloadPreflightRejectsOversizeBeforeBlobDownloads(t *testing.T) {
 					neverRead = append(neverRead, nodes[i].Digest)
 				}
 				raw, _ := json.Marshal(v1.Index{Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: v1.MediaTypeImageIndex, Manifests: nodes})
-				next := ciPushTestBlob(t, client, repository, v1.MediaTypeImageIndex, raw)
+				next := ciStoreTestObject(t, storage, repository, v1.MediaTypeImageIndex, raw)
 				subject = &next
 			case "conflicting-size":
 				a, b := leaf, leaf
@@ -139,7 +152,7 @@ func TestCIPayloadPreflightRejectsOversizeBeforeBlobDownloads(t *testing.T) {
 				subject = &next
 				neverRead = append(neverRead, leaf.Digest)
 			}
-			ref := ciRawResult(t, client, repository, layers, subject, component, archive)
+			ref := ciRawResult(t, storage, repository, layers, subject, component, archive)
 			mu.Lock()
 			clear(reads)
 			mu.Unlock()

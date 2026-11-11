@@ -47,13 +47,19 @@ func registryFixture(t *testing.T) *httptest.Server {
 // Manifest deletion removes digest/tag aliases, never shared blobs.
 func registryFixtureManifestDeletion(t *testing.T, allowDelete bool) *httptest.Server {
 	t.Helper()
+	server, _ := registryFixtureStorage(t, allowDelete)
+	return server
+}
+
+func registryFixtureStorage(t *testing.T, allowDelete bool) (*httptest.Server, *registryStorage) {
+	t.Helper()
 	storage := &registryStorage{objects: map[string]registryObject{}, uploads: map[string][]byte{}, allowDelete: allowDelete}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		repository, path := registryFixturePath(r.URL.Path)
 		storage.serve(w, r, repository, path)
 	}))
 	t.Cleanup(server.Close)
-	return server
+	return server, storage
 }
 
 func registryFixturePath(path string) (string, string) {
@@ -201,7 +207,39 @@ func (r *registryStorage) serve(w http.ResponseWriter, q *http.Request, repo, pa
 	if q.Method == "PUT" && strings.HasPrefix(path, "manifests/") {
 		identity := digest.FromBytes(data).String()
 		object := registryObject{data, q.Header.Get("Content-Type")}
+		var blobs, manifests []v1.Descriptor
+		switch object.MediaType {
+		case v1.MediaTypeImageManifest, "application/vnd.docker.distribution.manifest.v2+json":
+			var manifest v1.Manifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				http.Error(w, "invalid manifest", http.StatusBadRequest)
+				return
+			}
+			blobs = append([]v1.Descriptor{manifest.Config}, manifest.Layers...)
+		case v1.MediaTypeImageIndex, "application/vnd.docker.distribution.manifest.list.v2+json":
+			var index v1.Index
+			if err := json.Unmarshal(data, &index); err != nil {
+				http.Error(w, "invalid index", http.StatusBadRequest)
+				return
+			}
+			manifests = index.Manifests
+		default:
+			http.Error(w, "unsupported manifest media type", http.StatusUnsupportedMediaType)
+			return
+		}
 		r.mu.Lock()
+		for role, descriptors := range map[string][]v1.Descriptor{"blobs": blobs, "manifests": manifests} {
+			for _, descriptor := range descriptors {
+				child, exists := r.objects[repo+"/"+role+"/"+descriptor.Digest.String()]
+				if !exists || int64(len(child.Data)) != descriptor.Size || digest.FromBytes(child.Data) != descriptor.Digest {
+					r.mu.Unlock()
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusBadRequest)
+					_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"code": "MANIFEST_BLOB_UNKNOWN", "message": "missing " + role + " child", "detail": descriptor.Digest.String()}}})
+					return
+				}
+			}
+		}
 		r.objects[key] = object
 		r.objects[repo+"/manifests/"+identity] = object
 		r.mu.Unlock()

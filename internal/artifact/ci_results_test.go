@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -38,6 +39,7 @@ func ciTestResult(t *testing.T, producer, platform string) CIResult {
 	return CIResult{Version: CIVersion, Scope: ciTestScope(), Producer: producer, Attempt: 1, Execution: nonce, Kind: "image", Platform: platform}
 }
 
+//nolint:staticcheck // Existing nondistributable OCI layers must retain their local payloads.
 func ciTestLayout(t *testing.T, kind, platform, value string) (string, string) {
 	t.Helper()
 	ctx := t.Context()
@@ -59,6 +61,9 @@ func ciTestLayout(t *testing.T, kind, platform, value string) (string, string) {
 		t.Fatal(err)
 	}
 	layer := content.NewDescriptorFromBytes(v1.MediaTypeImageLayer, archive.Bytes())
+	if kind == "foreign-image" {
+		layer.MediaType = v1.MediaTypeImageLayerNonDistributable
+	}
 	if err := store.Push(ctx, layer, bytes.NewReader(archive.Bytes())); err != nil {
 		t.Fatal(err)
 	}
@@ -94,10 +99,68 @@ func ciTestLayout(t *testing.T, kind, platform, value string) (string, string) {
 	return directory, root.Digest.String()
 }
 
+func ciTestMetadata(t *testing.T, client Client, repository, reference string) (v1.Index, v1.Manifest) {
+	t.Helper()
+	repo, err := client.ciRepository(repository)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor, err := repo.Resolve(t.Context(), strings.Split(reference, "@")[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := fetch(t.Context(), repo, descriptor, MaxCIMetadataBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index v1.Index
+	if err := json.Unmarshal(data, &index); err != nil || descriptor.MediaType != v1.MediaTypeImageIndex || len(index.Manifests) == 0 {
+		t.Fatal("CI root is not a metadata-first OCI index", err)
+	}
+	data, err = fetch(t.Context(), repo, index.Manifests[0], MaxCIMetadataBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	return index, manifest
+}
+
 func TestCIResultAndInputSetRoundTrip(t *testing.T) {
-	server := registryFixture(t)
+	base := registryFixture(t)
+	var mu sync.Mutex
+	blobUploads, manifestUploads := map[string]bool{}, map[string]bool{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if user, password, ok := r.BasicAuth(); !ok || user != "writer" || password != "fixture-password" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="ci-results"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.Method == http.MethodPut {
+			mu.Lock()
+			if _, path := registryFixturePath(r.URL.Path); strings.HasPrefix(path, "manifests/sha256:") {
+				manifestUploads[strings.TrimPrefix(path, "manifests/")] = true
+			}
+			if identity := r.URL.Query().Get("digest"); identity != "" && strings.Contains(r.URL.Path, "/blobs/uploads/") {
+				blobUploads[identity] = true
+			}
+			mu.Unlock()
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
 	repository := strings.TrimPrefix(server.URL, "http://") + "/results"
-	client := Client{PlainHTTP: true}
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	authData, err := json.Marshal(map[string]any{"auths": map[string]any{strings.TrimPrefix(server.URL, "http://"): map[string]string{"auth": base64.StdEncoding.EncodeToString([]byte("writer:fixture-password"))}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authFile, authData, 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := Client{PlainHTTP: true, AuthFile: authFile}
 	scope := ciTestScope()
 	path, root := ciTestLayout(t, "image", "linux/amd64", "first")
 	identity := ciTestResult(t, "build", "linux/amd64")
@@ -126,12 +189,37 @@ func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 	if err != nil || reused != inputRef || merged.Bindings["build"] != ref {
 		t.Fatalf("merge %s %v %v", reused, merged, err)
 	}
+	value := strings.Repeat("x", 12<<20)
+	dependentPath, dependentRoot := ciTestLayout(t, "foreign-image", "linux/amd64", value)
+	dependent := ciTestResult(t, "package", "linux/amd64")
+	dependent.Inputs = inputRef
+	dependentRef, err := client.PublishCIResult(t.Context(), repository, dependent, dependentPath, dependentRoot)
+	if err != nil {
+		t.Fatal("publish result depending on the exact producer InputSet", err)
+	}
+	if err := os.RemoveAll(dependentPath); err != nil {
+		t.Fatal(err)
+	}
+	index, metadata := ciTestMetadata(t, client, repository, dependentRef)
+	if index.ArtifactType != CIResultType || len(index.Manifests) != 3 || index.Manifests[1].Digest.String() != dependentRoot || index.Manifests[2].MediaType != v1.MediaTypeImageIndex || index.Manifests[2].Digest.String() != strings.Split(inputRef, "@")[1] || metadata.Config.MediaType != ciResultConfigType || metadata.Layers == nil || len(metadata.Layers) != 0 {
+		t.Fatal("dependent result put metadata, output or lineage in the wrong OCI role")
+	}
+	index, metadata = ciTestMetadata(t, client, repository, inputRef)
+	if index.ArtifactType != CIInputSetType || len(index.Manifests) != 2 || index.Manifests[1].MediaType != v1.MediaTypeImageIndex || index.Manifests[1].Digest.String() != strings.Split(ref, "@")[1] || metadata.Config.MediaType != ciInputSetConfigType || metadata.Layers == nil || len(metadata.Layers) != 0 {
+		t.Fatal("InputSet put its result edge or record in the wrong OCI role")
+	}
+	expected.Producer = "package"
+	consumer := Client{PlainHTTP: true, AuthFile: authFile}
+	readResult, err := consumer.ReadCIResult(t.Context(), repository, dependentRef, expected)
+	if err != nil || readResult.Inputs != inputRef || readResult.Execution != dependent.Execution {
+		t.Fatalf("dependent result lost exact lineage or execution: %+v, %v", readResult, err)
+	}
 	dir := filepath.Join(t.TempDir(), "payload")
-	payload, err := client.FetchCIPayload(t.Context(), repository, ref, expected, dir)
+	payload, err := consumer.FetchCIPayload(t.Context(), repository, dependentRef, expected, dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if payload.CanonicalReference != repository+"@"+root || payload.Path != filepath.Join(dir, "image") {
+	if payload.CanonicalReference != repository+"@"+dependentRoot || payload.Path != filepath.Join(dir, "image") {
 		t.Fatalf("wrong payload %#v", payload)
 	}
 	local, err := oci.NewFromFS(t.Context(), os.DirFS(payload.Path))
@@ -139,11 +227,45 @@ func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor, err := local.Resolve(t.Context(), "result")
-	if err != nil || descriptor.Digest.String() != root {
+	if err != nil || descriptor.Digest.String() != dependentRoot {
 		t.Fatalf("payload root %v %v", descriptor, err)
 	}
-	if _, err := client.FetchCIPayload(t.Context(), repository, ref, expected, dir); err == nil {
+	data, err := content.FetchAll(t.Context(), local, descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest v1.Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil || len(manifest.Layers) != 1 {
+		t.Fatal("restored result lost its image layer", err)
+	}
+	layer, err := local.Fetch(t.Context(), manifest.Layers[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	archive := tar.NewReader(layer)
+	header, err := archive.Next()
+	if err != nil || header.Name != "value" {
+		_ = layer.Close()
+		t.Fatal("restored layer lost producer file", err)
+	}
+	data, err = io.ReadAll(archive)
+	if err := errors.Join(err, layer.Close()); err != nil || string(data) != value {
+		t.Fatal("large result bytes changed during authenticated handoff", err)
+	}
+	if _, err := consumer.FetchCIPayload(t.Context(), repository, dependentRef, expected, dir); err == nil {
 		t.Fatal("overwrote existing result")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, identity := range []string{root, dependentRoot, strings.Split(ref, "@")[1], strings.Split(inputRef, "@")[1], strings.Split(dependentRef, "@")[1]} {
+		if !manifestUploads[identity] {
+			t.Errorf("OCI root was not published through the manifest endpoint: %s", identity)
+		}
+	}
+	for identity := range manifestUploads {
+		if blobUploads[identity] {
+			t.Errorf("OCI manifest/index was also uploaded as a blob: %s", identity)
+		}
 	}
 }
 
@@ -332,7 +454,23 @@ func TestCIInputSetLineageIsClosedAndPayloadFetchIsSelective(t *testing.T) {
 }
 
 func TestCIComponentPayloadArchiveAndCanceledFetchCleanup(t *testing.T) {
-	server := registryFixture(t)
+	base := registryFixture(t)
+	var mu sync.Mutex
+	blockedArchive, blockedRequests := "", 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		blocked := r.Method == http.MethodGet && r.URL.Path == blockedArchive
+		if blocked {
+			blockedRequests++
+		}
+		mu.Unlock()
+		if blocked {
+			http.NotFound(w, r)
+			return
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
 	repository := strings.TrimPrefix(server.URL, "http://") + "/results"
 	client := Client{PlainHTTP: true}
 	scope := ciTestScope()
@@ -392,6 +530,14 @@ func TestCIComponentPayloadArchiveAndCanceledFetchCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	resultIndex, metadata := ciTestMetadata(t, client, repository, ref)
+	result, err := client.ReadCIResult(t.Context(), repository, ref, CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1})
+	if err != nil || result.Archive == nil {
+		t.Fatal("component result lost its original archive descriptor", err)
+	}
+	if len(resultIndex.Manifests) != 2 || !content.Equal(resultIndex.Manifests[1], result.Output) || len(metadata.Layers) != 1 || !content.Equal(metadata.Layers[0], *result.Archive) {
+		t.Fatal("component output and archive use the wrong OCI child roles")
+	}
 	payload, err := client.FetchCIPayload(t.Context(), repository, ref, CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1}, filepath.Join(t.TempDir(), "component"))
 	if err != nil {
 		t.Fatal(err)
@@ -412,6 +558,23 @@ func TestCIComponentPayloadArchiveAndCanceledFetchCleanup(t *testing.T) {
 	if err != nil || restoredIndex.Digest != auxDesc.Digest {
 		t.Fatal("component auxiliary root lost", err)
 	}
+	mu.Lock()
+	blockedArchive = "/v2/results/blobs/" + result.Archive.Digest.String()
+	mu.Unlock()
+	missingParent := t.TempDir()
+	if _, err := client.FetchCIPayload(t.Context(), repository, ref, CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1}, filepath.Join(missingParent, "missing-archive")); err == nil {
+		t.Fatal("missing original component archive was substituted")
+	}
+	mu.Lock()
+	requests := blockedRequests
+	blockedArchive = ""
+	mu.Unlock()
+	if requests == 0 {
+		t.Fatal("missing archive test did not reach the actual archive blob")
+	}
+	if entries, err := os.ReadDir(missingParent); err != nil || len(entries) != 0 {
+		t.Fatal("failed archive fetch left payload staging", entries, err)
+	}
 	parent := t.TempDir()
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -429,9 +592,13 @@ func TestCIResultMissingPayloadAndCorruptMetadataFailClosed(t *testing.T) {
 	var mu sync.Mutex
 	blocked := ""
 	corrupt := ""
+	corruptReads := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		missing, bad := blocked, corrupt
+		if bad != "" && r.URL.Path == bad && r.Method == http.MethodGet {
+			corruptReads++
+		}
 		mu.Unlock()
 		if missing != "" && r.URL.Path == missing {
 			http.NotFound(w, r)
@@ -453,16 +620,21 @@ func TestCIResultMissingPayloadAndCorruptMetadataFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	expect := CIResultExpectation{Scope: scope, Producer: "build", MaxAttempt: 1}
+	_, metadata := ciTestMetadata(t, client, repository, ref)
 	mu.Lock()
-	corrupt = "/v2/results/manifests/" + strings.Split(ref, "@")[1]
+	corrupt = "/v2/results/blobs/" + metadata.Config.Digest.String()
 	mu.Unlock()
 	if _, err := client.ReadCIResult(t.Context(), repository, ref, expect); err == nil {
 		t.Fatal("corrupt exact metadata accepted")
 	}
 	mu.Lock()
+	reads := corruptReads
 	corrupt = ""
 	blocked = "/v2/results/manifests/" + root
 	mu.Unlock()
+	if reads == 0 {
+		t.Fatal("corrupt metadata test did not reach the actual record blob")
+	}
 	target := filepath.Join(t.TempDir(), "missing")
 	if _, err := client.FetchCIPayload(t.Context(), repository, ref, expect, target); err == nil {
 		t.Fatal("missing payload substituted")

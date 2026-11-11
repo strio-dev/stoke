@@ -21,11 +21,11 @@ import (
 const CIComponentArchiveType = "application/vnd.strio.stoke.ci.component.archive.v1+tar"
 
 const (
-	CIResultType          = "application/vnd.strio.stoke.ci.result.v1"
-	CIInputSetType        = "application/vnd.strio.stoke.ci.inputs.v1"
+	CIResultType          = "application/vnd.strio.stoke.ci.result.v2"
+	CIInputSetType        = "application/vnd.strio.stoke.ci.inputs.v2"
 	ciResultConfigType    = CIResultType + "+json"
 	ciInputSetConfigType  = CIInputSetType + "+json"
-	CIVersion             = 1
+	CIVersion             = 2
 	MaxCIBindings         = 4096
 	MaxCIMetadataBytes    = 4 << 20
 	ciComponentType       = "application/vnd.coopr.strio.dev.component.v1+json"

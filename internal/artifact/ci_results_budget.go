@@ -116,6 +116,26 @@ func preflightCIPayload(ctx context.Context, base oras.ReadOnlyTarget, root v1.D
 	return source, nil
 }
 
+// ORAS 2.7 filters foreign successors even with a custom FindSuccessors. Its
+// classifier is internal; copying these four known leaves as roots preserves
+// complete canonical payloads without changing the ordinary layer copy path.
+//
+//nolint:staticcheck // Imported OCI nondistributable payloads must remain complete.
+func (s *ciPayloadSource) copyForeignLayers(ctx context.Context, destination content.Storage) error {
+	for _, node := range s.allowed {
+		switch node.MediaType {
+		case v1.MediaTypeImageLayerNonDistributable,
+			v1.MediaTypeImageLayerNonDistributableGzip,
+			v1.MediaTypeImageLayerNonDistributableZstd,
+			"application/vnd.docker.image.rootfs.foreign.diff.tar.gzip":
+			if err := oras.CopyGraph(ctx, s, destination, node, oras.DefaultCopyGraphOptions); err != nil {
+				return err
+			}
+		}
+	}
+	return ctx.Err()
+}
+
 type ciGraphMetadataFetcher struct{ source *ciPayloadSource }
 
 func (f ciGraphMetadataFetcher) Fetch(ctx context.Context, node v1.Descriptor) (io.ReadCloser, error) {

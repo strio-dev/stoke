@@ -72,7 +72,7 @@ func RenderGitHub(p *Plan, planPath string) ([]byte, error) {
 	jobs := yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 	all := []string{"stoke_context"}
 	add := func(id string, job githubJob) error {
-		if p.Config.JobContainerImage != "" {
+		if p.Config.JobContainerImage != "" && id != "stoke_result" {
 			job.Container = &githubContainer{Image: p.Config.JobContainerImage, Options: p.Config.JobContainerOptions}
 			if p.Config.GitHubTokenAuth && strings.HasPrefix(p.Config.JobContainerImage, "ghcr.io/") {
 				job.Container.Credentials = map[string]string{
@@ -202,9 +202,15 @@ rmdir -- "$STOKE_GHCR_AUTH_DIR"`,
 		}
 		all = append(all, group.ID)
 	}
+	// GitHub owns these finite job statuses; checking them needs no tools image,
+	// registry credentials or runner provisioning.
+	success := make([]string, 0, len(all))
+	for _, id := range all {
+		success = append(success, "needs."+id+".result == 'success'")
+	}
 	if err := add("stoke_result", githubJob{Name: "Stoke result", Needs: all, If: "${{ !cancelled() }}", RunsOn: p.Config.Runners, TimeoutMinutes: p.Config.TimeoutMinutes,
-		Env:   map[string]string{"STOKE_CI_RESULTS": "${{ toJSON(needs.*.result) }}"},
-		Steps: []githubStep{{Name: "Require every generated job to succeed", Shell: "bash", Run: `stoke ci verify-results --results "$STOKE_CI_RESULTS"`}},
+		Env:   map[string]string{"STOKE_CI_SUCCESS": "${{ " + strings.Join(success, " && ") + " }}"},
+		Steps: []githubStep{{Name: "Require every generated job to succeed", Shell: "bash", Run: `test "$STOKE_CI_SUCCESS" = true`}},
 	}); err != nil {
 		return nil, err
 	}

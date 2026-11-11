@@ -145,14 +145,7 @@ func TestCICleanupRejectsUnverifiedMetadataBeforeAnyWrite(t *testing.T) {
 				t.Fatal(err)
 			}
 			if mode == "manifest subject" || mode == "wrong config type" {
-				data, err := fetch(t.Context(), repo, descriptor, MaxCIMetadataBytes)
-				if err != nil {
-					t.Fatal(err)
-				}
-				var manifest v1.Manifest
-				if err := json.Unmarshal(data, &manifest); err != nil {
-					t.Fatal(err)
-				}
+				index, manifest := ciTestMetadata(t, client, repository, ref)
 				if mode == "manifest subject" {
 					subject, err := repo.Resolve(t.Context(), payload)
 					if err != nil {
@@ -162,11 +155,20 @@ func TestCICleanupRejectsUnverifiedMetadataBeforeAnyWrite(t *testing.T) {
 				} else {
 					manifest.Config.MediaType = "application/vnd.example.invalid.config.v1+json"
 				}
-				data, err = json.Marshal(manifest)
+				data, err := json.Marshal(manifest)
 				if err != nil {
 					t.Fatal(err)
 				}
-				descriptor = content.NewDescriptorFromBytes(v1.MediaTypeImageManifest, data)
+				metadata := content.NewDescriptorFromBytes(v1.MediaTypeImageManifest, data)
+				if err := repo.Push(t.Context(), metadata, bytes.NewReader(data)); err != nil {
+					t.Fatal(err)
+				}
+				index.Manifests[0] = metadata
+				data, err = json.Marshal(index)
+				if err != nil {
+					t.Fatal(err)
+				}
+				descriptor = content.NewDescriptorFromBytes(v1.MediaTypeImageIndex, data)
 				if err := repo.Push(t.Context(), descriptor, bytes.NewReader(data)); err != nil {
 					t.Fatal(err)
 				}
