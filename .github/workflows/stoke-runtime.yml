@@ -3,67 +3,25 @@ on:
   push:
     branches: [initial]
   workflow_dispatch:
+    inputs:
+      scenario:
+        description: Prepared batch case; execution remains disabled pending approval
+        type: choice
+        options: [roundtrip, failure]
+        default: roundtrip
 permissions:
   contents: read
 jobs:
-  default-container:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
+  dogfood:
+    # Deliberate hard stop: batch runtime and registry writes are not approved yet.
+    # Approval must also replace packages:read with packages:write in both callers.
+    if: ${{ false && github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' }}
     permissions:
       contents: read
       packages: read
-    container:
-      image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
-      options: --security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Build and run the packaged static Stoke binary with the approved Buildah profile
-        shell: bash
-        run: |
-          id
-          grep -E '^(NoNewPrivs|Seccomp|CapEff|CapBnd):' /proc/self/status
-          if test -r /proc/self/attr/current; then cat /proc/self/attr/current; fi
-          stoke version
-          "${STOKE_COOPR_BINARY:-coopr}" --version
-          work=$(mktemp -d "$RUNNER_TEMP/stoke-default.XXXXXXXX")
-          mkdir "$work/context"
-          cp "$(dirname "$(readlink -f "$(command -v stoke)")")/.stoke-wrapped" "$work/context/stoke"
-          cat > "$work/context/stoke.yaml" <<'YAML'
-          version: 1
-          tasks:
-            probe:
-              image: scratch
-              cache: false
-              steps:
-                - copy: {sources: [stoke], destination: /stoke}
-                - run: [/stoke, version]
-          YAML
-          status=0
-          timeout --signal=TERM --kill-after=10s 120s stoke run \
-            -f "$work/context/stoke.yaml" --context "$work/context" \
-            --no-cache --network none --cache-dir "$work/cache" --output "$work/output" \
-            > "$work/report.json" || status=$?
-          cat "$work/report.json"
-          printf 'Workload exit status: %s\n' "$status"
-          if test "$status" -ne 0; then exit "$status"; fi
-          python3 - "$work" <<'PY'
-          import hashlib, json, pathlib, sys
-          work = pathlib.Path(sys.argv[1])
-          report = json.loads((work / "report.json").read_text())
-          assert report["status"] == "passed" and len(report["tasks"]) == 1, report
-          task = report["tasks"][0]
-          assert task["status"] == "passed" and task["digest"], task
-          original = (work / "context/stoke").read_bytes()
-          exported = (pathlib.Path(task["filesystem"]) / "stoke").read_bytes()
-          assert original == exported, "Exported binary differs from tested input"
-          print(json.dumps({"digest": task["digest"], "binarySHA256": hashlib.sha256(exported).hexdigest()}))
-          PY
+    uses: ./.github/workflows/stoke-dogfood.yml
+    with:
+      scenario: ${{ inputs.scenario }}
   runtime:
     if: ${{ github.event_name == 'push' }}
     strategy:

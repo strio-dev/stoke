@@ -1,7 +1,7 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "5b012829918b7eee9d4695e2415cf8dd382f18021d4d1a5609fdc628d99f3829",
+  "id": "abd1e528d7f61bac7ca6f1a6e98662f4980cdd7a251aaaa22e12996a48c8f11d",
   "config": {
     "workflow": "examples/ci/stoke.yaml",
     "context": ".",
@@ -14,7 +14,7 @@
     ],
     "timeoutMinutes": 45
   },
-  "workflowDigest": "33d18645ec819165d8f4b41aa480d1bdb8b8e86089723e01c3e779fbadaf0d51",
+  "workflowDigest": "878a328f919e09c4e7e71fdbdaba0d9aa0ebeae771f8a342eb96f28bc61fbcd4",
   "engine": {
     "apiVersion": 1,
     "capabilities": [

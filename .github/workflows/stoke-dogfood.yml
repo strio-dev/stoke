@@ -1,86 +1,69 @@
-# Prepared only: do not push or dispatch until Coopr editing and review are finished.
+# Reusable preparation only. The registered runtime entry remains disabled
+# until the bounded container/registry batch is explicitly approved.
 name: Stoke dogfood
 on:
-  workflow_dispatch:
+  workflow_call:
     inputs:
-      results_repository:
-        description: Authorized OCI repository for exact Stoke results
-        required: true
-        type: string
-      cache_repository:
-        description: Authorized OCI cache repository already recorded in the generated plan
-        required: true
-        type: string
-      expected_stoke_sha256:
-        description: Reviewed provisioned Stoke executable SHA256 for this qualification
-        required: true
-        type: string
-      expected_coopr_sha256:
-        description: Reviewed provisioned Coopr executable SHA256 for this qualification
+      scenario:
+        description: roundtrip or intentional failure; retries use native job reruns
         required: true
         type: string
 permissions:
   contents: read
+  packages: read
 jobs:
   validate-generated:
-    runs-on: [self-hosted, linux]
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: read
     env:
-      STOKE_EXPECTED_SHA256: ${{ inputs.expected_stoke_sha256 }}
-      COOPR_EXPECTED_SHA256: ${{ inputs.expected_coopr_sha256 }}
-      STOKE_CACHE_REPOSITORY: ${{ inputs.cache_repository }}
+      STOKE_SCENARIO: ${{ inputs.scenario }}
+    container:
+      image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify provisioned development executables and cache configuration
+      - name: Verify the reviewed generated pairs without executing tasks
         shell: bash
         run: |
-          python3 - <<'PY'
-          import hashlib
-          import json
-          import os
-          import pathlib
-          import re
-          import shutil
-          import subprocess
-
-          evidence = {"uid": os.getuid(), "executables": {}}
-          selected = {
-              "stoke": ("stoke", "STOKE_EXPECTED_SHA256", ["version"]),
-              "coopr": (os.environ.get("STOKE_COOPR_BINARY") or "coopr", "COOPR_EXPECTED_SHA256", ["--version"]),
-          }
-          for name, (command, expected_var, arguments) in selected.items():
-              expected = os.environ[expected_var]
-              if not re.fullmatch(r"[0-9a-f]{64}", expected):
-                  raise SystemExit(f"{expected_var} must be a reviewed lowercase SHA256")
-              located = shutil.which(command)
-              if located is None:
-                  raise SystemExit(f"Missing provisioned executable: {name}")
-              path = pathlib.Path(located).resolve(strict=True)
-              actual = hashlib.sha256(path.read_bytes()).hexdigest()
-              if actual != expected:
-                  raise SystemExit(f"Provisioned {name} does not match the reviewed candidate")
-              subprocess.run([str(path), *arguments], check=True)
-              evidence["executables"][name] = {"path": str(path), "sha256": actual}
-          plan = json.loads(pathlib.Path(".stoke/ci-plan.json").read_text())
-          repository = os.environ["STOKE_CACHE_REPOSITORY"]
-          config = plan["config"]
-          if config.get("cacheFrom") != [repository] or config.get("cacheTo") != [repository]:
-              raise SystemExit("Regenerate the plan locally with this explicit cache repository before the authorized push")
-          if config.get("resultsRepository"):
-              raise SystemExit("This caller requires generation with a call-time results_repository input")
-          evidence["plan"] = plan["id"]
-          print(json.dumps(evidence, sort_keys=True))
-          PY
-      - name: Verify generated plan and workflow
-        shell: bash
-        run: |
-          stoke ci generate --check -f examples/ci/stoke.yaml --context . \
-            --cache-from "$STOKE_CACHE_REPOSITORY" \
-            --cache-to "$STOKE_CACHE_REPOSITORY" package
-  stoke:
+          case "$STOKE_SCENARIO" in
+            roundtrip|failure) ;;
+            *) printf 'Unknown qualification scenario\n' >&2; exit 2 ;;
+          esac
+          common=(--context . --runner ubuntu-24.04 --timeout 45
+            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
+            --job-container-options '--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined'
+            --github-token-auth
+            --cache-to ghcr.io/strio-dev/stoke-qualification-tools
+            --results-repository ghcr.io/strio-dev/stoke-qualification-tools)
+          stoke ci generate --check "${common[@]}" -f examples/ci/stoke.yaml \
+            --plan-output .stoke/hosted-cold.json --output .github/workflows/hosted-cold.generated.yml package
+          stoke ci generate --check "${common[@]}" -f examples/ci/stoke.yaml \
+            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            --plan-output .stoke/hosted-warm.json --output .github/workflows/hosted-warm.generated.yml package
+          stoke ci generate --check "${common[@]}" -f examples/ci/failure.yaml \
+            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            --plan-output .stoke/hosted-failure.json --output .github/workflows/hosted-failure.generated.yml package
+  cold:
+    if: ${{ inputs.scenario == 'roundtrip' }}
     needs: [validate-generated]
-    uses: ./.github/workflows/stoke.generated.yml
-    with:
-      results_repository: ${{ inputs.results_repository }}
+    uses: ./.github/workflows/hosted-cold.generated.yml
+  warm:
+    needs: [cold]
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        invocation: [first, second]
+    name: Warm / ${{ matrix.invocation }}
+    uses: ./.github/workflows/hosted-warm.generated.yml
+  failure:
+    if: ${{ inputs.scenario == 'failure' }}
+    needs: [validate-generated]
+    uses: ./.github/workflows/hosted-failure.generated.yml

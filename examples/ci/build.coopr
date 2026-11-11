@@ -4,7 +4,7 @@ from "docker.io/library/golang:1.27@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb
     copy "go.mod" "go.sum" "/workspace/"
     copy "cmd" "/workspace/cmd"
     copy "internal" "/workspace/internal"
-    run "go build -mod=readonly -trimpath -o /stoke ./cmd/stoke"
+    run "go build -mod=readonly -trimpath -o /stoke ./cmd/stoke && echo STOKE_BUILD_EXECUTED && sha256sum /stoke"
 }
 
 from "scratch" as="binary" {

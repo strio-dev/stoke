@@ -59,4 +59,10 @@ tasks:
           from: build
           sources: [/stoke]
           destination: /dist/stoke
-      - run: [/dist/stoke, version]
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            printf 'STOKE_PACKAGED_BINARY_SHA256=%s\n' "$(sha256sum /dist/stoke | cut -d ' ' -f 1)"
+            /dist/stoke version

@@ -1,0 +1,35 @@
+# Deliberately fails one fresh matrix variant. Native CI must skip package.
+version: 1
+tasks:
+  build:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    steps:
+      - run: [sh, -eu, -c, "printf 'public synthetic input\n' > /value"]
+  checks:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    needs: [build]
+    cache: false
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        check: [pass, fail]
+    steps:
+      - copy: {from: build, sources: [/value], destination: /value}
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            test "$(cat /value)" = 'public synthetic input'
+            case "$STOKE_MATRIX_CHECK" in
+              pass) printf 'STOKE_GATE_PASSED\n' ;;
+              fail) printf 'STOKE_EXPECTED_TEST_FAILURE\n'; exit 23 ;;
+              *) exit 2 ;;
+            esac
+  package:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    needs: [checks]
+    steps:
+      - copy: {from: build, sources: [/value], destination: /value}
+      - run: [sh, -eu, -c, "echo STOKE_UNEXPECTED_PACKAGE_EXECUTION"]
