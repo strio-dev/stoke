@@ -23,6 +23,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          enable_kvm: false
       - name: Build the tools image for the measured runner identity
         shell: bash
         run: |

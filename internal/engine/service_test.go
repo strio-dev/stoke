@@ -32,7 +32,14 @@ func TestServiceHelper(t *testing.T) {
 		}
 	}
 	if record := os.Getenv("STOKE_ENGINE_SOCKET_RECORD"); record != "" {
-		_ = os.WriteFile(record, []byte(socket), 0600)
+		// The parent cancels startup once this record appears. Publish the complete
+		// path atomically so its cleanup assertion inspects the socket directory.
+		if err := os.WriteFile(record+".tmp", []byte(socket), 0600); err != nil {
+			os.Exit(6)
+		}
+		if err := os.Rename(record+".tmp", record); err != nil {
+			os.Exit(6)
+		}
 	}
 	if os.Getenv("STOKE_ENGINE_HELPER_MODE") == "exit" {
 		os.Exit(23)
@@ -199,6 +206,9 @@ waiting:
 			var err error
 			socket, err = os.ReadFile(record)
 			if err == nil {
+				if !filepath.IsAbs(string(socket)) || filepath.Base(string(socket)) != "api.sock" {
+					t.Fatalf("invalid service helper socket record: %q", socket)
+				}
 				break waiting
 			}
 			if !errors.Is(err, os.ErrNotExist) {

@@ -26,16 +26,48 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
-      - name: Verify runner mapping helpers and install the checked Coopr package
+      - name: Inspect native runner prerequisites without changing security settings
         shell: bash
         run: |
-          test "$(id -u)" -ne 0
           id
+          uname -a
+          printf 'Runner image: %s %s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          test "$(id -u)" -ne 0
+          for setting in /proc/sys/kernel/unprivileged_userns_clone \
+            /proc/sys/kernel/apparmor_restrict_unprivileged_userns \
+            /proc/sys/user/max_user_namespaces \
+            /sys/kernel/security/lsm /sys/module/apparmor/parameters/enabled; do
+            if test -r "$setting"; then
+              printf '%s=' "$setting"
+              cat "$setting"
+            fi
+          done
+          grep -E '^(NoNewPrivs|Seccomp|CapEff|CapBnd):' /proc/self/status
+          cat /proc/self/uid_map /proc/self/gid_map
+          if test -r /proc/self/attr/current; then cat /proc/self/attr/current; fi
+          user=$(id -un)
+          uid=$(id -u)
+          for file in /etc/subuid /etc/subgid; do
+            if test -r "$file"; then awk -F: -v user="$user" -v uid="$uid" '$1 == user || $1 == uid' "$file"; fi
+          done
           for helper in newuidmap newgidmap; do
             path=$(command -v "$helper")
             stat -c '%a %u %g %n' "$path"
           done
+          if ! unshare --user --map-root-user /bin/true; then
+            echo '::error::Runner denies unprivileged user namespace creation. Native container qualification is blocked.'
+            exit 1
+          fi
+          if ! unshare --user --map-root-user unshare --mount /bin/true; then
+            echo '::error::Runner denies mount namespace creation inside a user namespace. Native container qualification is blocked.'
+            exit 1
+          fi
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          enable_kvm: false
+      - name: Verify and install the checked Coopr package
+        shell: bash
+        run: |
           mkdir -m 700 "$RUNNER_TEMP/coopr-package"
           archive="$RUNNER_TEMP/coopr-linux-$COOPR_ARCH.tar.gz"
           curl --fail --location --retry 3 \
@@ -59,6 +91,14 @@ jobs:
             GOMAXPROCS=1 GOMEMLIMIT=768MiB GOFLAGS=-p=1 \
             go test -count=1 -v -timeout=12m -parallel=1 ./internal/artifact \
               -run '^(TestMountsAndEnvironmentsWithCoopr|TestRegistryCacheWithCoopr|TestCIRegistryCacheRoundTripWithCoopr)$'
+      - name: Read bounded kernel denial context
+        if: failure()
+        shell: bash
+        run: |
+          if ! journalctl --kernel --boot --since '10 minutes ago' --no-pager -n 120 \
+            --grep 'apparmor|DENIED|SECCOMP|unshare'; then
+            echo 'Kernel denial context is unavailable or has no matching readable entries.'
+          fi
       - name: Record bounded runtime summaries
         if: always()
         shell: bash
