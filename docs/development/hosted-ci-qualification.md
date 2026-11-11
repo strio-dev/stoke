@@ -101,7 +101,19 @@ use no relaxed container profile and disable both the installer's KVM setup
 and optional runner trust grant. They publish only to the existing private tools
 package, under distinct `tools-ARCH-SOURCE-RUN-ATTEMPT` tags. Record each source
 and returned manifest digest, then regenerate all five caller pairs before
-runtime qualification. ARM preparation
+runtime qualification. Candidate preparation
+[run 43098487812](https://github.com/strio-dev/stoke/actions/runs/43098487812)
+passed on both native architectures from public Stoke commit
+`943bc2f63ca9f1024d714c1524e2d11eb9ea624a`. The candidate image digests are:
+
+| Native architecture | Manifest digest |
+| --- | --- |
+| AMD64 | `sha256:f5e75f8840b97176502ffd45542026072bddad705bc88c9285b51acc789f67f0` |
+| ARM64 | `sha256:05413ec4b4845db9983b059c34785ccb321ad78c8ac04fb9ef891cb097befa96` |
+
+Both reside in the existing private `stoke-qualification-tools` package.
+Image publication establishes packaging, not a successful runtime roundtrip.
+Historical ARM preparation
 [run 43083643695](https://github.com/strio-dev/stoke/actions/runs/43083643695)
 published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c346907fa89f88ad85500d`:
 
