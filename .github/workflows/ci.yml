@@ -24,5 +24,6 @@ jobs:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           enable_kvm: false
+          set_as_trusted_user: false
       - name: Check workflows and docs
         run: nix flake check --no-update-lock-file --print-build-logs path:.
