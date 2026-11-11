@@ -1,5 +1,4 @@
-# Reusable preparation only. The registered runtime entry remains disabled
-# until the bounded container/registry batch is explicitly approved.
+# Called only by the manually selected, approved bounded qualification batch.
 name: Stoke dogfood
 on:
   workflow_call:
@@ -10,7 +9,7 @@ on:
         type: string
 permissions:
   contents: read
-  packages: read
+  packages: write
 jobs:
   validate-generated:
     runs-on: ubuntu-24.04

@@ -35,7 +35,7 @@ retries, concurrent invocations or ARM. The profile uses the runner's existing
 or host provisioning. GitHub still supplies its normal job-container mounts,
 including the Docker socket and runner workspace.
 
-## Dormant container-first preparation
+## Native caller and batch bounds
 
 The preparation uses three generator-owned plan/workflow pairs:
 
@@ -52,20 +52,37 @@ fixture. The real workflow's test/vet matrix remains fresh. Each invocation
 gets its own scope, and each job gets independent native/cache/output stores.
 The generic example and host-workflow pairs remain separate.
 
-The `dogfood` entry job in the registered `.github/workflows/stoke-runtime.yml`
-is held behind a hard-false condition. Batch execution and registry writes remain
-disabled, and `packages: read` remains in place in both callers until a concrete
-batch is approved. Preparing or validating these files does not authorize a
-dispatch, rerun, package write, image publication or security-policy change.
+The registered `.github/workflows/stoke-runtime.yml` admits these cases only
+through manual dispatch on `strio-dev/stoke`'s `initial` branch. `prepare-arm`
+selects the separate image-preparation caller; other scenarios go through the
+dogfood caller, whose validation rejects unknown names before admitting tasks.
+Push branch changes with `[skip ci]` during qualification to avoid starting the
+unrelated push-triggered native runtime matrix.
+
+The approved batch contains six full invocations and three selective native
+reruns, with a ceiling of 54 container-job starts, two concurrent workflows,
+matrix parallelism two, 45-minute job limits and four hours from its first
+execution. The `roundtrip` case combines cold and concurrent warm AMD64 runs;
+`failure` must fail one fresh matrix variant and skip package. Native ARM cold
+and warm calls require their own pinned tools image. Count actual job starts
+across every attempt. Select retry jobs inside the first warm invocation;
+rerunning cold also admits its dependent warm calls and exceeds that retry plan.
+Provider fanout is qualification evidence, not a guaranteed count. Stop further
+admission on unexpected failure or fanout rather than silently retrying.
 
 Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
 with `--runner ubuntu-24.04`, the digest and exact options above, and
 `--github-token-auth`. These settings cover generated setup, execution and
 final-gate jobs. The caller's validation job uses the same image with default
 container security options and does not execute nested tasks. Reuse the AMD64
-digest; `stoke-tools-prepare.yml` remains build-only. There is no ARM digest or
-ARM plan pair yet. Native ARM image building and publication into the same
-private tools package require authorization before preparing those pairs.
+digest. `prepare-arm` builds one native ARM64 image with the existing recipe,
+public Stoke source and Coopr commit
+`35871e4b01e60657b45fd17e04ac1db119f839e6`. It uses a normal hosted job, not a
+relaxed job container, and disables both the installer's KVM setup and optional
+runner trust grant. Its only publication destination is the existing private
+tools package, under a distinct `tools-arm64-SOURCE-RUN-ATTEMPT` tag. Record the
+source and returned manifest digest before generating ARM calls. Do not reuse
+the AMD64 digest as an ARM image or create a new package or multiarch index.
 
 Validate workflow files from the repository root with their actual context:
 
@@ -93,10 +110,17 @@ transport and Coopr cache access. It also supplies credentials for the private
 tools-image pull before steps start. Authentication in validation alone does not
 authenticate other jobs.
 
-The caller owns package access and any approved `packages: write` permission;
+The execution callers grant `contents: read` and `packages: write`; the
+validation job retains `packages: read`. These are short-lived GitHub job tokens,
+not new PATs or persistent scope changes. The pinned Nix installer also uses
+that job's token for GitHub source retrieval on the disposable image-build
+runner; do not print its configuration. The caller owns package access and
+any approved `packages: write` permission;
 the generator grants neither access nor authorization to publish. Package
 visibility remains a GitHub setting, independent of image labels and token
-scopes. Keep credentials out of plans, URLs, command arguments and logs. Missing
+scopes. Verify that the existing package is accessible and private before writes;
+missing or public metadata is not permission to bootstrap a package. Keep
+credentials out of plans, URLs, command arguments and logs. Missing
 or masked native outputs must fail clearly. See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
 
 ## Hosted cases to record
@@ -114,7 +138,7 @@ or masked native outputs must fail clearly. See [GHCR authentication](https://do
 | Retention | Selected exact references remain readable throughout retries; no objects are deleted by this batch. |
 
 These are acceptance requirements, not results of generator checks or short
-tests. The dormant cold/warm/failure paths do not by themselves qualify selective
+tests. The cold/warm/failure paths do not by themselves qualify selective
 reruns, missing-result handling, producer-rerun conflicts or ARM execution.
 
 GitHub combines matrix outputs and warns that duplicate names can be overwritten
@@ -129,7 +153,7 @@ failure and an explicit producer/dependent-gates rerun. See
 
 Developer reports may be exported separately after review. No CI artifact
 upload/download or successful-status object is required for internal data flow.
-Dispatches and reruns remain held until their complete batch is approved.
+Dispatches and reruns require approval for their complete bounded batch.
 
 ## GHCR cleanup qualification boundary
 

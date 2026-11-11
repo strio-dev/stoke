@@ -1,62 +1,127 @@
+# One native ARM64 image preparation job. The registered caller owns approval
+# and the manual private-package/tag preflight before invoking this workflow.
 name: Stoke tools preparation
 on:
-  workflow_dispatch:
+  workflow_call:
+    outputs:
+      image:
+        description: Digest-pinned ARM64 tools image
+        value: ${{ jobs.arm64.outputs.image }}
+      digest:
+        description: Published ARM64 manifest digest
+        value: ${{ jobs.arm64.outputs.digest }}
+      tag:
+        description: Unique ARM64 preparation tag
+        value: ${{ jobs.arm64.outputs.tag }}
 permissions:
   contents: read
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-      matrix:
-        include:
-          - os: ubuntu-24.04
-            system: x86_64-linux
-          - os: ubuntu-24.04-arm
-            system: aarch64-linux
-    runs-on: ${{ matrix.os }}
+  arm64:
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
-    env:
-      STOKE_TOOLS_SYSTEM: ${{ matrix.system }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+      digest: ${{ steps.publish.outputs.digest }}
+      tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+      - name: Require the approved native runner identity and source
+        shell: bash
+        run: |
+          test "$(id -u):$(id -g)" = 1001:1001
+          test "$(uname -m)" = aarch64
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           enable_kvm: false
-      - name: Build the tools image for the measured runner identity
+          set_as_trusted_user: false
+      - id: build
+        name: Build one ARM64 tools image and upstream transfer tools
         shell: bash
         run: |
-          STOKE_TOOLS_UID=$(id -u)
-          STOKE_TOOLS_GID=$(id -g)
-          export STOKE_TOOLS_UID STOKE_TOOLS_GID
-          id
-          nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
-            --out-link "$RUNNER_TEMP/stoke-tools" --expr '
-              let
-                stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-                coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
-              in stoke.lib.mkContainer {
-                cooprFlake = coopr;
-                system = builtins.getEnv "STOKE_TOOLS_SYSTEM";
-                uid = builtins.fromJSON (builtins.getEnv "STOKE_TOOLS_UID");
-                gid = builtins.fromJSON (builtins.getEnv "STOKE_TOOLS_GID");
-              }'
-          python3 - <<'PY'
+          tools_dir=$(mktemp -d "$RUNNER_TEMP/stoke-tools-arm64.XXXXXXXX")
+          printf 'directory=%s\n' "$tools_dir" >> "$GITHUB_OUTPUT"
+          cat > "$tools_dir/tools.nix" <<'NIX'
+          let
+            stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
+            coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
+            pkgs = import stoke.inputs.nixpkgs { system = "aarch64-linux"; };
+            backend = import coopr.inputs.nix2container { inherit pkgs; };
+            image = stoke.lib.mkContainer {
+              cooprFlake = coopr;
+              system = "aarch64-linux";
+              uid = 1001;
+              gid = 1001;
+            };
+          in { inherit image; copyTo = image.copyTo; skopeo = backend.skopeo-nix2container; }
+          NIX
+          for attribute in image copyTo skopeo; do
+            nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
+              --file "$tools_dir/tools.nix" "$attribute" --out-link "$tools_dir/$attribute"
+          done
+      - id: publish
+        name: Publish and inspect the single ARM64 manifest
+        env:
+          TOOLS_DIR: ${{ steps.build.outputs.directory }}
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        shell: bash
+        run: |
+          umask 077
+          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr-arm64.XXXXXXXX")
+          printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
+          auth_file="$auth_dir/auth.json"
+          trap 'rm -f -- "$auth_file"' EXIT
+          skopeo="$TOOLS_DIR/skopeo/bin/skopeo"
+          printf '%s' "$GHCR_TOKEN" | "$skopeo" login \
+            --authfile "$auth_file" --username "$GHCR_USER" --password-stdin ghcr.io > /dev/null
+          chmod 600 "$auth_file"
+          repository=ghcr.io/strio-dev/stoke-qualification-tools
+          tag="tools-arm64-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          "$TOOLS_DIR/copyTo/bin/copy-to" --quiet --dest-authfile "$auth_file" \
+            --digestfile "$TOOLS_DIR/published.digest" --format oci "docker://$repository:$tag"
+          digest=$(cat "$TOOLS_DIR/published.digest")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          "$skopeo" inspect --authfile "$auth_file" --raw \
+            "docker://$repository:$tag" > "$TOOLS_DIR/manifest.json"
+          "$skopeo" inspect --authfile "$auth_file" --config \
+            "docker://$repository@$digest" > "$TOOLS_DIR/config.json"
+          python3 - "$TOOLS_DIR" "$digest" "$tag" <<'PYTHON'
           import hashlib
           import json
           import os
           from pathlib import Path
-          import subprocess
+          import sys
 
-          descriptor = Path(os.environ["RUNNER_TEMP"]) / "stoke-tools"
+          directory = Path(sys.argv[1])
+          digest, tag = sys.argv[2:]
+          manifest_bytes = (directory / "manifest.json").read_bytes()
+          assert "sha256:" + hashlib.sha256(manifest_bytes).hexdigest() == digest
+          manifest = json.loads(manifest_bytes)
+          assert manifest["schemaVersion"] == 2
+          assert manifest["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
+          config = json.loads((directory / "config.json").read_text())
+          assert config["os"] == "linux" and config["architecture"] == "arm64"
+          assert config["config"]["User"] == "1001:1001"
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"image=ghcr.io/strio-dev/stoke-qualification-tools@{digest}\n")
+              output.write(f"digest={digest}\ntag={tag}\n")
           print(json.dumps({
-              "source": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
-              "system": os.environ["STOKE_TOOLS_SYSTEM"],
-              "uid": os.getuid(),
-              "gid": os.getgid(),
-              "descriptorSHA256": hashlib.sha256(descriptor.read_bytes()).hexdigest(),
-              "descriptor": str(descriptor.resolve()),
+              "source": os.environ["GITHUB_SHA"], "system": "aarch64-linux",
+              "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
           }, sort_keys=True))
-          PY
+          PYTHON
+      - name: Remove only this job's temporary registry credentials
+        if: ${{ always() && steps.publish.outputs.directory != '' }}
+        env:
+          AUTH_DIR: ${{ steps.publish.outputs.directory }}
+        shell: bash
+        run: |
+          rm -f -- "$AUTH_DIR/auth.json"
+          rmdir -- "$AUTH_DIR"
