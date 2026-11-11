@@ -95,7 +95,7 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          if ! journalctl --kernel --boot --since '10 minutes ago' --no-pager -n 120 \
+          if ! journalctl -k --boot --since '10 minutes ago' --no-pager -n 120 \
             --grep 'apparmor|DENIED|SECCOMP|unshare'; then
             echo 'Kernel denial context is unavailable or has no matching readable entries.'
           fi
