@@ -26,6 +26,7 @@ STOKE_INPUTS = [
     "CONTRIBUTING.md", "scripts/nix-workflow.py", "scripts/run-nix-check.py",
     "scripts/test-nix-workflow.py", "scripts/cache-performance.py",
     "scripts/tests/test_cache_performance.py",
+    "scripts/check-ghcr-qualification.py", "scripts/tests/test_ghcr_qualification.py",
 ]
 
 

@@ -1,0 +1,141 @@
+name: Stoke private registry qualification
+on:
+  workflow_call:
+permissions:
+  contents: read
+jobs:
+  publish:
+    if: ${{ github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Recheck the approved package before any registry write
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/check-ghcr-qualification.py stoke-qualification-tools --allow-absent
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          enable_kvm: false
+      - name: Build the reviewed image and upstream transfer tools
+        shell: bash
+        run: |
+          test "$(id -u):$(id -g)" = 1001:1001
+          cat > "$RUNNER_TEMP/tools.nix" <<'NIX'
+          let
+            stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
+            coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
+            pkgs = import stoke.inputs.nixpkgs { system = "x86_64-linux"; };
+            backend = import coopr.inputs.nix2container { inherit pkgs; };
+            image = stoke.lib.mkContainer {
+              cooprFlake = coopr;
+              system = "x86_64-linux";
+              uid = 1001;
+              gid = 1001;
+            };
+          in { inherit image; copyTo = image.copyTo; skopeo = backend.skopeo-nix2container; }
+          NIX
+          for attr in image copyTo skopeo; do
+            nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
+              --file "$RUNNER_TEMP/tools.nix" "$attr" --out-link "$RUNNER_TEMP/$attr"
+          done
+      - id: publish
+        name: Publish only the approved private tools destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+        shell: bash
+        run: |
+          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr.XXXXXXXX")
+          printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
+          printf '%s' "$GH_TOKEN" | "$RUNNER_TEMP/skopeo/bin/skopeo" login \
+            --authfile "$auth_dir/auth.json" --username "$GHCR_USER" --password-stdin ghcr.io
+          repository=ghcr.io/strio-dev/stoke-qualification-tools
+          tag="$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-amd64"
+          python3 scripts/check-ghcr-qualification.py stoke-qualification-tools --allow-absent
+          "$RUNNER_TEMP/copyTo/bin/copy-to" --dest-authfile "$auth_dir/auth.json" \
+            --digestfile "$RUNNER_TEMP/published.digest" --format oci "docker://$repository:$tag"
+          python3 scripts/check-ghcr-qualification.py stoke-qualification-tools
+          digest=$(cat "$RUNNER_TEMP/published.digest")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          printf 'image=%s@%s\n' "$repository" "$digest" >> "$GITHUB_OUTPUT"
+          printf 'Published private image %s@%s\n' "$repository" "$digest"
+      - name: Remove only this job's temporary credentials
+        if: ${{ always() && steps.publish.outputs.directory != '' }}
+        env:
+          AUTH_DIR: ${{ steps.publish.outputs.directory }}
+        run: |
+          rm -f -- "$AUTH_DIR/auth.json"
+          rmdir -- "$AUTH_DIR"
+  readback:
+    needs: [publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          enable_kvm: false
+      - name: Provision the upstream read-only transfer tool
+        shell: bash
+        run: |
+          nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
+            --out-link "$RUNNER_TEMP/skopeo" --expr '
+              let
+                stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
+                coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
+                pkgs = import stoke.inputs.nixpkgs { system = "x86_64-linux"; };
+              in (import coopr.inputs.nix2container { inherit pkgs; }).skopeo-nix2container'
+      - id: read
+        name: Fetch the exact private digest with this job's read-only token
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.actor }}
+          IMAGE: ${{ needs.publish.outputs.image }}
+        shell: bash
+        run: |
+          [[ "$IMAGE" =~ ^ghcr\.io/strio-dev/stoke-qualification-tools@sha256:[0-9a-f]{64}$ ]]
+          python3 scripts/check-ghcr-qualification.py stoke-qualification-tools
+          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr.XXXXXXXX")
+          printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
+          printf '%s' "$GH_TOKEN" | "$RUNNER_TEMP/skopeo/bin/skopeo" login \
+            --authfile "$auth_dir/auth.json" --username "$GHCR_USER" --password-stdin ghcr.io
+          "$RUNNER_TEMP/skopeo/bin/skopeo" --insecure-policy copy \
+            --src-authfile "$auth_dir/auth.json" --preserve-digests \
+            "docker://$IMAGE" "oci-archive:$RUNNER_TEMP/readback.tar:tools"
+          "$RUNNER_TEMP/skopeo/bin/skopeo" inspect --authfile "$auth_dir/auth.json" \
+            --raw "docker://$IMAGE" > "$RUNNER_TEMP/manifest.json"
+          printf '%s  %s\n' "${IMAGE##*@sha256:}" "$RUNNER_TEMP/manifest.json" | sha256sum --check
+          "$RUNNER_TEMP/skopeo/bin/skopeo" inspect --config \
+            "oci-archive:$RUNNER_TEMP/readback.tar:tools" > "$RUNNER_TEMP/config.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          config = json.loads((Path(os.environ["RUNNER_TEMP"]) / "config.json").read_text())
+          assert config["os"] == "linux" and config["architecture"] == "amd64"
+          assert config["config"]["User"] == "1001:1001"
+          assert config["config"]["Entrypoint"] == ["/bin/bash"]
+          assert not config["config"].get("Volumes")
+          assert "BUILDAH_ISOLATION=rootless" in config["config"]["Env"]
+          print(json.dumps({"image": os.environ["IMAGE"], "privateDigestReadback": "passed", "imageExecuted": False}))
+          PY
+      - name: Remove only this job's temporary credentials
+        if: ${{ always() && steps.read.outputs.directory != '' }}
+        env:
+          AUTH_DIR: ${{ steps.read.outputs.directory }}
+        run: |
+          rm -f -- "$AUTH_DIR/auth.json"
+          rmdir -- "$AUTH_DIR"

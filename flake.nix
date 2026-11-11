@@ -101,12 +101,15 @@
                       ./scripts/test-nix-workflow.py
                       ./scripts/cache-performance.py
                       ./scripts/tests/test_cache_performance.py
+                      ./scripts/check-ghcr-qualification.py
+                      ./scripts/tests/test_ghcr_qualification.py
                     ];
                   };
                 }
                 ''
                   python3 -B "$src/scripts/test-nix-workflow.py"
                   python3 -B "$src/scripts/tests/test_cache_performance.py"
+                  python3 -B "$src/scripts/tests/test_ghcr_qualification.py"
                   touch "$out"
                 '';
             workflows = pkgs.runCommand "stoke-workflows" { nativeBuildInputs = [ pkgs.actionlint ]; } ''

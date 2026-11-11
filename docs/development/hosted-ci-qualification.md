@@ -11,9 +11,48 @@ and reviewed executable hashes, and installs nothing. Existing
 GHCR behavior, hosted runner capabilities or GitHub retry-output retention.
 
 GitHub's manual-run interface requires the workflow on the default branch.
-While `main` contains only a stub README, a hosted qualification from `initial`
-needs an explicitly enabled push caller on that branch. Enable publication or
-container security options only after approval for their concrete targets.
+While `main` contains only a stub README, an already registered workflow can be
+dispatched through the API against `initial`. Unregistered, dispatch-only files
+cannot bootstrap themselves. Enable publication or container security options
+only after approval for their concrete targets.
+
+## Private tools-image transport
+
+The registered `ci.yml` has an explicit `registry_qualification` dispatch input,
+disabled by default. When enabled on `strio-dev/stoke`'s `initial` branch, ordinary
+checks must pass before the reusable `stoke-registry-qualification.yml` starts.
+It builds the AMD64 tools image, publishes only to
+`ghcr.io/strio-dev/stoke-qualification-tools`, and fetches the emitted immutable
+manifest digest on a fresh hosted job. It never loads or starts the image.
+
+Before the first publication, an authorized organization-wide inventory must
+confirm the approved name is unused. The workflow's explicit bootstrap check
+allows a 404; that repository-scoped response alone does not prove absence.
+GitHub documents new container packages as private by default. The post-write
+check requires private visibility and association with `strio-dev/stoke` before
+emitting the digest or admitting the read-only consumer. Unexpected metadata
+stops the run; it changes no package permissions or visibility and deletes nothing.
+
+The writer uses its short-lived job token with `packages: write`; the independent
+consumer has `packages: read` and its own temporary auth file. These permissions
+apply to the whole job. Trusted source, fixed destinations and dispatch/ref guards
+constrain the qualification; GitHub does not scope the token to a repository-name
+allowlist. No CLI credential is passed into a workflow. Package access inheritance
+is separate from visibility; GitHub warns that linking a private package to a
+public repository can also permit fork access.
+
+For an authorized run:
+
+```sh
+gh workflow run ci.yml --repo strio-dev/stoke --ref initial \
+  -f registry_qualification=true
+```
+
+Successful publication/readback proves private registry transport and static
+image configuration, not nested Coopr execution, generated job-container startup
+or Coopr registry-cache reuse. Cache/results packages are not written by this
+tools-only qualifier. Their host/container workflow gates remain separate. The
+current image and hosted AppArmor execution restrictions remain in force.
 
 The opt-in [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
 is now available. It covers every generated job, but does not rewrite this
