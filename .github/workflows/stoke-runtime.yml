@@ -7,7 +7,7 @@ on:
       scenario:
         description: Approved bounded batch case; retries use selected native job IDs
         type: choice
-        options: [prepare-arm, roundtrip, failure]
+        options: [prepare-arm, roundtrip, failure, arm-roundtrip]
         default: roundtrip
 permissions:
   contents: read

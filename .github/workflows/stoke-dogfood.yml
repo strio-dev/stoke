@@ -4,7 +4,7 @@ on:
   workflow_call:
     inputs:
       scenario:
-        description: roundtrip or intentional failure; retries use native job reruns
+        description: AMD or ARM roundtrip, or intentional failure; retries use native job IDs
         required: true
         type: string
 permissions:
@@ -12,6 +12,9 @@ permissions:
   packages: write
 jobs:
   validate-generated:
+    # ARM uses the same frozen candidate validated locally and in the AMD run.
+    # It starts only its fourteen generated jobs within the approved budget.
+    if: ${{ inputs.scenario != 'arm-roundtrip' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -35,20 +38,28 @@ jobs:
             roundtrip|failure) ;;
             *) printf 'Unknown qualification scenario\n' >&2; exit 2 ;;
           esac
-          common=(--context . --runner ubuntu-24.04 --timeout 45
-            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
-            --job-container-options '--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined'
+          common=(--context . --timeout 45
+            --job-container-options '--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw'
             --github-token-auth
             --cache-to ghcr.io/strio-dev/stoke-qualification-tools
             --results-repository ghcr.io/strio-dev/stoke-qualification-tools)
-          stoke ci generate --check "${common[@]}" -f examples/ci/stoke.yaml \
+          amd=(--runner ubuntu-24.04
+            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7)
+          arm=(--runner ubuntu-24.04-arm
+            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:dc7e3f11e097922e8ba5b5f9bb14e9853f5ba0ad12590622d3e1140657aec71d)
+          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/stoke.yaml \
             --plan-output .stoke/hosted-cold.json --output .github/workflows/hosted-cold.generated.yml package
-          stoke ci generate --check "${common[@]}" -f examples/ci/stoke.yaml \
+          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/stoke.yaml \
             --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
             --plan-output .stoke/hosted-warm.json --output .github/workflows/hosted-warm.generated.yml package
-          stoke ci generate --check "${common[@]}" -f examples/ci/failure.yaml \
+          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/failure.yaml \
             --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
             --plan-output .stoke/hosted-failure.json --output .github/workflows/hosted-failure.generated.yml package
+          stoke ci generate --check "${common[@]}" "${arm[@]}" -f examples/ci/stoke.yaml \
+            --plan-output .stoke/hosted-arm-cold.json --output .github/workflows/hosted-arm-cold.generated.yml package
+          stoke ci generate --check "${common[@]}" "${arm[@]}" -f examples/ci/stoke.yaml \
+            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            --plan-output .stoke/hosted-arm-warm.json --output .github/workflows/hosted-arm-warm.generated.yml package
   cold:
     if: ${{ inputs.scenario == 'roundtrip' }}
     needs: [validate-generated]
@@ -66,3 +77,9 @@ jobs:
     if: ${{ inputs.scenario == 'failure' }}
     needs: [validate-generated]
     uses: ./.github/workflows/hosted-failure.generated.yml
+  arm-cold:
+    if: ${{ inputs.scenario == 'arm-roundtrip' }}
+    uses: ./.github/workflows/hosted-arm-cold.generated.yml
+  arm-warm:
+    needs: [arm-cold]
+    uses: ./.github/workflows/hosted-arm-warm.generated.yml

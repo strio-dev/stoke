@@ -35,15 +35,25 @@ retries, concurrent invocations or ARM. The profile uses the runner's existing
 or host provisioning. GitHub still supplies its normal job-container mounts,
 including the Docker socket and runner workspace.
 
+The first online cold build in [run 43084980426](https://github.com/strio-dev/stoke/actions/runs/43084980426)
+failed before Go execution because Pasta could not open `/dev/net/tun` in the
+outer container. The approved continuation appends only
+`--device=/dev/net/tun:/dev/net/tun:rw` to the three options above. It preserves
+private RUN networking, without added capabilities or privileged mode. Device
+exposure is a separate approval from the earlier offline test; its successful
+use remains to be qualified. Do not substitute host networking on failure.
+
 ## Native caller and batch bounds
 
-The preparation uses three generator-owned plan/workflow pairs:
+The preparation uses three AMD64 and two ARM64 generator-owned plan/workflow pairs:
 
 | Case | Plan | Generated workflow |
 | --- | --- | --- |
 | Cold | `.stoke/hosted-cold.json` | `.github/workflows/hosted-cold.generated.yml` |
 | Warm | `.stoke/hosted-warm.json` | `.github/workflows/hosted-warm.generated.yml` |
 | Failure | `.stoke/hosted-failure.json` | `.github/workflows/hosted-failure.generated.yml` |
+| ARM cold | `.stoke/hosted-arm-cold.json` | `.github/workflows/hosted-arm-cold.generated.yml` |
+| ARM warm | `.stoke/hosted-arm-warm.json` | `.github/workflows/hosted-arm-warm.generated.yml` |
 
 The reusable native caller, `.github/workflows/stoke-dogfood.yml`, prepares a
 `roundtrip` path with one cold invocation followed by two concurrent warm
@@ -59,10 +69,15 @@ dogfood caller, whose validation rejects unknown names before admitting tasks.
 Push branch changes with `[skip ci]` during qualification to avoid starting the
 unrelated push-triggered native runtime matrix.
 
-The approved batch contains six full invocations and three selective native
-reruns, with a ceiling of 54 container-job starts, two concurrent workflows,
-matrix parallelism two, 45-minute job limits and four hours from its first
-execution. The `roundtrip` case combines cold and concurrent warm AMD64 runs;
+The original batch ceiling remains 54 container-job starts, including the four
+already consumed by the failed path. Its deadline remains
+**2026-11-11 23:03:49 UTC**. The continuation plans six full invocations and two
+selective native reruns, omitting the producer rerun: 48 new job slots and 52
+total including the failed starts. It retains two concurrent workflows, matrix
+parallelism two and 45-minute job limits. Before a selective rerun, reserve its
+whole original workflow's possible fanout; omit remaining optional cases if
+actual use consumes their budget, and report that gap. Never reset the counter
+or deadline. The `roundtrip` case combines cold and concurrent warm AMD64 runs;
 `failure` must fail one fresh matrix variant and skip package. Native ARM cold
 and warm calls require their own pinned tools image. Count actual job starts
 across every attempt. Select retry jobs inside the first warm invocation;
@@ -81,8 +96,18 @@ public Stoke source and Coopr commit
 relaxed job container, and disables both the installer's KVM setup and optional
 runner trust grant. Its only publication destination is the existing private
 tools package, under a distinct `tools-arm64-SOURCE-RUN-ATTEMPT` tag. Record the
-source and returned manifest digest before generating ARM calls. Do not reuse
-the AMD64 digest as an ARM image or create a new package or multiarch index.
+source and returned manifest digest before generating ARM calls. ARM preparation
+[run 43083643695](https://github.com/strio-dev/stoke/actions/runs/43083643695)
+published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c346907fa89f88ad85500d`:
+
+```text
+ghcr.io/strio-dev/stoke-qualification-tools@sha256:dc7e3f11e097922e8ba5b5f9bb14e9853f5ba0ad12590622d3e1140657aec71d
+```
+
+The ARM cold/warm pairs pin that digest and the TUN-only continuation profile.
+Reuse the published image; a runtime device mapping requires no image rebuild.
+Do not reuse the AMD64 digest as an ARM image or create a new package or multiarch
+index. ARM runtime success remains separate from image publication.
 
 Validate workflow files from the repository root with their actual context:
 
@@ -132,7 +157,7 @@ or masked native outputs must fail clearly. See [GHCR authentication](https://do
 | Failed test | The native matrix/group fails and blocks package; existing result objects do not assert success. |
 | Consumer-only retry | Reuse an explicitly supplied prior-attempt reference in the same scope, or fail clearly if GitHub omits it. |
 | Partial matrix retry | Preserve every unique variant output; missing/masked metadata fails without scanning registry tags. |
-| Producer rerun | New execution bindings conflict with old tests, even for identical bytes; deliberately rerun dependent gates. |
+| Producer rerun | New execution bindings conflict with old tests, even for identical bytes; deliberately rerun dependent gates. Omitted from this continuation's hosted budget. |
 | Concurrent invocations | Separate invocation scopes; no mutable latest/winner lookup; no output-key collisions. |
 | Missing result | A cache miss may execute a producer before gates; a missing exact consumer result must not replay it after tests. |
 | Retention | Selected exact references remain readable throughout retries; no objects are deleted by this batch. |

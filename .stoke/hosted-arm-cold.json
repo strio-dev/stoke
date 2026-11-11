@@ -1,0 +1,185 @@
+{
+  "version": 2,
+  "generatedBy": "stoke-ci",
+  "id": "21e2c5173a350b43513dacd1b52d639033a9adb647add9a290a712e11456cbb4",
+  "config": {
+    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:dc7e3f11e097922e8ba5b5f9bb14e9853f5ba0ad12590622d3e1140657aec71d",
+    "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
+    "githubTokenAuth": true,
+    "workflow": "examples/ci/stoke.yaml",
+    "context": ".",
+    "targets": [
+      "package"
+    ],
+    "runners": [
+      "ubuntu-24.04-arm"
+    ],
+    "timeoutMinutes": 45,
+    "cacheTo": [
+      "ghcr.io/strio-dev/stoke-qualification-tools"
+    ],
+    "resultsRepository": "ghcr.io/strio-dev/stoke-qualification-tools"
+  },
+  "workflowDigest": "878a328f919e09c4e7e71fdbdaba0d9aa0ebeae771f8a342eb96f28bc61fbcd4",
+  "engine": {
+    "apiVersion": 1,
+    "capabilities": [
+      "build",
+      "execute",
+      "registry-cache",
+      "run-mounts"
+    ],
+    "productionPin": null,
+    "pinStatus": "Unpinned: supply a compatible explicitly selected executable; production distribution remains separate."
+  },
+  "groups": [
+    {
+      "id": "stoke_44575cf5b28512d7",
+      "name": "build",
+      "members": [
+        "build"
+      ],
+      "maxParallel": 1,
+      "failFast": true,
+      "matrix": false,
+      "jobs": [
+        {
+          "id": "build",
+          "task": "build",
+          "execute": [
+            "build"
+          ],
+          "exports": [
+            "build"
+          ],
+          "outputKey": "result_44575cf5b28512d75644bf54a517dcef304ff809fd511747621b4d64f19aac66"
+        }
+      ]
+    },
+    {
+      "id": "stoke_07023f7e377c6e28",
+      "name": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
+      "members": [
+        "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+      ],
+      "needs": [
+        "stoke_44575cf5b28512d7"
+      ],
+      "maxParallel": 1,
+      "failFast": true,
+      "matrix": false,
+      "jobs": [
+        {
+          "id": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
+          "task": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
+          "execute": [
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "exports": [
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "outputKey": "result_07023f7e377c6e28ac96606f29f563d33c110b63c7e4a608381deeb54abcfb85"
+        }
+      ]
+    },
+    {
+      "id": "stoke_961f787b0cd3443f",
+      "name": "checks",
+      "members": [
+        "checks"
+      ],
+      "needs": [
+        "stoke_07023f7e377c6e28",
+        "stoke_44575cf5b28512d7"
+      ],
+      "maxParallel": 2,
+      "failFast": false,
+      "matrix": true,
+      "jobs": [
+        {
+          "id": "checks--matrix-4469f0f617a4dc89",
+          "task": "checks",
+          "matrix": {
+            "check": "test"
+          },
+          "data": [
+            "build",
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "execute": [
+            "checks--matrix-4469f0f617a4dc89"
+          ],
+          "imports": [
+            "build",
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "outputKey": "result_e699141d2be82d0897d0197dbcca7cd26da122c1e8327b12e175cb16dbe947af"
+        },
+        {
+          "id": "checks--matrix-ab15af8b1932820b",
+          "task": "checks",
+          "matrix": {
+            "check": "vet"
+          },
+          "data": [
+            "build",
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "execute": [
+            "checks--matrix-ab15af8b1932820b"
+          ],
+          "imports": [
+            "build",
+            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+          ],
+          "outputKey": "result_1680f2d5891188f61fd5a1cf0295139eaf8f2da005924c9f8478ea483d37c8f0"
+        }
+      ]
+    },
+    {
+      "id": "stoke_bc4a71180870f794",
+      "name": "package",
+      "members": [
+        "package"
+      ],
+      "needs": [
+        "stoke_44575cf5b28512d7",
+        "stoke_961f787b0cd3443f"
+      ],
+      "maxParallel": 1,
+      "failFast": true,
+      "matrix": false,
+      "jobs": [
+        {
+          "id": "package",
+          "task": "package",
+          "data": [
+            "build"
+          ],
+          "execute": [
+            "package"
+          ],
+          "imports": [
+            "build"
+          ],
+          "outputKey": "result_bc4a71180870f7945155fbb02f4b0a2e3faa2a62d6d31b7039013055ed19869a"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
+    "Every generated job runs in the explicitly selected tools image. The Linux Docker runner, image architecture, runner-owned file access and nested OCI security profile must be qualified separately; generation installs nothing and adds no container options implicitly.",
+    "GitHub.com reusable workflows only; GitHub Enterprise Server and native ARM/restricted-runner execution are not qualified.",
+    "Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
+    "Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
+    "Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
+    "Co-location is explicit. The ordinary scheduler preserves internal gates and matrix policy; shared inline environments spanning jobs become visible producer jobs. Coopr cache volumes remain disposable acceleration.",
+    "The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
+    "Host tasks execute inside the job container, not on the outer runner. Caller opt-in and capability attestations still apply. Image pull credentials must be available before job steps; workflow registry credentials remain separate."
+  ],
+  "environments": {
+    "stoke-environment-dbb8cb6dd8acde94bac6afb8": "checks--matrix-4469f0f617a4dc89"
+  },
+  "requiresResults": true
+}
