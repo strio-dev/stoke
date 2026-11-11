@@ -71,40 +71,65 @@ The generic example and host-workflow pairs remain separate.
 The registered `.github/workflows/stoke-runtime.yml` admits these cases only
 through manual dispatch on `strio-dev/stoke`'s `initial` branch. `prepare-images`
 selects the separate image-preparation caller; other scenarios go through the
-dogfood caller, whose validation rejects unknown names before admitting tasks.
+dogfood caller using native conditions and dependencies. The registered dispatch
+choice list selects the intended scenarios; arbitrary direct reusable-call
+strings select no jobs.
 Push branch changes with `[skip ci]` during qualification to avoid starting the
 unrelated push-triggered native runtime matrix.
 
-The original batch ceiling remains 54 container-job starts, including eight
-already consumed by the two failed paths. Its deadline remains
-**2026-11-11 23:03:49 UTC**. The remaining core plan reserves 22 starts for AMD64
-cold and two concurrent warm invocations, 14 for ARM cold/warm, and seven for the
-intentional failure: at most 43 new starts and 51 cumulative. It retains two
-concurrent workflows, matrix parallelism two and 45-minute job limits.
+The original batch ceiling remains 54 container-job starts, including 13
+already consumed by failed or cancelled paths. Removing the duplicate
+regeneration-validation container jobs leaves at most 21 starts for AMD64 cold
+and two concurrent warm invocations, 14 for ARM cold/warm, and six for intentional
+failure: 41 new starts and 54 cumulative. Native producer, matrix, package and
+final-result gates remain.
+Local regeneration checks still cover all five plan/workflow pairs.
 
-Selective retries are omitted from this reduced plan. Three nominally spare
-slots do not safely cover provider rerun fanout. A future rerun requires reserving
-its whole original workflow's possible fanout and dropping other cases if needed;
-never reset the counter or deadline. The failure case must fail one fresh matrix
-variant and skip package. Count actual job starts across every attempt and stop
-further admission on unexpected failure or fanout rather than silently retrying.
+No selective retry belongs to this continuation. Keep two concurrent workflows
+and matrix parallelism two. Image preparation has an 18-minute job limit;
+subsequent runtime pairs use regenerated 45-minute job limits. Job limits do not
+bound queued time. The former drain time and absolute deadline have been removed;
+the start ceiling and concurrency limits remain. Report omitted cases, never
+reset counts, and stop on unexpected failure. The failure case must fail a fresh
+variant and skip package. This change adds no security permissions or options.
 
 Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
 with `--runner ubuntu-24.04`, the new candidate digest, the three security
 options plus the approved TUN mapping, and `--github-token-auth`. These settings cover generated setup, execution and
-final-gate jobs. The caller's validation job uses the same image with default
-container security options and does not execute nested tasks. Keep the older
+final-gate jobs. Regeneration is checked locally; the duplicate hosted validator
+is removed. Keep the older
 digests only as historical evidence. `prepare-images` builds matching native
 AMD64 and ARM64 images with the existing recipe, public Stoke source and Coopr
-commit `2f371c53c4f406c705f2311088dfd213968a9c04`. Its two normal hosted jobs
+commit `9e0866d7760def6b1358f7034540d6c243cb8017` (the clean OCI-index cache
+candidate in Coopr PR #24). Its two normal hosted jobs
 use no relaxed container profile and disable both the installer's KVM setup
 and optional runner trust grant. They publish only to the existing private tools
 package, under distinct `tools-ARCH-SOURCE-RUN-ATTEMPT` tags. Record each source
 and returned manifest digest, then regenerate all five caller pairs before
-runtime qualification. Candidate preparation
+runtime qualification.
+
+Preparation [run 43112061076](https://github.com/strio-dev/stoke/actions/runs/43112061076)
+passed on both native architectures from public Stoke source
+`f8276ef44c942666ff298882fb62fb7b11d55fe2`, using Coopr
+`9e0866d7760def6b1358f7034540d6c243cb8017`. Its v2 cache candidate images are:
+
+| Native architecture | Manifest digest |
+| --- | --- |
+| AMD64 | `sha256:61c24faa149c212ad4a87e5e6b0835c46371ba85daadd4cd61801d833e4bf480` |
+| ARM64 | `sha256:875e36d66d5e10ff394f1a262f463c76ab0408d47f8a7e63b13ccb009a349d7a` |
+
+Both reside in the existing private `stoke-qualification-tools` package.
+Image publication establishes packaging. At this checkpoint, runtime roundtrip
+qualification remains pending. Native ARM roundtrip
+[run 43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943)
+is in progress at Stoke commit `207f8dd7b249f3cf9cb55a7de078cb2b1a2022d9`.
+Its already-dispatched plans retain their seven-minute job limits; the subsequent
+45-minute plans do not alter that run.
+
+Historical preparation
 [run 43098487812](https://github.com/strio-dev/stoke/actions/runs/43098487812)
 passed on both native architectures from public Stoke commit
-`943bc2f63ca9f1024d714c1524e2d11eb9ea624a`. The candidate image digests are:
+`943bc2f63ca9f1024d714c1524e2d11eb9ea624a`. Its superseded v1 cache image digests were:
 
 | Native architecture | Manifest digest |
 | --- | --- |
@@ -112,7 +137,10 @@ passed on both native architectures from public Stoke commit
 | ARM64 | `sha256:05413ec4b4845db9983b059c34785ccb321ad78c8ac04fb9ef891cb097befa96` |
 
 Both reside in the existing private `stoke-qualification-tools` package.
-Image publication establishes packaging, not a successful runtime roundtrip.
+Those images do not contain the v2 cache implementation. Native ARM
+[run 43101790380](https://github.com/strio-dev/stoke/actions/runs/43101790380)
+completed the Go build but failed bulk cache upload at the old metadata replay
+bound; the companion AMD run was cancelled before its build acquired a runner.
 Historical ARM preparation
 [run 43083643695](https://github.com/strio-dev/stoke/actions/runs/43083643695)
 published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c346907fa89f88ad85500d`:
@@ -134,9 +162,12 @@ stoke check -f examples/ci/stoke.yaml --context .
 stoke check -f examples/ci/failure.yaml --context .
 ```
 
-The caller contains the complete `stoke ci generate --check` commands for all
-five pairs, also with `--context .`. Omitting that option selects the workflow
-directory and does not validate the real example's repository-root inputs.
+Run `stoke ci generate --check` for every pair in the table, using its reviewed
+image digest, runner, 45-minute timeout, approved options, token auth and
+cache directions. Cold omits `--cache-from`; warm and failure include it. Keep
+`--context .`: omitting it selects the workflow directory and does not validate
+the real example's repository-root inputs. See the generator examples in the
+[CI generation guide](../guides/ci-generation.md#opt-in-tools-containers).
 
 Cache directions are literal plan configuration. Configure cold cache export,
 warm cache import and exact-result storage explicitly. They may share one
@@ -150,11 +181,10 @@ must not remove them. The prepared batch performs no deletion.
 For an authorized GHCR batch, `--github-token-auth` uses each execution job's
 short-lived token through Coopr login and passes its private auth file to result
 transport and Coopr cache access. It also supplies credentials for the private
-tools-image pull before steps start. Authentication in validation alone does not
-authenticate other jobs.
+tools-image pull before steps start. Authentication in one job does not authenticate other jobs.
 
-The execution callers grant `contents: read` and `packages: write`; the
-validation job retains `packages: read`. These are short-lived GitHub job tokens,
+The execution callers grant `contents: read` and `packages: write`. These are
+short-lived GitHub job tokens,
 not new PATs or persistent scope changes. The caller owns package access and
 any approved `packages: write` permission;
 the generator grants neither access nor authorization to publish. Package
