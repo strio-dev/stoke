@@ -1,31 +1,35 @@
-# One native ARM64 image preparation job. The registered caller owns approval
+# Two native candidate-image preparation jobs. The caller owns approval
 # and the manual private-package/tag preflight before invoking this workflow.
 name: Stoke tools preparation
 on:
   workflow_call:
-    outputs:
-      image:
-        description: Digest-pinned ARM64 tools image
-        value: ${{ jobs.arm64.outputs.image }}
-      digest:
-        description: Published ARM64 manifest digest
-        value: ${{ jobs.arm64.outputs.digest }}
-      tag:
-        description: Unique ARM64 preparation tag
-        value: ${{ jobs.arm64.outputs.tag }}
 permissions:
   contents: read
 jobs:
-  arm64:
-    runs-on: ubuntu-24.04-arm
+  native:
+    name: ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - arch: amd64
+            system: x86_64-linux
+            machine: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            system: aarch64-linux
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      TOOLS_ARCH: ${{ matrix.arch }}
+      TOOLS_SYSTEM: ${{ matrix.system }}
+      TOOLS_MACHINE: ${{ matrix.machine }}
     timeout-minutes: 45
     permissions:
       contents: read
       packages: write
-    outputs:
-      image: ${{ steps.publish.outputs.image }}
-      digest: ${{ steps.publish.outputs.digest }}
-      tag: ${{ steps.publish.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,27 +39,27 @@ jobs:
         shell: bash
         run: |
           test "$(id -u):$(id -g)" = 1001:1001
-          test "$(uname -m)" = aarch64
+          test "$(uname -m)" = "$TOOLS_MACHINE"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           enable_kvm: false
           set_as_trusted_user: false
       - id: build
-        name: Build one ARM64 tools image and upstream transfer tools
+        name: Build the pinned native tools image and upstream transfer tools
         shell: bash
         run: |
-          tools_dir=$(mktemp -d "$RUNNER_TEMP/stoke-tools-arm64.XXXXXXXX")
+          tools_dir=$(mktemp -d "$RUNNER_TEMP/stoke-tools-${TOOLS_ARCH}.XXXXXXXX")
           printf 'directory=%s\n' "$tools_dir" >> "$GITHUB_OUTPUT"
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
-            pkgs = import stoke.inputs.nixpkgs { system = "aarch64-linux"; };
+            coopr = builtins.getFlake "github:strio-dev/coopr/2f371c53c4f406c705f2311088dfd213968a9c04";
+            pkgs = import stoke.inputs.nixpkgs { system = builtins.getEnv "TOOLS_SYSTEM"; };
             backend = import coopr.inputs.nix2container { inherit pkgs; };
             image = stoke.lib.mkContainer {
               cooprFlake = coopr;
-              system = "aarch64-linux";
+              system = builtins.getEnv "TOOLS_SYSTEM";
               uid = 1001;
               gid = 1001;
             };
@@ -66,7 +70,7 @@ jobs:
               --file "$tools_dir/tools.nix" "$attribute" --out-link "$tools_dir/$attribute"
           done
       - id: publish
-        name: Publish and inspect the single ARM64 manifest
+        name: Publish and inspect the native manifest
         env:
           TOOLS_DIR: ${{ steps.build.outputs.directory }}
           GHCR_TOKEN: ${{ github.token }}
@@ -74,7 +78,7 @@ jobs:
         shell: bash
         run: |
           umask 077
-          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr-arm64.XXXXXXXX")
+          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr-${TOOLS_ARCH}.XXXXXXXX")
           printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
           auth_file="$auth_dir/auth.json"
           trap 'rm -f -- "$auth_file"' EXIT
@@ -83,7 +87,7 @@ jobs:
             --authfile "$auth_file" --username "$GHCR_USER" --password-stdin ghcr.io > /dev/null
           chmod 600 "$auth_file"
           repository=ghcr.io/strio-dev/stoke-qualification-tools
-          tag="tools-arm64-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          tag="tools-${TOOLS_ARCH}-${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           "$TOOLS_DIR/copyTo/bin/copy-to" --quiet --dest-authfile "$auth_file" \
             --digestfile "$TOOLS_DIR/published.digest" --format oci "docker://$repository:$tag"
           digest=$(cat "$TOOLS_DIR/published.digest")
@@ -107,13 +111,14 @@ jobs:
           assert manifest["schemaVersion"] == 2
           assert manifest["mediaType"] == "application/vnd.oci.image.manifest.v1+json"
           config = json.loads((directory / "config.json").read_text())
-          assert config["os"] == "linux" and config["architecture"] == "arm64"
+          assert config["os"] == "linux" and config["architecture"] == os.environ["TOOLS_ARCH"]
           assert config["config"]["User"] == "1001:1001"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"image=ghcr.io/strio-dev/stoke-qualification-tools@{digest}\n")
               output.write(f"digest={digest}\ntag={tag}\n")
           print(json.dumps({
-              "source": os.environ["GITHUB_SHA"], "system": "aarch64-linux",
+              "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
+              "cooprSource": "2f371c53c4f406c705f2311088dfd213968a9c04",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
           }, sort_keys=True))
           PYTHON

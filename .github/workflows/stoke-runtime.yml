@@ -7,19 +7,19 @@ on:
       scenario:
         description: Approved bounded batch case; retries use selected native job IDs
         type: choice
-        options: [prepare-arm, roundtrip, failure, arm-roundtrip]
+        options: [prepare-images, roundtrip, failure, arm-roundtrip]
         default: roundtrip
 permissions:
   contents: read
 jobs:
-  prepare-arm:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'prepare-arm' }}
+  prepare-images:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'prepare-images' }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/stoke-tools-prepare.yml
   dogfood:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario != 'prepare-arm' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario != 'prepare-images' }}
     permissions:
       contents: read
       packages: write
