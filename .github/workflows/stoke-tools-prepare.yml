@@ -26,7 +26,7 @@ jobs:
       TOOLS_ARCH: ${{ matrix.arch }}
       TOOLS_SYSTEM: ${{ matrix.system }}
       TOOLS_MACHINE: ${{ matrix.machine }}
-    timeout-minutes: 45
+    timeout-minutes: 18
     permissions:
       contents: read
       packages: write
@@ -54,7 +54,7 @@ jobs:
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            coopr = builtins.getFlake "github:strio-dev/coopr/2f371c53c4f406c705f2311088dfd213968a9c04";
+            coopr = builtins.getFlake "github:strio-dev/coopr/9e0866d7760def6b1358f7034540d6c243cb8017";
             pkgs = import stoke.inputs.nixpkgs { system = builtins.getEnv "TOOLS_SYSTEM"; };
             backend = import coopr.inputs.nix2container { inherit pkgs; };
             image = stoke.lib.mkContainer {
@@ -118,7 +118,7 @@ jobs:
               output.write(f"digest={digest}\ntag={tag}\n")
           print(json.dumps({
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
-              "cooprSource": "2f371c53c4f406c705f2311088dfd213968a9c04",
+              "cooprSource": "9e0866d7760def6b1358f7034540d6c243cb8017",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
           }, sort_keys=True))
           PYTHON

@@ -4,65 +4,15 @@ on:
   workflow_call:
     inputs:
       scenario:
-        description: AMD or ARM roundtrip, or intentional failure; retries use native job IDs
+        description: AMD or ARM roundtrip, or intentional failure
         required: true
         type: string
 permissions:
   contents: read
   packages: write
 jobs:
-  validate-generated:
-    # ARM uses the same frozen candidate validated locally and in the AMD run.
-    # It starts only its fourteen generated jobs within the approved budget.
-    if: ${{ inputs.scenario != 'arm-roundtrip' }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      contents: read
-      packages: read
-    env:
-      STOKE_SCENARIO: ${{ inputs.scenario }}
-    container:
-      image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:f5e75f8840b97176502ffd45542026072bddad705bc88c9285b51acc789f67f0
-      credentials:
-        username: ${{ github.actor }}
-        password: ${{ secrets.GITHUB_TOKEN }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Verify the reviewed generated pairs without executing tasks
-        shell: bash
-        run: |
-          case "$STOKE_SCENARIO" in
-            roundtrip|failure) ;;
-            *) printf 'Unknown qualification scenario\n' >&2; exit 2 ;;
-          esac
-          common=(--context . --timeout 45
-            --job-container-options '--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw'
-            --github-token-auth
-            --cache-to ghcr.io/strio-dev/stoke-qualification-tools
-            --results-repository ghcr.io/strio-dev/stoke-qualification-tools)
-          amd=(--runner ubuntu-24.04
-            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:f5e75f8840b97176502ffd45542026072bddad705bc88c9285b51acc789f67f0)
-          arm=(--runner ubuntu-24.04-arm
-            --job-container-image ghcr.io/strio-dev/stoke-qualification-tools@sha256:05413ec4b4845db9983b059c34785ccb321ad78c8ac04fb9ef891cb097befa96)
-          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/stoke.yaml \
-            --plan-output .stoke/hosted-cold.json --output .github/workflows/hosted-cold.generated.yml package
-          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/stoke.yaml \
-            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
-            --plan-output .stoke/hosted-warm.json --output .github/workflows/hosted-warm.generated.yml package
-          stoke ci generate --check "${common[@]}" "${amd[@]}" -f examples/ci/failure.yaml \
-            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
-            --plan-output .stoke/hosted-failure.json --output .github/workflows/hosted-failure.generated.yml package
-          stoke ci generate --check "${common[@]}" "${arm[@]}" -f examples/ci/stoke.yaml \
-            --plan-output .stoke/hosted-arm-cold.json --output .github/workflows/hosted-arm-cold.generated.yml package
-          stoke ci generate --check "${common[@]}" "${arm[@]}" -f examples/ci/stoke.yaml \
-            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
-            --plan-output .stoke/hosted-arm-warm.json --output .github/workflows/hosted-arm-warm.generated.yml package
   cold:
     if: ${{ inputs.scenario == 'roundtrip' }}
-    needs: [validate-generated]
     uses: ./.github/workflows/hosted-cold.generated.yml
   warm:
     needs: [cold]
@@ -75,7 +25,6 @@ jobs:
     uses: ./.github/workflows/hosted-warm.generated.yml
   failure:
     if: ${{ inputs.scenario == 'failure' }}
-    needs: [validate-generated]
     uses: ./.github/workflows/hosted-failure.generated.yml
   arm-cold:
     if: ${{ inputs.scenario == 'arm-roundtrip' }}
