@@ -149,6 +149,12 @@ Nix daemon, CI runner or Node distribution bundled in the image. VFS storage
 avoids a FUSE device requirement, and `BUILDAH_ISOLATION=rootless` is explicit;
 the base image's chroot default is not inherited.
 
+The tools image rebuilds the selected Coopr package's existing Shadow helpers
+with libcap headers. This enables upstream's capability-aware setuid path for
+`newuidmap` and `newgidmap`; it does not change their root-owned `4755` image
+permissions or install file capabilities. The build checks that both helpers
+contain that path. Host permissions and container security options are unchanged.
+
 Select the Coopr release source and the measured runner UID/GID. This example
 builds from the Stoke checkout and the immutable source of Coopr `0.6.0`.
 
@@ -175,8 +181,12 @@ job container.
 The earlier tools image built from Coopr PR22 source passed local unprivileged
 tests of raw Node, packaged tools, control-job commands and writes to runner-style
 paths owned by UID 1001. Writes to UID 1000-owned paths failed with `EACCES`.
-The privileged Docker VM proof used a separate prototype. Execution of the
-release-based image, including nested OCI, remains unverified. Hosted
+The privileged Docker VM proof used a separate prototype. A later offline probe
+of the release-based image failed UID/GID map writes even with explicitly relaxed
+seccomp, AppArmor and system-path restrictions. Static inspection identified
+missing capability-aware helper code. The packaging correction still needs
+behavioral qualification; building or inspecting it does not establish successful
+nested OCI execution. Hosted
 qualification also covers checkout, the runner's read-only Node mount, image
 pull, registry credentials, cache and results, workflow cancellation and native
 ARM.

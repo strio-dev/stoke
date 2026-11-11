@@ -53,7 +53,32 @@ in
 nix2container.buildImage {
   name = "stoke-tools";
   tag = "dev";
-  fromImage = baseImage;
+  # Shadow enables its setuid/capability compatibility path when this header is
+  # available. Keep Coopr's pinned Shadow and its existing image permissions.
+  fromImage = baseImage.override (
+    baseArgs:
+    let
+      shadow = baseArgs.shadow.overrideAttrs (old: {
+        buildInputs = (old.buildInputs or [ ]) ++ [ baseArgs.pkgs.libcap ];
+        postInstall = (old.postInstall or "") + ''
+          for helper in newuidmap newgidmap; do
+            ${baseArgs.pkgs.buildPackages.binutils}/bin/readelf --wide --dyn-syms \
+              "$out/bin/$helper" > "$TMPDIR/$helper.symbols"
+            for symbol in prctl seteuid capset; do
+              grep -Eq "[[:space:]]UND[[:space:]]+$symbol(@|$)" "$TMPDIR/$helper.symbols"
+            done
+          done
+        '';
+      });
+    in
+    {
+      inherit shadow;
+      # Coopr identifies copied helper sources through pkgs.shadow for licensing.
+      pkgs = baseArgs.pkgs // {
+        inherit shadow;
+      };
+    }
+  );
   fromImageEnv = true;
   copyToRoot = [
     root
