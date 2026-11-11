@@ -1,0 +1,21 @@
+# Illustrative: replace with your reviewed Nix-enabled container image.
+# Requires a writable, tested Nix store inside Coopr's rootless containers.
+# This example has not been execution-qualified against a Nix container.
+version: 1
+
+tasks:
+  nix-build:
+    image: registry.example.com/team/nix-runner:reviewed
+    workdir: /work
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        output:
+          - packages.x86_64-linux.default
+          - checks.x86_64-linux.unit
+    steps:
+      - copy:
+          sources: [.]
+          destination: /work
+      - run: [sh, -eu, -c, 'nix build --extra-experimental-features "nix-command flakes" --no-link ".#$STOKE_MATRIX_OUTPUT"']

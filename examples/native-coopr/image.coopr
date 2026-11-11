@@ -1,0 +1,9 @@
+arg "COMPONENT"
+
+from "docker.io/library/busybox:1.37" as="release" {
+    arg "COMPONENT"
+    component "${COMPONENT}"
+    run {
+        exec "sh" "-eu" "-c" "tr a-z A-Z < /message.txt > /output.txt"
+    }
+}

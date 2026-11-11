@@ -1,0 +1,38 @@
+version: 1
+
+tasks:
+  component:
+    coopr:
+      kind: component
+      files: [component.coopr]
+      target: installed
+
+  build:
+    coopr:
+      files: [image.coopr]
+      target: release
+      args:
+        COMPONENT: {from: component}
+    outputs:
+      filesystem: false
+
+  test:
+    from: build
+    cache: false
+    steps:
+      - run: [sh, -eu, -c, 'test "$(cat /output.txt)" = "HELLO FROM NATIVE COOPR"']
+
+  artifact:
+    image: scratch
+    needs: [test]
+    steps:
+      - copy:
+          from: build
+          sources: [/output.txt]
+          destination: /output.txt
+
+  publish:
+    needs: [test]
+    publish:
+      from: build
+      destinations: [oci:/tmp/stoke-native-example-image]

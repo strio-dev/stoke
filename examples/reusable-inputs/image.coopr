@@ -1,0 +1,9 @@
+arg "VERSION"
+
+from "docker.io/library/busybox:1.37" as="release" {
+    arg "VERSION"
+    env VERSION="${VERSION}"
+    run {
+        exec "sh" "-eu" "-c" "mkdir -p /out; printenv VERSION > /out/version.txt"
+    }
+}

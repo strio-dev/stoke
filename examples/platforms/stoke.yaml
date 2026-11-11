@@ -1,0 +1,14 @@
+version: 1
+tasks:
+  test:
+    platform: {matrix: platform}
+    strategy:
+      matrix:
+        platform: [linux/amd64, linux/arm64]
+    environment:
+      files: [examples/platforms/environment.coopr]
+      target: test
+    cache: false
+    outputs: {filesystem: false}
+    steps:
+      - run: [sh, -eu, -c, 'printf "Target: %s\n" "$STOKE_MATRIX_PLATFORM"; uname -m; sh -c "exec uname -m"']

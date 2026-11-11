@@ -1,0 +1,16 @@
+.direnv/
+.cache/
+site/
+result
+result-*
+/bin/
+/coverage.out
+/dist/
+/nix/release-version
+/.omx/
+/evidence/
+/AGENTS.md
+/CONTEXT.md
+/*-VALIDATION.md
+__pycache__/
+*.py[cod]

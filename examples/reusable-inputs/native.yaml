@@ -1,0 +1,14 @@
+version: 1
+inputs:
+  version:
+    required: true
+assets:
+  - image.coopr
+tasks:
+  build:
+    coopr:
+      files: [image.coopr]
+      files-from: component
+      target: release
+      args:
+        VERSION: {input: version}

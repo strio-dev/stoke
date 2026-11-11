@@ -1,0 +1,86 @@
+# Prepared only: do not push or dispatch until Coopr editing and review are finished.
+name: Stoke dogfood
+on:
+  workflow_dispatch:
+    inputs:
+      results_repository:
+        description: Authorized OCI repository for exact Stoke results
+        required: true
+        type: string
+      cache_repository:
+        description: Authorized OCI cache repository already recorded in the generated plan
+        required: true
+        type: string
+      expected_stoke_sha256:
+        description: Reviewed provisioned Stoke executable SHA256 for this qualification
+        required: true
+        type: string
+      expected_coopr_sha256:
+        description: Reviewed provisioned Coopr executable SHA256 for this qualification
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate-generated:
+    runs-on: [self-hosted, linux]
+    timeout-minutes: 10
+    env:
+      STOKE_EXPECTED_SHA256: ${{ inputs.expected_stoke_sha256 }}
+      COOPR_EXPECTED_SHA256: ${{ inputs.expected_coopr_sha256 }}
+      STOKE_CACHE_REPOSITORY: ${{ inputs.cache_repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify provisioned development executables and cache configuration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+          import shutil
+          import subprocess
+
+          evidence = {"uid": os.getuid(), "executables": {}}
+          selected = {
+              "stoke": ("stoke", "STOKE_EXPECTED_SHA256", ["version"]),
+              "coopr": (os.environ.get("STOKE_COOPR_BINARY") or "coopr", "COOPR_EXPECTED_SHA256", ["--version"]),
+          }
+          for name, (command, expected_var, arguments) in selected.items():
+              expected = os.environ[expected_var]
+              if not re.fullmatch(r"[0-9a-f]{64}", expected):
+                  raise SystemExit(f"{expected_var} must be a reviewed lowercase SHA256")
+              located = shutil.which(command)
+              if located is None:
+                  raise SystemExit(f"Missing provisioned executable: {name}")
+              path = pathlib.Path(located).resolve(strict=True)
+              actual = hashlib.sha256(path.read_bytes()).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"Provisioned {name} does not match the reviewed candidate")
+              subprocess.run([str(path), *arguments], check=True)
+              evidence["executables"][name] = {"path": str(path), "sha256": actual}
+          plan = json.loads(pathlib.Path(".stoke/ci-plan.json").read_text())
+          repository = os.environ["STOKE_CACHE_REPOSITORY"]
+          config = plan["config"]
+          if config.get("cacheFrom") != [repository] or config.get("cacheTo") != [repository]:
+              raise SystemExit("Regenerate the plan locally with this explicit cache repository before the authorized push")
+          if config.get("resultsRepository"):
+              raise SystemExit("This caller requires generation with a call-time results_repository input")
+          evidence["plan"] = plan["id"]
+          print(json.dumps(evidence, sort_keys=True))
+          PY
+      - name: Verify generated plan and workflow
+        shell: bash
+        run: |
+          stoke ci generate --check -f examples/ci/stoke.yaml --context . \
+            --cache-from "$STOKE_CACHE_REPOSITORY" \
+            --cache-to "$STOKE_CACHE_REPOSITORY" package
+  stoke:
+    needs: [validate-generated]
+    uses: ./.github/workflows/stoke.generated.yml
+    with:
+      results_repository: ${{ inputs.results_repository }}

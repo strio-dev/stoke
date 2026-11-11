@@ -1,0 +1,26 @@
+version: 1
+
+tasks:
+  build:
+    image: docker.io/library/busybox:1.37
+    workdir: /work
+    steps:
+      - copy:
+          sources: [message.txt]
+          destination: /work/message.txt
+      - run: [sh, -eu, -c, 'mkdir -p /out; tr a-z A-Z < message.txt > /out/message.txt']
+
+  test:
+    from: build
+    cache: false
+    steps:
+      - run: [sh, -eu, -c, 'test "$(cat /out/message.txt)" = "HELLO FROM STOKE"']
+
+  artifact:
+    image: scratch
+    needs: [test]
+    steps:
+      - copy:
+          from: build
+          sources: [/out/message.txt]
+          destination: /message.txt

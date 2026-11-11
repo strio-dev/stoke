@@ -1,0 +1,175 @@
+{
+  "version": 2,
+  "generatedBy": "stoke-ci",
+  "id": "96399ebe875785f3e3009bebefdff486b189ad47393164187ae4aace389798b4",
+  "config": {
+    "workflow": ".stoke/nix-host.yaml",
+    "context": ".",
+    "targets": [
+      "nix-checks"
+    ],
+    "runners": [
+      "self-hosted",
+      "linux",
+      "x64",
+      "stoke-development"
+    ],
+    "timeoutMinutes": 45
+  },
+  "workflowDigest": "628265df9dd8ef7254c8483be7ed506b5936a9209017be5eedebe11f2af5bbb9",
+  "engine": {
+    "apiVersion": 1,
+    "capabilities": null,
+    "productionPin": null,
+    "pinStatus": "Coopr is not required for this host-only plan; container execution remains unpinned."
+  },
+  "groups": [
+    {
+      "id": "stoke_5475ca4bf071d39e",
+      "name": "nix-checks",
+      "members": [
+        "nix-checks"
+      ],
+      "maxParallel": 1,
+      "failFast": false,
+      "matrix": true,
+      "jobs": [
+        {
+          "id": "nix-checks--matrix-2b5976c157de2506",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "build",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-2b5976c157de2506"
+          ],
+          "outputKey": "result_e4aa67f365b7a97176191db7e0a06d5e1ce1ac895b9461394eb0f62d96dc40c3"
+        },
+        {
+          "id": "nix-checks--matrix-e0e07786979c3438",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "docs",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-e0e07786979c3438"
+          ],
+          "outputKey": "result_290557788c3da6e98a67049730891a354175c7d11b55db9cfe9d7f97f1c695c8"
+        },
+        {
+          "id": "nix-checks--matrix-c0ee4729f855236a",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "format",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-c0ee4729f855236a"
+          ],
+          "outputKey": "result_3acf52844931b46a8c4c7cf1e4539495d6bd8c3f76f2dd9f80276f1a159bce5c"
+        },
+        {
+          "id": "nix-checks--matrix-b51694680430311d",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "quality",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-b51694680430311d"
+          ],
+          "outputKey": "result_a05a003787d08ed8fd1785238babb9ca1414229efcf384e102c61d3748679598"
+        },
+        {
+          "id": "nix-checks--matrix-a74a379ebff3c542",
+          "task": "nix-checks",
+          "matrix": {
+            "check": "workflows",
+            "system": "x86_64-linux"
+          },
+          "execute": [
+            "nix-checks--matrix-a74a379ebff3c542"
+          ],
+          "outputKey": "result_3dd88472b59245f6fe0f685c684afaaf35fb83b7285c00483c74abd311f6ae3f"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
+    "Host-only jobs require Stoke and their declared native platform, tools and capabilities already provisioned on the runner; no Coopr executable is required. Generation installs nothing.",
+    "GitHub.com reusable workflows only; GitHub Enterprise Server and native ARM/restricted-runner execution are not qualified.",
+    "Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
+    "Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
+    "Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
+    "Co-location is explicit. The ordinary scheduler preserves internal gates and matrix policy; shared inline environments spanning jobs become visible producer jobs. Coopr cache volumes remain disposable acceleration.",
+    "The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
+    "Host tasks inherit the runner user's authority and require caller opt-in. Declared tools, native platform and capabilities must already be provisioned; imports and generated plans grant no host authority.",
+    "Host commands are not assumed hermetic. Host result reuse requires explicit captured effects and input/environment/toolchain/platform declarations; fresh tasks and uncaptured side effects execute."
+  ],
+  "requiresResults": false,
+  "host": {
+    "nix-checks--matrix-2b5976c157de2506": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "nix-checks--matrix-a74a379ebff3c542": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "nix-checks--matrix-b51694680430311d": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "nix-checks--matrix-c0ee4729f855236a": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "nix-checks--matrix-e0e07786979c3438": {
+      "platform": "linux/amd64",
+      "tools": [
+        "nix",
+        "python3"
+      ],
+      "capabilities": [
+        "nix-build"
+      ],
+      "effects": "external",
+      "cache": false
+    }
+  }
+}

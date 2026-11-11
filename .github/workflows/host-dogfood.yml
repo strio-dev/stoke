@@ -1,0 +1,210 @@
+# Prepared only: do not push or dispatch without separate authorization.
+name: Stoke host and Nix dogfood
+on:
+  workflow_dispatch:
+    inputs:
+      results_repository:
+        description: Authorized OCI repository for exact host producer results
+        required: true
+        type: string
+      cache_repository:
+        description: Authorized host-cache repository already recorded in the reviewed plan
+        required: true
+        type: string
+      expected_stoke_sha256:
+        description: Reviewed provisioned Stoke executable SHA256
+        required: true
+        type: string
+      expected_builder_sha256:
+        description: Reviewed static host-builder fixture SHA256
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  validate-generated:
+    runs-on: [self-hosted, linux, x64, stoke-development]
+    timeout-minutes: 15
+    env:
+      STOKE_EXPECTED_SHA256: ${{ inputs.expected_stoke_sha256 }}
+      BUILDER_EXPECTED_SHA256: ${{ inputs.expected_builder_sha256 }}
+      STOKE_CACHE_REPOSITORY: ${{ inputs.cache_repository }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify reviewed provisioned tools and authorized cache configuration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, shutil, subprocess
+
+          selected = {
+              "stoke": (shutil.which("stoke"), "STOKE_EXPECTED_SHA256"),
+              "host-builder": ("/opt/provisioned/stoke-host-builder", "BUILDER_EXPECTED_SHA256"),
+          }
+          for name, (located, variable) in selected.items():
+              expected = os.environ[variable]
+              if not re.fullmatch(r"[0-9a-f]{64}", expected) or located is None:
+                  raise SystemExit(f"{name} requires a provisioned executable and reviewed lowercase SHA256")
+              path = pathlib.Path(located).resolve(strict=True)
+              if not path.is_file() or not os.access(path, os.X_OK) or path.stat().st_size > 64 << 20:
+                  raise SystemExit(f"Provisioned {name} must be an executable regular file below 64 MiB")
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1 << 20), b""):
+                      digest.update(chunk)
+              actual = digest.hexdigest()
+              if actual != expected:
+                  raise SystemExit(f"Provisioned {name} differs from the reviewed candidate")
+              print(json.dumps({"executable": name, "path": str(path), "sha256": actual}))
+          if shutil.which("nix") is None:
+              raise SystemExit("Provision Nix before running this workflow; no installer is included")
+          subprocess.run([selected["stoke"][0], "version"], check=True)
+          subprocess.run(["nix", "--version"], check=True)
+          plan = json.loads(pathlib.Path(".stoke/host-cache-plan.json").read_text())
+          repository = os.environ["STOKE_CACHE_REPOSITORY"]
+          if repository.split("/", 1)[0] == "registry.invalid":
+              raise SystemExit("Replace the placeholder and regenerate locally before an authorized push")
+          if plan["config"].get("cacheFrom") != [repository] or plan["config"].get("cacheTo") != [repository]:
+              raise SystemExit("Regenerate the cache plan with this authorized cache repository before an authorized push")
+          if plan["config"].get("resultsRepository"):
+              raise SystemExit("Generate with a call-time results_repository input for this caller")
+          PY
+      - name: Check Nix inventory and every checked-in generated CI pair
+        shell: bash
+        run: |
+          python3 scripts/nix-workflow.py --system x86_64-linux --check .stoke/nix-host.yaml
+          python3 - <<'PY'
+          import json, pathlib, subprocess
+
+          pairs = [
+              (".stoke/ci-plan.json", ".github/workflows/stoke.generated.yml"),
+              (".stoke/host-plan.json", ".github/workflows/host.generated.yml"),
+              (".stoke/host-cache-plan.json", ".github/workflows/host-cache.generated.yml"),
+              (".stoke/nix-host-plan.json", ".github/workflows/nix-host.generated.yml"),
+          ]
+          for plan_path, workflow_path in pairs:
+              config = json.loads(pathlib.Path(plan_path).read_text())["config"]
+              command = ["stoke", "ci", "generate", "--check", "-f", config["workflow"],
+                         "--context", config["context"], "--timeout", str(config["timeoutMinutes"]),
+                         "--plan-output", plan_path, "--output", workflow_path]
+              for label in config["runners"]:
+                  command += ["--runner", label]
+              for option, field in [("--cache-from", "cacheFrom"), ("--cache-to", "cacheTo"), ("--co-locate", "coLocate")]:
+                  for value in config.get(field, []):
+                      command += [option, value]
+              for name, value in sorted(config.get("inputs", {}).items()):
+                  command += ["--input", name + "=" + value]
+              if config.get("resultsRepository"):
+                  command += ["--results-repository", config["resultsRepository"]]
+              subprocess.run(command + config.get("targets", []), check=True)
+          PY
+  warm-local:
+    needs: [validate-generated]
+    runs-on: [self-hosted, linux, x64, stoke-development]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      STOKE_CACHE_REPOSITORY: ${{ inputs.cache_repository }}
+      STOKE_EXPECTED_SHA256: ${{ inputs.expected_stoke_sha256 }}
+      BUILDER_EXPECTED_SHA256: ${{ inputs.expected_builder_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Qualify local execution and seed only the authorized host cache
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil
+          for path, variable in [(shutil.which("stoke"), "STOKE_EXPECTED_SHA256"),
+                                 ("/opt/provisioned/stoke-host-builder", "BUILDER_EXPECTED_SHA256")]:
+              if path is None:
+                  raise SystemExit("Missing provisioned development executable")
+              path = pathlib.Path(path).resolve(strict=True)
+              if not path.is_file() or not os.access(path, os.X_OK) or path.stat().st_size > 64 << 20:
+                  raise SystemExit("Provisioned candidate must be an executable regular file below 64 MiB")
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1 << 20), b""):
+                      digest.update(chunk)
+              actual = digest.hexdigest()
+              if actual != os.environ[variable]:
+                  raise SystemExit("Provisioned executable differs from reviewed candidate")
+          PY
+          qualification=$(mktemp -d "$RUNNER_TEMP/stoke-host-warm.XXXXXXXX")
+          stoke run -f examples/host/cache.yaml --context . --allow-host \
+            --host-capability static-host-builder \
+            --cache-from "$STOKE_CACHE_REPOSITORY" --cache-to "$STOKE_CACHE_REPOSITORY" \
+            --cache-dir "$qualification/cache" --output "$qualification/output" \
+            > "$qualification/report.json"
+          printf 'Local qualification report retained at %s\n' "$qualification/report.json"
+  cache-jobs:
+    needs: [warm-local]
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/host-cache.generated.yml
+    with:
+      allow_host: true
+      host_capabilities: '["static-host-builder"]'
+      results_repository: ${{ inputs.results_repository }}
+  post-local:
+    needs: [cache-jobs]
+    runs-on: [self-hosted, linux, x64, stoke-development]
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      STOKE_CACHE_REPOSITORY: ${{ inputs.cache_repository }}
+      STOKE_EXPECTED_SHA256: ${{ inputs.expected_stoke_sha256 }}
+      BUILDER_EXPECTED_SHA256: ${{ inputs.expected_builder_sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Return to local execution and report actual reuse without assuming identical runners
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, pathlib, shutil
+          for path, variable in [(shutil.which("stoke"), "STOKE_EXPECTED_SHA256"),
+                                 ("/opt/provisioned/stoke-host-builder", "BUILDER_EXPECTED_SHA256")]:
+              if path is None:
+                  raise SystemExit("Missing provisioned development executable")
+              path = pathlib.Path(path).resolve(strict=True)
+              if not path.is_file() or not os.access(path, os.X_OK) or path.stat().st_size > 64 << 20:
+                  raise SystemExit("Provisioned candidate must be an executable regular file below 64 MiB")
+              digest = hashlib.sha256()
+              with path.open("rb") as source:
+                  for chunk in iter(lambda: source.read(1 << 20), b""):
+                      digest.update(chunk)
+              actual = digest.hexdigest()
+              if actual != os.environ[variable]:
+                  raise SystemExit("Provisioned executable differs from reviewed candidate")
+          PY
+          qualification=$(mktemp -d "$RUNNER_TEMP/stoke-host-return.XXXXXXXX")
+          stoke run -f examples/host/cache.yaml --context . --allow-host \
+            --host-capability static-host-builder \
+            --cache-from "$STOKE_CACHE_REPOSITORY" --cache-to "$STOKE_CACHE_REPOSITORY" \
+            --cache-dir "$qualification/cache" --output "$qualification/output" \
+            > "$qualification/report.json"
+          python3 - "$qualification/report.json" <<'PY'
+          import json, pathlib, sys
+          report = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          producer = next(task for task in report["tasks"] if task["name"] == "prepare")
+          cache = producer.get("cache", {})
+          print(json.dumps({"phase": "CI-to-local", "cacheHits": cache.get("Hits", 0),
+                            "cacheMisses": cache.get("Misses", 0), "producerDigest": producer.get("digest"),
+                            "qualification": "A miss is conservative; runner identities and execution locations must match for reuse"}))
+          PY
+  nix-checks:
+    needs: [post-local]
+    uses: ./.github/workflows/nix-host.generated.yml
+    with:
+      allow_host: true
+      host_capabilities: '["nix-build"]'

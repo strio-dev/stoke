@@ -1,0 +1,62 @@
+version: 1
+tasks:
+  build:
+    coopr:
+      files: [examples/ci/build.coopr]
+      target: binary
+    outputs: {filesystem: false}
+  checks:
+    needs: [build]
+    cache: false
+    outputs: {filesystem: false}
+    environment:
+      files: [examples/environments/environment.coopr]
+      target: checks
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        check: [test, vet]
+    env:
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: 768MiB
+      GOFLAGS: -p=1
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+    mounts:
+      - type: context
+        source: .
+        target: /workspace
+      - type: stage
+        from: build
+        target: /built
+      - type: cache
+        id: stoke-ci-go-build
+        sharing: locked
+        target: /cache/build
+      - type: cache
+        id: stoke-ci-go-modules
+        sharing: locked
+        target: /cache/modules
+    steps:
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            printf 'STOKE_TESTED_BINARY_SHA256=%s\n' "$(sha256sum /built/stoke | cut -d ' ' -f 1)"
+            /built/stoke version
+            case "$STOKE_MATRIX_CHECK" in
+              test) go test -count=1 -mod=readonly -short ./... ;;
+              vet) go vet -mod=readonly ./... ;;
+              *) exit 2 ;;
+            esac
+  package:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    needs: [checks]
+    steps:
+      - copy:
+          from: build
+          sources: [/stoke]
+          destination: /dist/stoke
+      - run: [/dist/stoke, version]

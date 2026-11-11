@@ -1,0 +1,28 @@
+version: 1
+assets:
+  - native/image.coopr
+  - scripts/check.sh
+
+tasks:
+  build:
+    coopr:
+      files: [native/image.coopr]
+      files-from: component
+      target: release
+
+  native-check:
+    from: build
+    cache: false
+    steps:
+      - run: [sh, /native-check.sh]
+
+  verify:
+    from: build
+    needs: [native-check]
+    cache: false
+    steps:
+      - copy:
+          scope: component
+          sources: [scripts/check.sh]
+          destination: /literal-check.sh
+      - run: [sh, /literal-check.sh]

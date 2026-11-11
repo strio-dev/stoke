@@ -1,0 +1,75 @@
+version: 1
+inputs:
+  native-platform:
+    default: linux/amd64
+tasks:
+  prepare:
+    platform: {input: native-platform}
+    host:
+      tools: [/opt/provisioned/stoke-host-builder]
+      toolchain: [/opt/provisioned/stoke-host-builder]
+      capabilities: [static-host-builder]
+      inputs:
+        - path: examples/host/message.txt
+          destination: source
+      outputs: [out]
+      effects: captured
+    cache: true
+    steps:
+      - run: [/opt/provisioned/stoke-host-builder, source, out/value]
+  verify:
+    platform: {input: native-platform}
+    host:
+      tools: [python3]
+      inputs:
+        - from: prepare
+          path: out
+          destination: input
+      outputs: [reports]
+    cache: false
+    strategy:
+      max-parallel: 1
+      fail-fast: false
+      matrix:
+        check: [contents, shape]
+    steps:
+      - run:
+          - python3
+          - -c
+          - |
+            import hashlib, json, os
+            from pathlib import Path
+            data = Path("input/value").read_bytes()
+            check = os.environ["STOKE_MATRIX_CHECK"]
+            if check == "contents":
+                assert data == b"Stoke captured this producer output.\n"
+            elif check == "shape":
+                assert sorted(p.name for p in Path("input").iterdir()) == ["value"]
+            else:
+                raise ValueError("unexpected matrix variant")
+            Path("reports").mkdir()
+            Path("reports/checked.json").write_text(json.dumps({"check": check, "producerSHA256": hashlib.sha256(data).hexdigest()}) + "\n")
+            print("HOST_VERIFY_EXECUTED", check)
+  package:
+    needs: [verify]
+    platform: {input: native-platform}
+    host:
+      tools: [python3]
+      inputs:
+        - from: prepare
+          path: out
+          destination: tested
+      outputs: [package]
+    cache: false
+    steps:
+      - run:
+          - python3
+          - -c
+          - |
+            import hashlib, json
+            from pathlib import Path
+            data = Path("tested/value").read_bytes()
+            Path("package").mkdir()
+            Path("package/value").write_bytes(data)
+            Path("package/manifest.json").write_text(json.dumps({"producerSHA256": hashlib.sha256(data).hexdigest()}) + "\n")
+            print("HOST_PACKAGE_EXECUTED_AFTER_ALL_GATES")

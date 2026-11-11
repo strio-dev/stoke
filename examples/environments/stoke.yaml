@@ -1,0 +1,25 @@
+version: 1
+tasks:
+  quality:
+    cache: false
+    outputs: {filesystem: false}
+    environment:
+      files: [examples/environments/environment.coopr]
+      target: checks
+    env:
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+    mounts:
+      - type: context
+        source: .
+        target: /workspace
+      - type: cache
+        id: stoke-go-build
+        sharing: locked
+        target: /cache/build
+      - type: cache
+        id: stoke-go-modules
+        sharing: locked
+        target: /cache/modules
+    steps:
+      - run: [go, test, -count=1, -mod=readonly, -short, ./...]

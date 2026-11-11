@@ -1,0 +1,23 @@
+version: 1
+
+tasks:
+  test:
+    image: docker.io/library/busybox:1.37
+    strategy:
+      max-parallel: 2
+      fail-fast: false
+      matrix:
+        mode: [debug, release]
+        toolchain: [stable, next]
+        exclude:
+          - mode: release
+            toolchain: next
+        include:
+          - mode: debug
+            toolchain: experimental
+    steps:
+      - run: [sh, -eu, -c, 'mkdir -p /out; printf "%s %s\n" "$STOKE_MATRIX_MODE" "$STOKE_MATRIX_TOOLCHAIN" > /out/variant.txt']
+
+  complete:
+    image: scratch
+    needs: [test]

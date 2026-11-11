@@ -1,0 +1,186 @@
+{
+  "version": 2,
+  "generatedBy": "stoke-ci",
+  "id": "c496de44d20ff676a3ddb7f94817cf1669a340e8563b46d0ee1868ce9b8874c2",
+  "config": {
+    "workflow": "examples/host/cache.yaml",
+    "context": ".",
+    "targets": [
+      "package"
+    ],
+    "runners": [
+      "self-hosted",
+      "linux",
+      "x64",
+      "stoke-development"
+    ],
+    "timeoutMinutes": 45,
+    "cacheFrom": [
+      "registry.invalid/stoke/host-cache"
+    ],
+    "cacheTo": [
+      "registry.invalid/stoke/host-cache"
+    ]
+  },
+  "workflowDigest": "d096f4a870fbb976cce654e404974176bc843b8a3ee5e4c52450fd33347c39a2",
+  "engine": {
+    "apiVersion": 1,
+    "capabilities": null,
+    "productionPin": null,
+    "pinStatus": "Coopr is not required for this host-only plan; container execution remains unpinned."
+  },
+  "groups": [
+    {
+      "id": "stoke_45666d976bab316d",
+      "name": "prepare",
+      "members": [
+        "prepare"
+      ],
+      "maxParallel": 1,
+      "failFast": true,
+      "matrix": false,
+      "jobs": [
+        {
+          "id": "prepare",
+          "task": "prepare",
+          "execute": [
+            "prepare"
+          ],
+          "exports": [
+            "prepare"
+          ],
+          "outputKey": "result_45666d976bab316d970ec459afd866d9e9a0681ac510f0911f2ac33e9142e51b"
+        }
+      ]
+    },
+    {
+      "id": "stoke_a12dd3a7fd3203a4",
+      "name": "verify",
+      "members": [
+        "verify"
+      ],
+      "needs": [
+        "stoke_45666d976bab316d"
+      ],
+      "maxParallel": 1,
+      "failFast": false,
+      "matrix": true,
+      "jobs": [
+        {
+          "id": "verify--matrix-dbb290fc4fb83f2a",
+          "task": "verify",
+          "matrix": {
+            "check": "contents"
+          },
+          "data": [
+            "prepare"
+          ],
+          "execute": [
+            "verify--matrix-dbb290fc4fb83f2a"
+          ],
+          "imports": [
+            "prepare"
+          ],
+          "outputKey": "result_aeae7a24ec85c199ed2a16e218be28ef421226126cd3314156066f468883c8f5"
+        },
+        {
+          "id": "verify--matrix-60d993ed5acfdfa4",
+          "task": "verify",
+          "matrix": {
+            "check": "shape"
+          },
+          "data": [
+            "prepare"
+          ],
+          "execute": [
+            "verify--matrix-60d993ed5acfdfa4"
+          ],
+          "imports": [
+            "prepare"
+          ],
+          "outputKey": "result_01222bffcbbce437bde8c55a80e20f6037a220d38cbbfd15c4fb2741045b7d06"
+        }
+      ]
+    },
+    {
+      "id": "stoke_bc4a71180870f794",
+      "name": "package",
+      "members": [
+        "package"
+      ],
+      "needs": [
+        "stoke_45666d976bab316d",
+        "stoke_a12dd3a7fd3203a4"
+      ],
+      "maxParallel": 1,
+      "failFast": true,
+      "matrix": false,
+      "jobs": [
+        {
+          "id": "package",
+          "task": "package",
+          "data": [
+            "prepare"
+          ],
+          "execute": [
+            "package"
+          ],
+          "imports": [
+            "prepare"
+          ],
+          "outputKey": "result_bc4a71180870f7945155fbb02f4b0a2e3faa2a62d6d31b7039013055ed19869a"
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
+    "Host-only jobs require Stoke and their declared native platform, tools and capabilities already provisioned on the runner; no Coopr executable is required. Generation installs nothing.",
+    "GitHub.com reusable workflows only; GitHub Enterprise Server and native ARM/restricted-runner execution are not qualified.",
+    "Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
+    "Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
+    "Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
+    "Co-location is explicit. The ordinary scheduler preserves internal gates and matrix policy; shared inline environments spanning jobs become visible producer jobs. Coopr cache volumes remain disposable acceleration.",
+    "The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
+    "Host tasks inherit the runner user's authority and require caller opt-in. Declared tools, native platform and capabilities must already be provisioned; imports and generated plans grant no host authority.",
+    "Host commands are not assumed hermetic. Host result reuse requires explicit captured effects and input/environment/toolchain/platform declarations; fresh tasks and uncaptured side effects execute."
+  ],
+  "requiresResults": true,
+  "host": {
+    "package": {
+      "platform": "linux/amd64",
+      "tools": [
+        "python3"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "prepare": {
+      "platform": "linux/amd64",
+      "tools": [
+        "/opt/provisioned/stoke-host-builder"
+      ],
+      "capabilities": [
+        "static-host-builder"
+      ],
+      "effects": "captured",
+      "cache": true
+    },
+    "verify--matrix-60d993ed5acfdfa4": {
+      "platform": "linux/amd64",
+      "tools": [
+        "python3"
+      ],
+      "effects": "external",
+      "cache": false
+    },
+    "verify--matrix-dbb290fc4fb83f2a": {
+      "platform": "linux/amd64",
+      "tools": [
+        "python3"
+      ],
+      "effects": "external",
+      "cache": false
+    }
+  }
+}

@@ -1,0 +1,7 @@
+package as="message" {
+    copy "message.txt" "/message.txt"
+}
+
+extend as="installed" {
+    copy "/message.txt" "/message.txt" from="message"
+}

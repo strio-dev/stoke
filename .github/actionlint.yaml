@@ -1,0 +1,4 @@
+# This pool must already contain the reviewed development tools and Nix.
+self-hosted-runner:
+  labels:
+    - stoke-development

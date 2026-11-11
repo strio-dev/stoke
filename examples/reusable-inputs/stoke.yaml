@@ -1,0 +1,23 @@
+version: 1
+inputs:
+  version:
+    type: string
+    required: true
+  mode:
+    default: release
+tasks:
+  build:
+    image: docker.io/library/busybox:1.37
+    env:
+      VERSION: {input: version}
+      MODE: {input: mode}
+    steps:
+      - run: [sh, -eu, -c, 'mkdir -p /out; printf "%s\n%s\n" "$VERSION" "$MODE" > /out/build.txt']
+  verify:
+    from: build
+    env:
+      VERSION: {input: version}
+      MODE: {input: mode}
+    cache: false
+    steps:
+      - run: [sh, -eu, -c, 'test "$(sed -n 1p /out/build.txt)" = "$VERSION"; test "$(sed -n 2p /out/build.txt)" = "$MODE"']

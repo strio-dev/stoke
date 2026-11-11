@@ -1,0 +1,45 @@
+[project]
+site_name = "Stoke"
+site_description = "Portable YAML workflows on Coopr, locally and inside existing CI."
+docs_dir = "docs"
+site_dir = "site"
+dev_addr = "127.0.0.1:8000"
+nav = [
+  { "Overview" = "index.md" },
+  { "Getting started" = "getting-started.md" },
+  { "Tutorials" = [
+    { "First workflow" = "tutorials/first-workflow.md" },
+  ] },
+  { "Guides" = [
+    { "Run trusted host steps" = "guides/host.md" },
+    { "Build with native Coopr definitions" = "guides/native-coopr.md" },
+    { "Use Coopr task environments" = "guides/environments.md" },
+    { "Mount inputs and caches" = "guides/mounts.md" },
+    { "Reuse cached results" = "guides/caching.md" },
+    { "Run tasks in parallel" = "guides/parallel-tasks.md" },
+    { "Run task matrices" = "guides/matrices.md" },
+    { "Select container platforms" = "guides/platforms.md" },
+    { "Pass reusable component inputs" = "guides/reusable-inputs.md" },
+    { "Share workflows with OCI and Bale" = "guides/shared-workflows.md" },
+    { "Package component files" = "guides/packaged-components.md" },
+    { "Run in CI" = "guides/ci.md" },
+    { "Generate GitHub Actions jobs" = "guides/ci-generation.md" },
+    { "Runtime and security" = "guides/security.md" },
+    { "Select the Coopr engine" = "guides/coopr-api.md" },
+  ] },
+  { "Concepts" = [
+    { "How Stoke works" = "concepts/architecture.md" },
+  ] },
+  { "Reference" = [
+    { "Workflow YAML" = "reference/workflow.md" },
+    { "CLI" = "reference/cli.md" },
+  ] },
+  { "Contributing" = "contributing.md" },
+]
+
+[project.extra]
+strio_accent = "#B34753"
+
+[project.theme]
+logo = "assets/stoke-wordmark.svg"
+favicon = "assets/stoke-favicon.svg"

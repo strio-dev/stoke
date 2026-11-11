@@ -1,0 +1,27 @@
+version: 1
+tasks:
+  prepare:
+    image: docker.io/library/busybox:1.37
+    steps:
+      - copy:
+          sources: [message.txt]
+          destination: /work/message.txt
+  lint:
+    from: prepare
+    cache: false
+    steps:
+      - run: [sh, -eu, -c, 'test -s /work/message.txt; test "$(wc -l < /work/message.txt)" -eq 1']
+  tests:
+    from: prepare
+    cache: false
+    strategy:
+      max-parallel: 2
+      matrix:
+        check: [content, format]
+    steps:
+      - run: [sh, -eu, -c, 'case "$STOKE_MATRIX_CHECK" in content) grep -qx "hello from parallel tasks" /work/message.txt ;; format) test "$(tail -c 1 /work/message.txt | od -An -tu1 | tr -d " ")" = 10 ;; esac']
+  package:
+    from: prepare
+    needs: [lint, tests]
+    steps:
+      - run: [sh, -eu, -c, 'mkdir -p /dist; cp /work/message.txt /dist/message.txt']
