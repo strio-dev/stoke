@@ -1,57 +1,87 @@
-# Prepare a hosted CI qualification
+# Hosted CI qualification
 
-Hosted qualification uses the prebuilt tools image, generated GitHub jobs,
-native dependencies and per-job token authentication. Ordinary
-`.github/workflows/ci.yml` runs flake checks only. Generator checks and short
-tests establish local validation; they do not establish hosted cache reuse,
-exact cross-job results or GitHub retry-output retention.
+Hosted qualification uses prebuilt tools images, native GitHub jobs and per-job
+token authentication. Ordinary `.github/workflows/ci.yml` runs flake checks.
+Generator checks, local fixtures and short tests remain separate from actual
+hosted execution and GHCR behavior.
 
-## Proven AMD64 boundary
+## Verified hosted results
 
-[Run 43072582292](https://github.com/strio-dev/stoke/actions/runs/43072582292),
-at commit `fc7be2d0b73ab9a1c2ec5facb93bcaa2a43eade6`, passed the narrow
-`stoke-runtime.yml` container task on `ubuntu-24.04`. It pulled the private AMD64
-tools image, ran as UID1001 with VFS, copied the packaged static Stoke binary
-into a scratch image, executed its version command with task networking disabled
-and cache reuse disabled, and verified exported binary bytes against the input.
+The full workflows completed successfully on both native architectures:
 
-The tools package was verified private on 2026-11-11. The existing AMD64 manifest
-used by that run is:
+| Architecture | Frozen application checkout | Workflow run |
+| --- | --- | --- |
+| ARM64 | `655367d4fb9278760b6e03af3c23be307ebb332e` | [43119419077](https://github.com/strio-dev/stoke/actions/runs/43119419077) |
+| AMD64 | `ff72aaf40ebd5d099878621ee96f6fe96e247d15` | [43119897878](https://github.com/strio-dev/stoke/actions/runs/43119897878) |
 
-```text
-ghcr.io/strio-dev/stoke-qualification-tools@sha256:3d6da25e0dcdf669517843c4654b50e6bc3a688145e265523edf46bc8c99b6d7
-```
+These runs used Coopr `9e0866d7760def6b1358f7034540d6c243cb8017` and these
+private `ghcr.io/strio-dev/stoke-qualification-tools` image manifests:
 
-Its exact container options were:
+| Architecture | Tools image digest |
+| --- | --- |
+| AMD64 | `sha256:2810897b2a4acb94f7b8b76fabc039ff9467816751be95d77b2e758936acda27` |
+| ARM64 | `sha256:7798424beb2fa42954c6d6c9fd94d0ea6e3cd24cb828dc2b5ec4f9c62dcf74a0` |
 
-```text
---security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined
-```
+Build, environment, fresh test/vet matrix, package and native final gates passed.
+The checks actually executed `go test -count=1 -mod=readonly -short ./...` and
+`go vet -mod=readonly ./...`. Their standalone binary hashes matched the exact
+producer, as did the cold package's binary hash. Each job used independent
+native/cache/output stores and exact GHCR result/InputSet bindings.
 
-That run proves this task under this profile. It does not qualify the real Go
-workflow, GHCR cache/result writes, warm restoration, native job handoff,
-retries, concurrent invocations or ARM. The profile uses the runner's existing
-`buildah` AppArmor policy; it adds no privileged mode, capabilities, FUSE device
-or host provisioning. GitHub still supplies its normal job-container mounts,
-including the Docker socket and runner workspace.
+| Architecture | Canonical build output | Package output |
+| --- | --- | --- |
+| AMD64 | `sha256:c6e081670afedd5f4962d50608259e5611362f3f4c5eaadccbb415868e4ed778` | `sha256:37bb0b61a65b2196b507a3140dc0bb84e8197fa8c7eb9004d82b22f7cc2bd183` |
+| ARM64 | `sha256:eda469715488418328cb49938a35fda3b600219e589053413c64d0cd250e66e4` | `sha256:4be75ad4acac870a19fbb8b3775607e017fab126b412795a1c335d1c89908c0f` |
 
-The first online cold build in [run 43084980426](https://github.com/strio-dev/stoke/actions/runs/43084980426)
-failed before Go execution because Pasta could not open `/dev/net/tun` in the
-outer container. The approved continuation appends only
-`--device=/dev/net/tun:/dev/net/tun:rw` to the three options above. It preserves
-private RUN networking, without added capabilities or privileged mode. Device
-exposure is a separate approval from the earlier offline test.
-[Run 43089151406](https://github.com/strio-dev/stoke/actions/runs/43089151406)
-then completed Go dependency downloads and the build, before cache publication
-failed with GHCR `MANIFEST_BLOB_UNKNOWN`. That establishes online RUN networking,
-not cache reuse or a successful workflow. Coopr [PR #24](https://github.com/strio-dev/coopr/pull/24)
-repairs the cache publication path. Qualification must use images containing that
-fix; the previously published images do not. Do not substitute host networking
-on failure.
+Two concurrent AMD64 warm invocations retained distinct scopes and native
+outputs; the ARM64 warm invocation also retained its own scope. Fresh checks
+passed against each invocation's exact producer. Warm package COPY and RUN
+checkpoints hit the registry cache and restored the cold package digest, so their
+hash-printing RUNs did not execute again. The Go-build RUN missed in all three
+warm invocations; those runs do not establish Go-build reuse.
+
+The separate public negative fixture in
+[run 43124022353](https://github.com/strio-dev/stoke/actions/runs/43124022353)
+executed both variants freshly. The pass variant printed `STOKE_GATE_PASSED`;
+the fail variant printed `STOKE_EXPECTED_TEST_FAILURE` and exited 23. Package
+was skipped and the native final gate received `false`. This is the expected
+negative outcome. Auth files, job containers and networks were cleaned up on
+both success and failure; registry objects were retained.
+
+## Pending Go-build reuse probe
+
+Coopr [PR #24](https://github.com/strio-dev/coopr/pull/24), at
+`e88a2107ba9ad133ee7e7b9318dd436dcd8f2ac4`, repairs shared-prefix metadata
+association between independent cache producers. The fix has local regression
+evidence. Matched image preparation
+[run 43130605718](https://github.com/strio-dev/stoke/actions/runs/43130605718),
+from Stoke `483e8e939bfd4d4df3ec18a43f36626106591395`, passed on both architectures:
+
+| Architecture | Matched tools image digest |
+| --- | --- |
+| AMD64 | `sha256:10e9bd7f43f1a54c87277416ca0fcc9b78a2a6fdda250552f9285c658e4c5df7` |
+| ARM64 | `sha256:03acbebd4417e0bd0eec87fccb7720b3a4dd9342e94c1a5a6ae7c4c5a9a1b99d` |
+
+Both image receipts confirm UID/GID1001 and the native system. These image source
+pins differ from the original application checkouts; changing the tools must not
+change the input bytes. The final hosted reuse results remain pending.
+
+The final `cache-reuse` matrix reserves two containers, one per native
+architecture. It runs only `stoke run ... build` with `--cache-from` and
+read-only package access. Each job checks out the complete original application
+commit from the table above and verifies the checkout before and after execution.
+Auth files, engine state, caches, logs and outputs stay outside that context.
+
+Success requires a positive `Using cache` receipt for the actual Go-build RUN,
+absence of a standalone `STOKE_BUILD_EXECUTED` marker, and a passed build report
+whose `tasks[].digest` matches the original canonical build output above.
+A COPY hit, echoed command or identical binary bytes alone is insufficient.
+This probe does not rerun the complete DAG with the new engine. No final hosted
+Go-build cache hit is claimed until both results are recorded.
 
 ## Native caller and batch bounds
 
-The preparation uses three AMD64 and two ARM64 generator-owned plan/workflow pairs:
+The generator owns these five plan/workflow pairs:
 
 | Case | Plan | Generated workflow |
 | --- | --- | --- |
@@ -61,196 +91,129 @@ The preparation uses three AMD64 and two ARM64 generator-owned plan/workflow pai
 | ARM cold | `.stoke/hosted-arm-cold.json` | `.github/workflows/hosted-arm-cold.generated.yml` |
 | ARM warm | `.stoke/hosted-arm-warm.json` | `.github/workflows/hosted-arm-warm.generated.yml` |
 
-The reusable native caller, `.github/workflows/stoke-dogfood.yml`, prepares a
-`roundtrip` path with one cold invocation followed by two concurrent warm
-invocations, and a `failure` path using a separate tiny public expected-failing
-fixture. The real workflow's test/vet matrix remains fresh. Each invocation
-gets its own scope, and each job gets independent native/cache/output stores.
+The reusable `.github/workflows/stoke-dogfood.yml` caller runs a cold invocation
+followed by two concurrent AMD64 warm invocations, an ARM cold/warm path, or the
+separate expected-failure fixture. Each invocation owns its scope. Native
+producer, matrix and package dependencies remain visible; the final status gate
+uses native conditions on the host without a container or tool provisioning.
 The generic example and host-workflow pairs remain separate.
 
-The registered `.github/workflows/stoke-runtime.yml` admits these cases only
-through manual dispatch on `strio-dev/stoke`'s `initial` branch. `prepare-images`
-selects the separate image-preparation caller; other scenarios go through the
-dogfood caller using native conditions and dependencies. The registered dispatch
-choice list selects the intended scenarios; arbitrary direct reusable-call
-strings select no jobs.
-Push branch changes with `[skip ci]` during qualification to avoid starting the
-unrelated push-triggered native runtime matrix.
+Manual dispatch through `.github/workflows/stoke-runtime.yml` is restricted to
+`strio-dev/stoke`'s `initial` branch. `prepare-images` selects image preparation;
+`roundtrip`, `arm-roundtrip` and `failure` select the dogfood caller;
+`cache-reuse` selects the final build-only matrix. Unknown direct reusable-call
+strings select no jobs. Use `[skip ci]` on qualification branch updates to avoid
+the unrelated push-triggered runtime matrix.
 
-The original batch ceiling remains 54 container-job starts. At the current
-checkpoint, 18 have been consumed: 13 earlier starts, three in ARM
-[run 43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943),
-and two in the cancelled AMD
-[run 43114866113](https://github.com/strio-dev/stoke/actions/runs/43114866113).
-Both Go builds executed successfully. ARM then failed Stoke's exact-result
-manifest publication because its envelope referenced a manifest as a blob layer;
-AMD was cancelled under the stop-on-unexpected-failure rule. The package stayed
-private, owned container/network cleanup completed, and partial cache/payload
-objects were retained without deletion. Neither run proves downstream handoff
-or warm reuse.
+The ceiling remains **54 container-job starts: 52 charged, two remaining**.
+The final matrix reserves those two starts; no additional dispatch or selective
+rerun is authorized. Keep at most two concurrent workflows and matrix parallelism
+two. Qualification runtime jobs and both native image-preparation jobs have
+45-minute limits; these do not bound queued time. The earlier drain time and
+absolute deadline are superseded. Preserve actual counts, report omitted cases,
+and stop on unexpected failure.
 
-The candidate repairs result and input-set envelopes together using OCI indexes.
-The final status-only gate uses native GitHub conditions without a container.
-This retains all producer, matrix, package and failure gates while reducing the
-remaining core plan to at most 18 AMD64 starts (cold plus two concurrent warm
-invocations), 12 ARM64 starts (cold/warm), and five negative-case starts: at most
-35 new starts within the remaining 36. The embedded Stoke CLI must contain this
-repair, so the already-published images cannot qualify the new transport.
-Local regeneration checks still cover all five plan/workflow pairs.
+## Generate and validate callers
 
-No selective retry belongs to this continuation. Keep two concurrent workflows
-and matrix parallelism two. Image preparation has an 18-minute job limit;
-subsequent runtime pairs use regenerated 45-minute job limits. Job limits do not
-bound queued time. The former drain time and absolute deadline have been removed;
-the start ceiling and concurrency limits remain. Report omitted cases, never
-reset counts, and stop on unexpected failure. The failure case must fail a fresh
-variant and skip package. This change adds no security permissions or options.
-
-Use the existing [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers)
-with `--runner ubuntu-24.04`, the new candidate digest, the three security
-options plus the approved TUN mapping, and `--github-token-auth`. These settings
-cover generated setup and execution jobs. The native final status gate requires
-no container or package authentication. Regeneration is checked locally; the duplicate hosted validator
-is removed. Keep the older
-digests only as historical evidence. `prepare-images` builds matching native
-AMD64 and ARM64 images with the existing recipe, public Stoke source and Coopr
-commit `9e0866d7760def6b1358f7034540d6c243cb8017` (the clean OCI-index cache
-candidate in Coopr PR #24). Its two normal hosted jobs
-use no relaxed container profile and disable both the installer's KVM setup
-and optional runner trust grant. They publish only to the existing private tools
-package, under distinct `tools-ARCH-SOURCE-RUN-ATTEMPT` tags. Record each source
-and returned manifest digest, then regenerate all five caller pairs before
-runtime qualification.
-
-Preparation [run 43112061076](https://github.com/strio-dev/stoke/actions/runs/43112061076)
-passed on both native architectures from public Stoke source
-`f8276ef44c942666ff298882fb62fb7b11d55fe2`, using Coopr
-`9e0866d7760def6b1358f7034540d6c243cb8017`. Its v2 cache candidate images are:
-
-| Native architecture | Manifest digest |
-| --- | --- |
-| AMD64 | `sha256:61c24faa149c212ad4a87e5e6b0835c46371ba85daadd4cd61801d833e4bf480` |
-| ARM64 | `sha256:875e36d66d5e10ff394f1a262f463c76ab0408d47f8a7e63b13ccb009a349d7a` |
-
-Both reside in the existing private `stoke-qualification-tools` package.
-Image publication establishes packaging. These images contain the repaired
-Coopr cache path but predate the Stoke result-envelope repair. ARM roundtrip
-[run 43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943)
-failed exact-result publication at Stoke commit
-`207f8dd7b249f3cf9cb55a7de078cb2b1a2022d9`; it did not hit its seven-minute
-job limit. Subsequent plans use 45-minute bounds.
-
-Historical preparation
-[run 43098487812](https://github.com/strio-dev/stoke/actions/runs/43098487812)
-passed on both native architectures from public Stoke commit
-`943bc2f63ca9f1024d714c1524e2d11eb9ea624a`. Its superseded v1 cache image digests were:
-
-| Native architecture | Manifest digest |
-| --- | --- |
-| AMD64 | `sha256:f5e75f8840b97176502ffd45542026072bddad705bc88c9285b51acc789f67f0` |
-| ARM64 | `sha256:05413ec4b4845db9983b059c34785ccb321ad78c8ac04fb9ef891cb097befa96` |
-
-Both reside in the existing private `stoke-qualification-tools` package.
-Those images do not contain the v2 cache implementation. Native ARM
-[run 43101790380](https://github.com/strio-dev/stoke/actions/runs/43101790380)
-completed the Go build but failed bulk cache upload at the old metadata replay
-bound; the companion AMD run was cancelled before its build acquired a runner.
-Historical ARM preparation
-[run 43083643695](https://github.com/strio-dev/stoke/actions/runs/43083643695)
-published this verified ARM64/UID1001 image from source `6e1e651d2c337ea8b2c346907fa89f88ad85500d`:
-
-```text
-ghcr.io/strio-dev/stoke-qualification-tools@sha256:dc7e3f11e097922e8ba5b5f9bb14e9853f5ba0ad12590622d3e1140657aec71d
-```
-
-That historical ARM image contains released Coopr, so it must be replaced for
-the cache-fix qualification. A runtime device mapping alone requires no image
-rebuild; changing the engine source does.
-Do not reuse the AMD64 digest as an ARM image or create a new package or multiarch
-index. ARM runtime success remains separate from image publication.
-
-Validate workflow files from the repository root with their actual context:
+Validate the workflows from the repository root:
 
 ```sh
 stoke check -f examples/ci/stoke.yaml --context .
 stoke check -f examples/ci/failure.yaml --context .
 ```
 
-Run `stoke ci generate --check` for every pair in the table, using its reviewed
-image digest, runner, 45-minute timeout, approved options, token auth and
-cache directions. Cold omits `--cache-from`; warm and failure include it. Keep
-`--context .`: omitting it selects the workflow directory and does not validate
-the real example's repository-root inputs. See the generator examples in the
-[CI generation guide](../guides/ci-generation.md#opt-in-tools-containers).
+Run `stoke ci generate --check` for every pair using its reviewed image digest,
+native runner (`ubuntu-24.04` or `ubuntu-24.04-arm`), 45-minute timeout, approved
+container options and `--github-token-auth`. Keep `--context .`: omitting it
+selects the workflow directory and misses repository-root inputs. Regeneration
+is checked locally; no duplicate hosted validator executes the workflow.
+See the [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers).
 
-Cache directions are literal plan configuration. Configure cold cache export,
-warm cache import and exact-result storage explicitly. They may share one
-authorized private OCI repository: Coopr's `instruction-`, `package-` and
-`graph-` tags differ from Stoke's `sci-`, `scip-` and `stoke-host-v1-` tags.
-Keep exact-result objects through the retry window; disposable-cache retention
-must not remove them. The prepared batch performs no deletion.
+Cache directions are literal plan configuration. Cold exports without
+`--cache-from`; warm and failure include cache import. Exact-result storage is
+configured separately. Coopr's `instruction-`, `package-` and `graph-v2-` tags
+are distinct from Stoke's `sci-`, `scip-` and `stoke-host-v1-` tags, so the
+authorized repository can hold both. The final reuse probe imports only.
+Keep exact references throughout the retry window; this batch performs no
+registry deletion. Internal handoff uses OCI references and native job outputs
+without CI artifact upload/download or a successful-status object.
 
-## Authentication and permissions
+## Container profile and authentication
 
-For an authorized GHCR batch, `--github-token-auth` uses each execution job's
-short-lived token through Coopr login and passes its private auth file to result
-transport and Coopr cache access. It also supplies credentials for the private
-tools-image pull before steps start. Authentication in one job does not authenticate other jobs.
+Runtime qualification uses UID1001, VFS and exactly these container options:
 
-The execution callers grant `contents: read` and `packages: write`. These are
-short-lived GitHub job tokens,
-not new PATs or persistent scope changes. The caller owns package access and
-any approved `packages: write` permission;
-the generator grants neither access nor authorization to publish. Package
-visibility remains a GitHub setting, independent of image labels and token
-scopes. Verify that the existing package is accessible and private before writes;
-missing or public metadata is not permission to bootstrap a package. Keep
-credentials out of plans, URLs, command arguments and logs. Missing
-or masked native outputs must fail clearly. See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
+```text
+--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw
+```
 
-## Hosted cases to record
+The profile uses the runner's existing `buildah` AppArmor policy and preserves
+private RUN networking. It adds no privileged mode, capabilities, FUSE device,
+host networking or host policy changes. GitHub automatically mounts its Docker
+socket and runner workspace into the job container; that exposure remains part
+of the qualified profile.
 
-| Case | Required evidence |
-| --- | --- |
-| Cold run | Visible build, environment, test/vet matrix and package jobs; native `needs` gates; exact producer/input-set references; fresh checks actually execute. |
-| Warm run | Independent stores and matching inputs restore build cache; tests remain fresh; package uses the exact tested producer. |
-| Failed test | The native matrix/group fails and blocks package; existing result objects do not assert success. |
-| Consumer-only retry | Reuse an explicitly supplied prior-attempt reference in the same scope, or fail clearly if GitHub omits it. Omitted from this reduced batch. |
-| Partial matrix retry | Preserve every unique variant output; missing/masked metadata fails without scanning registry tags. Omitted from this reduced batch. |
-| Producer rerun | New execution bindings conflict with old tests, even for identical bytes; deliberately rerun dependent gates. Omitted from this continuation's hosted budget. |
-| Concurrent invocations | Separate invocation scopes; no mutable latest/winner lookup; no output-key collisions. |
-| Missing result | A cache miss may execute a producer before gates; a missing exact consumer result must not replay it after tests. |
-| Retention | Selected exact references remain readable throughout retries; no objects are deleted by this batch. |
+Image preparation uses two normal hosted jobs, the existing recipe and explicit
+source pins. It disables the installer's KVM setup and optional runner trust
+grant, and publishes distinct `tools-ARCH-SOURCE-RUN-ATTEMPT` tags only in the
+existing private tools package. Preparation establishes packaging; runtime
+qualification requires its own receipts.
 
-These are acceptance requirements, not results of generator checks or short
-tests. The cold/warm/failure paths do not by themselves qualify selective
-reruns, missing-result handling, producer-rerun conflicts or ARM execution.
+The package `stoke-qualification-tools`, ID `16790989`, has been reverified
+private. Check its identity, visibility and caller access before writes; missing
+or public metadata is not permission to create a package. No new package or
+multiarch index is part of this batch.
 
-GitHub combines matrix outputs and warns that duplicate names can be overwritten
-by the last finishing variant; generated output names are unique. This remains a
-hosted qualification item, not merely a YAML-lint assertion. See [matrix job
-outputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs).
-GitHub documents that omitted jobs retain their previous-attempt outputs for
-newly run jobs. Record actual variant output availability, secret masking and
-lineage validation in the hosted test. Missing inputs still require a clear
-failure and an explicit producer/dependent-gates rerun. See
-[reruns](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+`--github-token-auth` authenticates each generated execution job independently
+through Coopr login and a private auth file. It supplies result transport,
+registry-cache access and credentials for the private tools-image pull.
+Execution/preparation jobs use `contents: read` and `packages: write`; the final
+reuse probe uses `contents: read` and `packages: read`. The host final gate
+requires no package authentication. The caller owns permissions and package
+access; the generator grants neither. These are short-lived job tokens, with
+no PAT or persistent scope change. Keep credentials out of plans, URLs, command
+arguments and logs, and remove auth files during unconditional cleanup.
+See [GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry#authenticating-to-the-container-registry).
 
-Developer reports may be exported separately after review. No CI artifact
-upload/download or successful-status object is required for internal data flow.
-Dispatches and reruns require approval for their complete bounded batch.
+## Earlier failure evidence
+
+Earlier failures remain evidence for the repairs and profile:
+
+- [43084980426](https://github.com/strio-dev/stoke/actions/runs/43084980426)
+  failed when Pasta could not open `/dev/net/tun`; the approved TUN mapping
+  enabled subsequent online RUNs.
+- [43089151406](https://github.com/strio-dev/stoke/actions/runs/43089151406)
+  reached Go execution but failed cache publication with
+  `MANIFEST_BLOB_UNKNOWN`.
+  [43101790380](https://github.com/strio-dev/stoke/actions/runs/43101790380)
+  reached the old cache metadata replay bound.
+- [43114525943](https://github.com/strio-dev/stoke/actions/runs/43114525943)
+  failed Stoke's result-envelope publication after its ARM Go build.
+  [43114866113](https://github.com/strio-dev/stoke/actions/runs/43114866113)
+  was cancelled under the stop-on-unexpected-failure rule. These attempts predate
+  the standard OCI result/InputSet index repair.
+
+## Remaining qualification boundaries
+
+Normal native matrix handoff is established by the completed full workflows.
+Selective consumer-only or partial-matrix reruns, omitted-job output retention
+across attempts, secret masking and producer-retry lineage conflicts remain
+unqualified on GitHub. Generated unique output names and local fixtures do not
+establish those provider retry behaviors. See [matrix outputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs)
+and [reruns](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
+
+Missing exact-result handling remains a local-fixture proof. The hosted batch
+did not remove results to test a missing consumer input, and did not qualify a
+retry-retention window or GitHub package-version retention.
 
 ## GHCR cleanup qualification boundary
 
 Stoke's generic `ci cleanup` verifies scope/type and requests deletion of one OCI
-metadata index by digest. It does not discover safe candidates, enforce a
-retry window, map GitHub package versions or garbage-collect shared blobs.
-The [OCI specification](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#content-management)
-permits registries to disable deletion; deleting a manifest can invalidate every
-tag referencing it. Local fixtures do not establish GHCR's behavior.
-
-No GHCR cleanup job, remote deletion or package-administration operation is
-prepared or authorized. Manifest deletion, version deletion, tag-only cleanup,
-restoration and blob collection remain separate unqualified behaviors. Any
-future cleanup requires its own reviewed targets and authorization while
-preserving retained attempts and shared content.
+metadata index by digest. It does not discover safe candidates, enforce retry
+windows, map GitHub package versions or garbage-collect shared blobs.
+[OCI Distribution](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#content-management)
+permits registries to disable deletion; deleting a manifest can invalidate all
+tags referencing it. Local deletion fixtures do not establish GHCR behavior.
+No remote deletion, package-administration or GC operation is prepared or
+authorized. Future deletion, tag/version cleanup, restoration or blob collection
+requires separate targets and authorization while preserving retained attempts
+and shared content.

@@ -5,9 +5,9 @@ on:
   workflow_dispatch:
     inputs:
       scenario:
-        description: Approved bounded batch case; retries use selected native job IDs
+        description: Approved bounded qualification case
         type: choice
-        options: [prepare-images, roundtrip, failure, arm-roundtrip]
+        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse]
         default: roundtrip
 permissions:
   contents: read
@@ -19,13 +19,124 @@ jobs:
       packages: write
     uses: ./.github/workflows/stoke-tools-prepare.yml
   dogfood:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario != 'prepare-images' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip"]'), inputs.scenario) }}
     permissions:
       contents: read
       packages: write
     uses: ./.github/workflows/stoke-dogfood.yml
     with:
       scenario: ${{ inputs.scenario }}
+  cache-reuse:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'cache-reuse' }}
+    name: Registry Go-build reuse / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+            source: ff72aaf40ebd5d099878621ee96f6fe96e247d15
+            manifest: sha256:c6e081670afedd5f4962d50608259e5611362f3f4c5eaadccbb415868e4ed778
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:10e9bd7f43f1a54c87277416ca0fcc9b78a2a6fdda250552f9285c658e4c5df7
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            source: 655367d4fb9278760b6e03af3c23be307ebb332e
+            manifest: sha256:eda469715488418328cb49938a35fda3b600219e589053413c64d0cd250e66e4
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:03acbebd4417e0bd0eec87fccb7720b3a4dd9342e94c1a5a6ae7c4c5a9a1b99d
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ matrix.image }}
+      options: --security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      APPLICATION_SOURCE: ${{ matrix.source }}
+      APPLICATION_PLATFORM: linux/${{ matrix.arch }}
+      EXPECTED_MANIFEST: ${{ matrix.manifest }}
+      GIT_OPTIONAL_LOCKS: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ matrix.source }}
+          persist-credentials: false
+      - name: Verify the original cold application checkout
+        shell: bash
+        run: |
+          printf 'AVAILABLE_CPUS=%s\n' "$(nproc)"
+          grep '^MemTotal:' /proc/meminfo
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SOURCE"
+          test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
+          printf 'APPLICATION_COMMIT=%s TREE=%s\n' "$APPLICATION_SOURCE" "$(git rev-parse 'HEAD^{tree}')"
+      - id: auth
+        name: Authenticate read-only registry access
+        shell: bash
+        env:
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          umask 077
+          auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr.XXXXXXXX")
+          printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
+          printf '%s' "$GHCR_TOKEN" | coopr login --authfile "$auth_dir/auth.json" \
+            --username "$GHCR_USER" --password-stdin ghcr.io
+      - name: Require registry reuse of the existing Go-build inputs
+        shell: bash
+        env:
+          STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
+        run: |
+          log="$RUNNER_TEMP/stoke-build-reuse.log"
+          stoke run -f examples/ci/stoke.yaml --context . \
+            --runtime crun --storage-driver vfs \
+            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            --authfile "$STOKE_GHCR_AUTH_DIR/auth.json" \
+            --cache-dir "$RUNNER_TEMP/stoke-cache" --output "$RUNNER_TEMP/stoke-output" \
+            build 2>&1 | tee "$log"
+          in_go_run=0
+          cached_go_run=0
+          while IFS= read -r line; do
+            case "$line" in
+              *"STEP "*"RUN "*"go build "*) in_go_run=1 ;;
+              *"STEP "*) in_go_run=0 ;;
+            esac
+            if [[ "$in_go_run" = 1 && "$line" == *"Using cache"* ]]; then cached_go_run=1; fi
+            if [[ "$line" == *STOKE_BUILD_EXECUTED && "$line" != *"echo STOKE_BUILD_EXECUTED"* ]]; then
+              echo '::error::The Go build executed instead of reusing the existing registry cache.'
+              exit 1
+            fi
+          done < "$log"
+          test "$cached_go_run" = 1
+          python3 - "$log" "$EXPECTED_MANIFEST" "$APPLICATION_PLATFORM" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1]) as stream:
+              reports = [json.loads(line) for line in stream if line.startswith('{"status":')]
+          assert len(reports) == 1, "expected one Stoke report"
+          report = reports[0]
+          assert report["status"] == "passed" and len(report["tasks"]) == 1, "build did not pass alone"
+          task = report["tasks"][0]
+          assert (task["name"], task["status"], task["kind"], task["platform"], task["digest"]) == (
+              "build", "passed", "image", sys.argv[3], sys.argv[2]
+          ), "restored output differs from the original producer"
+          print("STOKE_RESTORED_BUILD_DIGEST=" + task["digest"])
+          PY
+          test "$(git rev-parse HEAD)" = "$APPLICATION_SOURCE"
+          test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
+          printf 'GO_RUN_REGISTRY_CACHE_REUSED application=%s\n' "$APPLICATION_SOURCE"
+      - name: Remove registry credentials
+        if: ${{ always() && steps.auth.outputs.directory != '' }}
+        shell: bash
+        env:
+          STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
+        run: |
+          rm -f -- "$STOKE_GHCR_AUTH_DIR/auth.json"
+          rmdir -- "$STOKE_GHCR_AUTH_DIR"
   runtime:
     if: ${{ github.event_name == 'push' }}
     strategy:
