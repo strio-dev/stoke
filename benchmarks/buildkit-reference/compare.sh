@@ -46,12 +46,16 @@ print(json.dumps({"phase":"engine-core-total","seconds":(time.monotonic_ns()-int
 PY
         # Native archive ingestion and filesystem verification are OUTSIDE core time.
         proof=(coopr --root "$dir/proof/root" --runroot "$dir/proof/run" --storage-driver vfs)
+        printf "BENCHMARK_PROOF_STEP=archive-load\n"
         "${proof[@]}" pull --quiet --platform "$platform" --authfile "$auth" "oci-archive:$dir/output.oci.tar:binary" > "$dir/imported-id"
+        printf "BENCHMARK_PROOF_STEP=archive-inspect\n"
         "${proof[@]}" image inspect "$(cat "$dir/imported-id")" > "$dir/inspect.json"
-        mkdir "$dir/empty"
-        printf "from \"oci-archive:%s/output.oci.tar:binary\" {}\n" "$dir" > "$dir/proof.coopr"
-        "${proof[@]}" build --file "$dir/proof.coopr" "$dir/empty" --platform "$platform" \
-          --runtime /bin/crun --network none --authfile "$auth" --output "type=local,dest=$dir/archive-fs" > "$dir/proof.log" 2>&1
+        mkdir "$dir/proof-input"
+        ln "$dir/output.oci.tar" "$dir/proof-input/output.oci.tar"
+        printf "from \"oci-archive:output.oci.tar:binary\" {}\n" > "$dir/proof.coopr"
+        printf "BENCHMARK_PROOF_STEP=archive-materialize\n"
+        "${proof[@]}" build --file "$dir/proof.coopr" "$dir/proof-input" --platform "$platform" \
+          --runtime /bin/crun --network none --authfile "$auth" --output "type=local,dest=$dir/archive-fs" 2>&1 | tee "$dir/proof.log"
       ' coopr "$dir" "$state" "$context" "$APPLICATION_PLATFORM" "$auth" "$repo" "$phase" 2>&1 | tee "$dir/run.log"
     fi
   done
