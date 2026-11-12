@@ -128,6 +128,85 @@ func ciTestMetadata(t *testing.T, client Client, repository, reference string) (
 	return index, manifest
 }
 
+// Model metadata-index readback unavailability independently of publication.
+// Direct tagged PUTs work; payload validation reads remain available.
+func TestCIMetadataRetentionWithoutNewRootReadback(t *testing.T) {
+	for _, kind := range []struct{ name, artifactType string }{{"result", CIResultType}, {"inputs", CIInputSetType}} {
+		t.Run(kind.name, func(t *testing.T) {
+			base := registryFixture(t)
+			var mu sync.Mutex
+			roots := map[digest.Digest]bool{}
+			readsBeforeTag := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, path := registryFixturePath(r.URL.Path)
+				if r.Method == http.MethodGet && strings.HasPrefix(path, "manifests/sha256:") {
+					mu.Lock()
+					tagged, known := roots[digest.Digest(strings.TrimPrefix(path, "manifests/"))]
+					if known && !tagged {
+						readsBeforeTag++
+					}
+					mu.Unlock()
+					if known && !tagged {
+						http.NotFound(w, r)
+						return
+					}
+				}
+				var root digest.Digest
+				if r.Method == http.MethodPut && strings.HasPrefix(path, "manifests/") && r.Header.Get("Content-Type") == v1.MediaTypeImageIndex {
+					data, err := io.ReadAll(r.Body)
+					_ = r.Body.Close()
+					if err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					r.Body = io.NopCloser(bytes.NewReader(data))
+					var index v1.Index
+					if json.Unmarshal(data, &index) == nil && index.ArtifactType == kind.artifactType {
+						root = digest.FromBytes(data)
+					}
+				}
+				response := httptest.NewRecorder()
+				base.Config.Handler.ServeHTTP(response, r)
+				if response.Code == http.StatusCreated && root != "" {
+					mu.Lock()
+					roots[root] = roots[root] || strings.TrimPrefix(path, "manifests/") != root.String()
+					mu.Unlock()
+				}
+				for name, values := range response.Header() {
+					w.Header()[name] = values
+				}
+				w.WriteHeader(response.Code)
+				_, _ = w.Write(response.Body.Bytes())
+			}))
+			t.Cleanup(server.Close)
+			repository := strings.TrimPrefix(server.URL, "http://") + "/results"
+			client := Client{PlainHTTP: true}
+			layout, output := ciTestLayout(t, "image", "linux/amd64", "retained producer")
+			ref, err := client.PublishCIResult(t.Context(), repository, ciTestResult(t, "build", "linux/amd64"), layout, output)
+			if err == nil && kind.name == "inputs" {
+				ref, err = client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: ciTestScope(), Bindings: map[string]string{"build": ref}})
+			}
+			if err != nil {
+				t.Fatalf("%s metadata retention required reading its new root before tagged publication: %v", kind.name, err)
+			}
+			mu.Lock()
+			reads := readsBeforeTag
+			mu.Unlock()
+			if reads != 0 {
+				t.Fatalf("metadata publication attempted %d pre-tag root reads", reads)
+			}
+			if kind.name == "inputs" {
+				_, err = client.ReadCIInputSet(t.Context(), repository, ref, ciTestScope())
+			} else {
+				_, err = client.ReadCIResult(t.Context(), repository, ref, CIResultExpectation{Scope: ciTestScope(), Producer: "build", Kind: "image", Platform: "linux/amd64", MaxAttempt: 1})
+			}
+			if err != nil {
+				t.Fatal("tagged metadata root was not independently readable", err)
+			}
+		})
+	}
+}
+
 func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 	base := registryFixture(t)
 	var mu sync.Mutex
@@ -139,9 +218,20 @@ func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 			return
 		}
 		if r.Method == http.MethodPut {
+			var manifestIdentity string
+			if _, path := registryFixturePath(r.URL.Path); strings.HasPrefix(path, "manifests/") {
+				data, err := io.ReadAll(r.Body)
+				_ = r.Body.Close()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				r.Body = io.NopCloser(bytes.NewReader(data))
+				manifestIdentity = digest.FromBytes(data).String()
+			}
 			mu.Lock()
-			if _, path := registryFixturePath(r.URL.Path); strings.HasPrefix(path, "manifests/sha256:") {
-				manifestUploads[strings.TrimPrefix(path, "manifests/")] = true
+			if manifestIdentity != "" {
+				manifestUploads[manifestIdentity] = true
 			}
 			if identity := r.URL.Query().Get("digest"); identity != "" && strings.Contains(r.URL.Path, "/blobs/uploads/") {
 				blobUploads[identity] = true

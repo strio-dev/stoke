@@ -110,6 +110,8 @@ The generic example and host-workflow pairs remain separate.
 Manual dispatch through `.github/workflows/stoke-runtime.yml` is restricted to
 `strio-dev/stoke`'s `initial` branch. `prepare-images` selects image preparation;
 `roundtrip`, `arm-roundtrip` and `failure` select the dogfood caller;
+`candidate` selects both native full workflows; `candidate-amd` and
+`candidate-arm` select one full workflow for targeted retry qualification.
 `cache-reuse` selects the final build-only matrix. Unknown direct reusable-call
 strings select no jobs. Use `[skip ci]` on qualification branch updates to avoid
 the unrelated push-triggered runtime matrix.

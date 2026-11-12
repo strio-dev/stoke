@@ -528,13 +528,10 @@ func (c Client) pushCIObject(ctx context.Context, repository, artifactType, conf
 		return "", errors.New("CI metadata index exceeds size limit")
 	}
 	descriptor := content.NewDescriptorFromBytes(v1.MediaTypeImageIndex, data)
-	if err := repo.Push(ctx, descriptor, bytes.NewReader(data)); err != nil && !errors.Is(err, errdef.ErrAlreadyExists) {
-		return "", err
-	}
 	scopeHash, _ := scope.Hash()
 	producerHash := digest.FromString(producer).Encoded()
 	tag := "sci-" + scopeHash[:16] + "-" + producerHash[:16] + "-" + descriptor.Digest.Encoded()
-	if err := repo.Tag(ctx, descriptor, tag); err != nil {
+	if err := repo.PushReference(ctx, descriptor, bytes.NewReader(data), tag); err != nil {
 		return "", fmt.Errorf("retain CI object: %w", err)
 	}
 	return repository + "@" + descriptor.Digest.String(), nil

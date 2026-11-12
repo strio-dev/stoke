@@ -54,7 +54,7 @@ jobs:
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            coopr = builtins.getFlake "github:strio-dev/coopr/e88a2107ba9ad133ee7e7b9318dd436dcd8f2ac4";
+            coopr = builtins.getFlake "github:strio-dev/coopr/d694b62545524ddcac1bd5a952a6b059df49b7e0";
             pkgs = import stoke.inputs.nixpkgs { system = builtins.getEnv "TOOLS_SYSTEM"; };
             backend = import coopr.inputs.nix2container { inherit pkgs; };
             image = stoke.lib.mkContainer {
@@ -118,7 +118,7 @@ jobs:
               output.write(f"digest={digest}\ntag={tag}\n")
           print(json.dumps({
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
-              "cooprSource": "e88a2107ba9ad133ee7e7b9318dd436dcd8f2ac4",
+              "cooprSource": "d694b62545524ddcac1bd5a952a6b059df49b7e0",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
           }, sort_keys=True))
           PYTHON

@@ -7,7 +7,7 @@ on:
       scenario:
         description: Approved bounded qualification case
         type: choice
-        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, candidate]
+        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, candidate, candidate-amd, candidate-arm]
         default: roundtrip
 permissions:
   contents: read
@@ -19,7 +19,7 @@ jobs:
       packages: write
     uses: ./.github/workflows/stoke-tools-prepare.yml
   dogfood:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip","candidate"]'), inputs.scenario) }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip","candidate","candidate-amd","candidate-arm"]'), inputs.scenario) }}
     permissions:
       contents: read
       packages: write
