@@ -9,6 +9,10 @@ on:
         type: choice
         options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, candidate, candidate-amd, candidate-arm]
         default: roundtrip
+      trace_patch_b64:
+        description: Optional public source patch for tools-image tracing
+        type: string
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -18,6 +22,8 @@ jobs:
       contents: read
       packages: write
     uses: ./.github/workflows/stoke-tools-prepare.yml
+    with:
+      trace_patch_b64: ${{ inputs.trace_patch_b64 }}
   dogfood:
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip","candidate","candidate-amd","candidate-arm"]'), inputs.scenario) }}
     permissions:
@@ -28,7 +34,7 @@ jobs:
       scenario: ${{ inputs.scenario }}
   cache-reuse:
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'cache-reuse' }}
-    name: Registry Go-build reuse / ${{ matrix.arch }}
+    name: Registry read/write warm build / ${{ matrix.arch }} / vfs
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -36,19 +42,23 @@ jobs:
         include:
           - arch: amd64
             runner: ubuntu-24.04
-            source: ff72aaf40ebd5d099878621ee96f6fe96e247d15
-            manifest: sha256:c6e081670afedd5f4962d50608259e5611362f3f4c5eaadccbb415868e4ed778
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:10e9bd7f43f1a54c87277416ca0fcc9b78a2a6fdda250552f9285c658e4c5df7
+            source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
+            manifest: sha256:ca7ba59621d845c6192810246dfb4de08f4d6e70e5c6f4df02d8b98401b4106e
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:11d8af560daef07654b4914df0a1a951a7f664eecfd17d68eb0e14ae8da64db6
+            plan: .stoke/hosted-warm.json
+            plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
           - arch: arm64
             runner: ubuntu-24.04-arm
-            source: 655367d4fb9278760b6e03af3c23be307ebb332e
-            manifest: sha256:eda469715488418328cb49938a35fda3b600219e589053413c64d0cd250e66e4
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:03acbebd4417e0bd0eec87fccb7720b3a4dd9342e94c1a5a6ae7c4c5a9a1b99d
+            source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
+            manifest: sha256:6c1a7fa3f5b974d1aee84fa81baf0b41ee52a06a2e3a01341ba9b872ef792b9e
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:dfa0611083d9ab8db09d29490b3f9ca4f77bb27a091ed1c6de3a90349cc40fe9
+            plan: .stoke/hosted-arm-warm.json
+            plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
       contents: read
-      packages: read
+      packages: write
     container:
       image: ${{ matrix.image }}
       options: --security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw
@@ -59,6 +69,8 @@ jobs:
       APPLICATION_SOURCE: ${{ matrix.source }}
       APPLICATION_PLATFORM: linux/${{ matrix.arch }}
       EXPECTED_MANIFEST: ${{ matrix.manifest }}
+      STOKE_CI_PLAN: ${{ matrix.plan }}
+      STOKE_CI_PLAN_ID: ${{ matrix.plan_id }}
       GIT_OPTIONAL_LOCKS: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -74,7 +86,7 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
           printf 'APPLICATION_COMMIT=%s TREE=%s\n' "$APPLICATION_SOURCE" "$(git rev-parse 'HEAD^{tree}')"
       - id: auth
-        name: Authenticate read-only registry access
+        name: Authenticate registry cache and exact-result publication
         shell: bash
         env:
           GHCR_USER: ${{ github.actor }}
@@ -85,18 +97,33 @@ jobs:
           printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
           printf '%s' "$GHCR_TOKEN" | coopr login --authfile "$auth_dir/auth.json" \
             --username "$GHCR_USER" --password-stdin ghcr.io
-      - name: Require registry reuse of the existing Go-build inputs
+      - name: Require read/write registry reuse of the frozen Go-build inputs
         shell: bash
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
         run: |
           log="$RUNNER_TEMP/stoke-build-reuse.log"
-          stoke run -f examples/ci/stoke.yaml --context . \
+          printf 'WORKFLOW_COMMIT=%s\n' "$GITHUB_SHA"
+          scope=$(GITHUB_SHA="$APPLICATION_SOURCE" stoke ci scope --plan-id "$STOKE_CI_PLAN_ID")
+          printf '%s\n' "$scope"
+          started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+          stoke ci run --plan "$STOKE_CI_PLAN" --plan-id "$STOKE_CI_PLAN_ID" \
+            --job build --scope "$scope" --attempt "$GITHUB_RUN_ATTEMPT" \
+            --needs-env --github-output "$GITHUB_OUTPUT" \
             --runtime crun --storage-driver vfs \
             --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            --cache-to ghcr.io/strio-dev/stoke-qualification-tools \
+            --results-repository ghcr.io/strio-dev/stoke-qualification-tools \
             --authfile "$STOKE_GHCR_AUTH_DIR/auth.json" \
             --cache-dir "$RUNNER_TEMP/stoke-cache" --output "$RUNNER_TEMP/stoke-output" \
-            build 2>&1 | tee "$log"
+            2>&1 | tee "$log"
+          python3 - "$started_ns" "$APPLICATION_PLATFORM" <<'PY'
+          import sys
+          import time
+
+          elapsed_ns = time.monotonic_ns() - int(sys.argv[1])
+          print(f"STOKE_BUILD_ELAPSED_NS={elapsed_ns} platform={sys.argv[2]} driver=vfs cache=read-write")
+          PY
           in_go_run=0
           cached_go_run=0
           while IFS= read -r line; do

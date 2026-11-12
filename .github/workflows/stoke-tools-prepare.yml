@@ -3,6 +3,12 @@
 name: Stoke tools preparation
 on:
   workflow_call:
+    inputs:
+      trace_patch_b64:
+        description: Trusted owner-supplied diagnostic patch against the pinned Coopr source
+        type: string
+        required: false
+        default: ""
 permissions:
   contents: read
 jobs:
@@ -47,19 +53,54 @@ jobs:
           set_as_trusted_user: false
       - id: build
         name: Build the pinned native tools image and upstream transfer tools
+        env:
+          TRACE_PATCH_B64: ${{ inputs.trace_patch_b64 }}
         shell: bash
         run: |
           tools_dir=$(mktemp -d "$RUNNER_TEMP/stoke-tools-${TOOLS_ARCH}.XXXXXXXX")
           printf 'directory=%s\n' "$tools_dir" >> "$GITHUB_OUTPUT"
+          export COOPR_TRACE_PATCH=""
+          if [ -n "$TRACE_PATCH_B64" ]; then
+            export COOPR_TRACE_PATCH="$tools_dir/coopr-perf-trace.patch"
+            python3 - <<'PYTHON'
+          import base64
+          import hashlib
+          import os
+          from pathlib import Path
+
+          patch = base64.b64decode(os.environ["TRACE_PATCH_B64"], validate=True)
+          assert patch, "diagnostic patch must not be empty"
+          path = Path(os.environ["COOPR_TRACE_PATCH"])
+          with path.open("xb") as output:
+              output.write(patch)
+          path.chmod(0o600)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("diagnostic_patch_sha256=" + hashlib.sha256(patch).hexdigest() + "\n")
+          PYTHON
+          fi
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            coopr = builtins.getFlake "github:strio-dev/coopr/d694b62545524ddcac1bd5a952a6b059df49b7e0";
-            pkgs = import stoke.inputs.nixpkgs { system = builtins.getEnv "TOOLS_SYSTEM"; };
+            cooprBase = builtins.getFlake "github:strio-dev/coopr/d694b62545524ddcac1bd5a952a6b059df49b7e0";
+            system = builtins.getEnv "TOOLS_SYSTEM";
+            tracePath = builtins.getEnv "COOPR_TRACE_PATCH";
+            tracePatch = builtins.toFile "coopr-perf-trace.patch" (builtins.readFile (builtins.getEnv "COOPR_TRACE_PATCH"));
+            coopr = if tracePath == "" then cooprBase else cooprBase // {
+              packages = cooprBase.packages // {
+                ${system} = cooprBase.packages.${system} // {
+                  coopr = cooprBase.packages.${system}.coopr.overrideAttrs (old: {
+                    postPatch = (old.postPatch or "") + ''
+                      patch --batch -p1 --fuzz=0 < ${tracePatch}
+                    '';
+                  });
+                };
+              };
+            };
+            pkgs = import stoke.inputs.nixpkgs { inherit system; };
             backend = import coopr.inputs.nix2container { inherit pkgs; };
             image = stoke.lib.mkContainer {
               cooprFlake = coopr;
-              system = builtins.getEnv "TOOLS_SYSTEM";
+              inherit system;
               uid = 1001;
               gid = 1001;
             };
@@ -73,6 +114,7 @@ jobs:
         name: Publish and inspect the native manifest
         env:
           TOOLS_DIR: ${{ steps.build.outputs.directory }}
+          DIAGNOSTIC_PATCH_SHA256: ${{ steps.build.outputs.diagnostic_patch_sha256 }}
           GHCR_TOKEN: ${{ github.token }}
           GHCR_USER: ${{ github.actor }}
         shell: bash
@@ -116,11 +158,16 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"image=ghcr.io/strio-dev/stoke-qualification-tools@{digest}\n")
               output.write(f"digest={digest}\ntag={tag}\n")
-          print(json.dumps({
+          receipt = {
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
               "cooprSource": "d694b62545524ddcac1bd5a952a6b059df49b7e0",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
-          }, sort_keys=True))
+          }
+          diagnostic_sha256 = os.environ["DIAGNOSTIC_PATCH_SHA256"]
+          if diagnostic_sha256:
+              receipt["cooprSourceBase"] = receipt.pop("cooprSource")
+              receipt["diagnosticPatchSHA256"] = diagnostic_sha256
+          print(json.dumps(receipt, sort_keys=True))
           PYTHON
       - name: Remove only this job's temporary registry credentials
         if: ${{ always() && steps.publish.outputs.directory != '' }}
