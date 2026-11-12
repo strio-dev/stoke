@@ -43,21 +43,14 @@ let
     runtimeInputs = [
       pkgs.rootlesskit
       pkgs.slirp4netns
+      pkgs.iproute2
       pkgs.coreutils
       pkgs.python3
       pkgs.bash
     ];
     text = ''
       # Keep the image's verified setuid mapping helpers first.
-      export PATH="/usr/bin:/bin:${
-        lib.makeBinPath [
-          pkgs.rootlesskit
-          pkgs.slirp4netns
-          pkgs.coreutils
-          pkgs.python3
-          pkgs.bash
-        ]
-      }"
+      export PATH="/usr/bin:/bin:$PATH"
       ${builtins.readFile ./rootless.sh}
     '';
   };
