@@ -13,7 +13,7 @@ repo=ghcr.io/strio-dev/stoke-qualification-tools
 work="$RUNNER_TEMP/engine-comparison-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${APPLICATION_PLATFORM#linux/}"
 mkdir "$work"
 tag="buildkit-benchmark-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${APPLICATION_PLATFORM#linux/}"
-for engine in coopr buildkit; do
+for engine in buildkit coopr; do
   for phase in cold local-warm registry-warm; do
     dir="$work/$engine-$phase"; mkdir "$dir"
     state="$work/$engine-local-state"

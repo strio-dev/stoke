@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -128,16 +129,31 @@ func requirePrivateRootlessNetwork() error {
 	if os.Geteuid() != 0 || !userns.RunningInUserNS() || os.Getenv("ROOTLESSKIT_STATE_DIR") == "" {
 		return errors.New("requires mapped root inside an explicit stock RootlessKit state directory")
 	}
+	return requireDifferentNetworkNamespace(os.Getenv("BENCHMARK_OUTER_NETNS"))
+}
+
+// The trusted wrapper records its own namespace before RootlessKit starts.
+// This is benchmark evidence, not an authentication or authority token.
+func requireDifferentNetworkNamespace(outer string) error {
+	parts := strings.Split(outer, ":")
+	if len(parts) != 2 {
+		return errors.New("missing or invalid outer network namespace receipt")
+	}
+	device, deviceErr := strconv.ParseUint(parts[0], 10, 64)
+	inode, inodeErr := strconv.ParseUint(parts[1], 10, 64)
+	if deviceErr != nil || inodeErr != nil || inode == 0 {
+		return errors.New("invalid outer network namespace receipt")
+	}
 	own, err := os.Stat("/proc/self/ns/net")
 	if err != nil {
 		return err
 	}
-	outer, err := os.Stat("/proc/1/ns/net")
-	if err != nil {
-		return err
+	identity, ok := own.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("network namespace has no Linux inode identity")
 	}
-	if os.SameFile(own, outer) {
-		return errors.New("RootlessKit network namespace must differ from outer PID1; host networking is forbidden")
+	if uint64(identity.Dev) == device && identity.Ino == inode {
+		return errors.New("RootlessKit network namespace equals its outer namespace")
 	}
 	return nil
 }

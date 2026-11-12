@@ -15,6 +15,7 @@ let
       root = ./reference;
       fileset = lib.fileset.unions [
         ./reference/main.go
+        ./reference/main_test.go
         ./reference/worker.go
         ./reference/workload.go
         ./reference/registry.go

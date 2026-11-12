@@ -10,6 +10,9 @@ for resource in /sys/fs/cgroup/cpu.max /sys/fs/cgroup/memory.max; do
   if [[ -r "$resource" ]]; then printf '%s=' "$resource"; cat "$resource"; fi
 done
 started=$(python3 -c 'import time; print(time.monotonic_ns())')
+outer_netns=$(stat -Lc '%d:%i' /proc/self/ns/net)
+[[ "$outer_netns" =~ ^[0-9]+:[0-9]+$ ]]
+export BENCHMARK_OUTER_NETNS="$outer_netns"
 rk_state=$(mktemp -d "${TMPDIR:-/tmp}/stoke-benchmark-rootless.XXXXXXXX")
 child=""
 interrupted=0
@@ -22,7 +25,10 @@ rootlesskit --state-dir="$rk_state" --subid-source=static \
   bash -c '
     set -euo pipefail
     [[ "$(id -u):$(id -g)" = 0:0 ]]
-    [[ "$(readlink /proc/self/ns/net)" != "$(readlink /proc/1/ns/net)" ]]
+    inner_netns=$(stat -Lc "%d:%i" /proc/self/ns/net)
+    [[ "$inner_netns" =~ ^[0-9]+:[0-9]+$ ]]
+    [[ "$inner_netns" != "$BENCHMARK_OUTER_NETNS" ]]
+    printf "BENCHMARK_NETWORK_NAMESPACE outer=%s inner=%s\n" "$BENCHMARK_OUTER_NETNS" "$inner_netns"
     printf "BENCHMARK_INNER_UID_MAP\n"
     cat /proc/self/uid_map
     printf "BENCHMARK_INNER_GID_MAP\n"

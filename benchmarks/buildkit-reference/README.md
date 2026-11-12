@@ -4,7 +4,7 @@ This recipe adds a standalone BuildKit0.34.2 reference and the same stock
 RootlessKit wrapper for both measured engines. It preserves the existing
 Coopr/Stoke image recipe, UID/GID1001, verified setuid helpers, native runtimes,
 VFS setting and outer runtime profile. No daemon or product backend is added.
-The source directory contains only the six accepted Go files and module files.
+The source directory contains only the reference program/test sources and module files.
 
 Import default.nix from the existing tools preparation expression with its
 existing stoke/coopr flakes and native system. The fixed-output vendor hash was verified by a native Nix build. The returned
@@ -16,8 +16,11 @@ output paths. Pass --runtime /bin/crun to the reference; that is the same native
 runtime already supplied by the tools image. Its compatibility must be proven
 in the unchanged profile. There is no runtime or security fallback. RootlessKit
 uses static existing subid files, private slirp4netns networking, no host-loopback
-access, and private /etc and /run copy-up. It does not create a PID namespace;
-BuildKit retains ProcessSandbox for each RUN. The existing map ranges produce
+access, and private /etc and /run copy-up. The wrapper records its own network
+namespace before RootlessKit; the child and reference compare their own identity
+against that receipt. They never inspect the inaccessible outer PID1 namespace.
+Read/parse failures stop the test. The receipt is diagnostic evidence, not
+authority. BuildKit retains ProcessSandbox for each RUN. The existing map ranges produce
 inside-to-outer UID/GID maps 0:1001:1, 1:1:1000, 1001:1002:64535.
 
 Stock RootlessKit has an ephemeral api.sock inside its private state directory.
