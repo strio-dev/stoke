@@ -48,7 +48,7 @@ was skipped and the native final gate received `false`. This is the expected
 negative outcome. Auth files, job containers and networks were cleaned up on
 both success and failure; registry objects were retained.
 
-## Pending Go-build reuse probe
+## Go-build reuse with the repaired engine
 
 Coopr [PR #24](https://github.com/strio-dev/coopr/pull/24), at
 `e88a2107ba9ad133ee7e7b9318dd436dcd8f2ac4`, repairs shared-prefix metadata
@@ -64,20 +64,29 @@ from Stoke `483e8e939bfd4d4df3ec18a43f36626106591395`, passed on both architectu
 
 Both image receipts confirm UID/GID1001 and the native system. These image source
 pins differ from the original application checkouts; changing the tools must not
-change the input bytes. The final hosted reuse results remain pending.
+change the input bytes.
 
-The final `cache-reuse` matrix reserves two containers, one per native
-architecture. It runs only `stoke run ... build` with `--cache-from` and
-read-only package access. Each job checks out the complete original application
-commit from the table above and verifies the checkout before and after execution.
-Auth files, engine state, caches, logs and outputs stay outside that context.
+The final `cache-reuse` matrix in
+[run 43132580221](https://github.com/strio-dev/stoke/actions/runs/43132580221),
+at workflow commit `f75b4848618b1f3f4096b0c4004b73bc7bc1ca00`, passed on both
+architectures. It ran only `stoke run ... build` with `--cache-from` and read-only
+package access. Each job checked out the complete original application commit
+and verified its HEAD and clean tracked, untracked and ignored file state before
+and after execution. Auth files, engine state, caches, logs and outputs stayed
+outside that context. The application trees were:
 
-Success requires a positive `Using cache` receipt for the actual Go-build RUN,
-absence of a standalone `STOKE_BUILD_EXECUTED` marker, and a passed build report
-whose `tasks[].digest` matches the original canonical build output above.
-A COPY hit, echoed command or identical binary bytes alone is insufficient.
-This probe does not rerun the complete DAG with the new engine. No final hosted
-Go-build cache hit is claimed until both results are recorded.
+| Architecture | Original application tree | Reuse job |
+| --- | --- | --- |
+| ARM64 | `6b6bae372eedef0ff9e94d42659631e69fe2396e` | [130900063936](https://github.com/strio-dev/stoke/actions/runs/43132580221/job/130900063936) |
+| AMD64 | `ef3cfabb61ddce15016e3072d092a6515fd3ee78` | [130900064246](https://github.com/strio-dev/stoke/actions/runs/43132580221/job/130900064246) |
+
+Both actual Go-build RUNs emitted `Using cache`, with no standalone
+`STOKE_BUILD_EXECUTED` marker. Both reports passed with exactly one image build
+on the expected platform; their `tasks[].digest` values matched the original
+canonical build outputs above. Credential, container and network cleanup passed.
+A COPY hit, echoed command or identical binary bytes alone was insufficient.
+This establishes registry reuse by the repaired engine against the original
+input bytes; it does not rerun the complete DAG with that engine.
 
 ## Native caller and batch bounds
 
@@ -105,9 +114,9 @@ Manual dispatch through `.github/workflows/stoke-runtime.yml` is restricted to
 strings select no jobs. Use `[skip ci]` on qualification branch updates to avoid
 the unrelated push-triggered runtime matrix.
 
-The ceiling remains **54 container-job starts: 52 charged, two remaining**.
-The final matrix reserves those two starts; no additional dispatch or selective
-rerun is authorized. Keep at most two concurrent workflows and matrix parallelism
+The batch used **54 of 54 container-job starts**, including the final two-job
+reuse matrix. No additional qualification dispatch or selective rerun remains
+within this budget. The batch kept at most two concurrent workflows and matrix parallelism
 two. Qualification runtime jobs and both native image-preparation jobs have
 45-minute limits; these do not bound queued time. The earlier drain time and
 absolute deadline are superseded. Preserve actual counts, report omitted cases,

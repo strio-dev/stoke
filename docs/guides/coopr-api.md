@@ -41,6 +41,8 @@ The flag takes precedence over `STOKE_COOPR_BINARY`; otherwise Stoke looks for `
 
 `--cache-from` and `--cache-to` additionally require the `registry-cache`
 capability, which Coopr `0.6.0` provides.
+API capability support does not establish registry compatibility; see the
+[current GHCR cache limitations](caching.md#share-results-through-an-oci-registry).
 Stoke rejects an unsupported request before executing tasks rather than silently
 using only the local cache. The service forwards the configured read/write
 repositories to Coopr's existing registry-cache backend for literal programs and

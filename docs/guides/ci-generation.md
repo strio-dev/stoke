@@ -122,7 +122,7 @@ remain in the handwritten caller. Grant package access only to trusted jobs
 and the intended test repositories. The option records the authentication mode
 in the plan without recording credential values.
 
-This is an experimental deployment choice, not a qualified hosted-runner profile:
+The generator does not select or qualify a container security profile:
 
 - The runner must support Linux Docker job containers and the image's native
   architecture. Pull access must exist **before** steps start. Use an accessible
@@ -368,8 +368,11 @@ fails rather than truncates. The initial generator bounds total input environmen
 size; runners with unusually low process limits need separate qualification.
 Exact import supports plain/gzip image layers and explicit graph/document/byte
 limits. Unsupported compression, wrong platform, malformed graphs and oversized
-payloads fail before consumer execution. Native ARM and restricted/nested runners
-remain separately unqualified; COPY-only ARM cache tests are not ARM execution.
+payloads fail before consumer execution. Full native AMD64 and ARM64 workflows,
+including fresh test/vet jobs, package gates and exact GHCR result handoff,
+passed with the [documented images and container profile](../development/hosted-ci-qualification.md#verified-hosted-results).
+Other runner configurations and hosted retry behavior remain separately
+unqualified; COPY-only ARM cache tests are not ARM execution.
 
 ## Reproduce qualification
 

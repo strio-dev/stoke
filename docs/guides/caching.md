@@ -56,6 +56,12 @@ the `registry-cache` API capability through `STOKE_COOPR_BINARY` or
 `--coopr-binary`; older API-capable development engines may lack that capability.
 Coopr `0.6.0` provides this capability. See [engine selection](coopr-api.md).
 
+Released Coopr `0.6.0` advertises `registry-cache`, but its cache publication
+fails strict GHCR descriptor checks. The repaired OCI-index transport and
+shared-prefix reuse fix are in [Coopr PR #24](https://github.com/strio-dev/coopr/pull/24).
+See [hosted qualification](../development/hosted-ci-qualification.md) for the
+tested immutable engine revision, images and actual cache-reuse evidence.
+
 `--cache-from` reads and `--cache-to` writes. Each option is repeatable, and they
 are independent: a read repository is never updated unless also selected for
 writes. Trusted runs can read and update the same repository:
