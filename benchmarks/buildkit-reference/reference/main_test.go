@@ -5,6 +5,9 @@ import (
 	"os"
 	"syscall"
 	"testing"
+	"time"
+
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestNetworkNamespaceReceipt(t *testing.T) {
@@ -29,5 +32,16 @@ func TestNetworkNamespaceReceipt(t *testing.T) {
 				t.Fatalf("namespace receipt: %v", err)
 			}
 		})
+	}
+}
+
+func TestScratchImageHistory(t *testing.T) {
+	config := scratchImageConfig(v1.Platform{OS: "linux", Architecture: "amd64"})
+	if config.Created == nil || !config.Created.Equal(time.Unix(0, 0)) || len(config.History) != 1 {
+		t.Fatalf("one reproducible scratch filesystem layer required: %+v", config)
+	}
+	history := config.History[0]
+	if history.EmptyLayer || history.Created == nil || !history.Created.Equal(*config.Created) || history.CreatedBy != "COPY /stoke /stoke" {
+		t.Fatalf("authored history must survive remote cache restoration: %+v", history)
 	}
 }

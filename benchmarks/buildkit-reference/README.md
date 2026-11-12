@@ -37,6 +37,8 @@ Cold: empty engine state, no cache-from. Local warm: new process, same state.
 Registry warm: new process, fresh state, that engine's own cold registry cache.
 Compare actual binary SHA/mode/functional configuration across engines; exact
 OCI identity is an own-engine cold/warm assertion, not a cross-engine assumption.
+The reference supplies authored history for its final scratch COPY so registry
+imports cannot substitute cache-ref descriptions into the image configuration.
 
 Native reference compilation, vet, Nix packaging and wrapper static checks pass.
 crun compatibility, stock RootlessKit lifecycle/networking, real Go execution,

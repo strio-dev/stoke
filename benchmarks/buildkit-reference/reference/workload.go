@@ -68,15 +68,21 @@ func (e *engine) definition(ctx context.Context, sessionID string) (*llb.Definit
 	// Explicit NetMode_HOST would request an unnecessary network.host entitlement.
 	builder = builder.Run(llb.Args(append(slices.Clone(shell), buildCommand))).Root()
 	final := llb.Scratch().File(llb.Copy(builder, "/stoke", "/stoke"))
-	epoch := time.Unix(0, 0).UTC()
-	// Match Coopr's functional scratch defaults. History/creation/layer encoding
-	// remain BuildKit-owned; fixed epoch makes own cold/warm image identity stable.
-	config := v1.Image{Platform: platform, Created: &epoch, Config: v1.ImageConfig{Env: []string{"PATH=" + system.DefaultPathEnvUnix}, WorkingDir: "/"}}
-	e.imageConfig, err = json.Marshal(config)
+	e.imageConfig, err = json.Marshal(scratchImageConfig(platform))
 	if err != nil {
 		return nil, err
 	}
 	definition, err := final.Marshal(ctx, llb.Platform(platform))
 	emit(map[string]any{"phase": "definition-base-metadata", "seconds": time.Since(started).Seconds(), "base": baseImage, "selectedBaseDigest": metadata.Digest, "baseConfigDigest": digest.FromBytes(metadata.Config), "sourceCommit": sourceCommit, "platform": platforms.Format(platform)})
 	return definition, err
+}
+
+func scratchImageConfig(platform v1.Platform) v1.Image {
+	epoch := time.Unix(0, 0).UTC()
+	return v1.Image{
+		Platform: platform, Created: &epoch,
+		Config: v1.ImageConfig{Env: []string{"PATH=" + system.DefaultPathEnvUnix}, WorkingDir: "/"},
+		// The frontend owns authored history; imported ref descriptions differ.
+		History: []v1.History{{Created: &epoch, CreatedBy: "COPY /stoke /stoke"}},
+	}
 }
