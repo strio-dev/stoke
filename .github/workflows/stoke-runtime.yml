@@ -44,14 +44,14 @@ jobs:
             runner: ubuntu-24.04
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:ca7ba59621d845c6192810246dfb4de08f4d6e70e5c6f4df02d8b98401b4106e
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:11d8af560daef07654b4914df0a1a951a7f664eecfd17d68eb0e14ae8da64db6
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:a27b9656a28e106c613abe0bd165df8e8430d87b32584ccbcbe866e1aca3b5ad
             plan: .stoke/hosted-warm.json
             plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
           - arch: arm64
             runner: ubuntu-24.04-arm
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:6c1a7fa3f5b974d1aee84fa81baf0b41ee52a06a2e3a01341ba9b872ef792b9e
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:dfa0611083d9ab8db09d29490b3f9ca4f77bb27a091ed1c6de3a90349cc40fe9
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:f3a16f9f13ad4963c294b80a104bea46f2d5f604fda945a075c34da37ef82f9a
             plan: .stoke/hosted-arm-warm.json
             plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
     runs-on: ${{ matrix.runner }}
