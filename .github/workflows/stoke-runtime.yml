@@ -9,6 +9,11 @@ on:
         type: choice
         options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, candidate, candidate-amd, candidate-arm]
         default: roundtrip
+      benchmark_reference:
+        description: Include the standalone BuildKit reference in prepared images
+        type: boolean
+        required: false
+        default: false
       trace_patch_b64:
         description: Optional public source patch for tools-image tracing
         type: string
@@ -32,6 +37,7 @@ jobs:
     uses: ./.github/workflows/stoke-tools-prepare.yml
     with:
       trace_patch_b64: ${{ inputs.trace_patch_b64 }}
+      benchmark_reference: ${{ inputs.benchmark_reference }}
   dogfood:
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip","candidate","candidate-amd","candidate-arm"]'), inputs.scenario) }}
     permissions:

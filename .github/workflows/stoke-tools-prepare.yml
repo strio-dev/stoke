@@ -9,6 +9,11 @@ on:
         type: string
         required: false
         default: ""
+      benchmark_reference:
+        description: Include the standalone direct-LLB benchmark and stock RootlessKit
+        type: boolean
+        required: false
+        default: false
 permissions:
   contents: read
 jobs:
@@ -32,6 +37,7 @@ jobs:
       TOOLS_ARCH: ${{ matrix.arch }}
       TOOLS_SYSTEM: ${{ matrix.system }}
       TOOLS_MACHINE: ${{ matrix.machine }}
+      BUILD_BENCHMARK_REFERENCE: ${{ inputs.benchmark_reference }}
     timeout-minutes: 45
     permissions:
       contents: read
@@ -104,7 +110,11 @@ jobs:
               uid = 1001;
               gid = 1001;
             };
-          in { inherit image; copyTo = image.copyTo; skopeo = backend.skopeo-nix2container; }
+          in if builtins.getEnv "BUILD_BENCHMARK_REFERENCE" == "true" then
+            import (stoke.outPath + "/benchmarks/buildkit-reference") {
+              stokeFlake = stoke; cooprFlake = coopr; inherit system;
+            }
+          else { inherit image; copyTo = image.copyTo; skopeo = backend.skopeo-nix2container; }
           NIX
           for attribute in image copyTo skopeo; do
             nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
@@ -162,6 +172,7 @@ jobs:
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
               "cooprSource": "97e861a64d4395b38f5f650ba121943064a8259d",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
+              "benchmarkReference": os.environ["BUILD_BENCHMARK_REFERENCE"] == "true",
           }
           diagnostic_sha256 = os.environ["DIAGNOSTIC_PATCH_SHA256"]
           if diagnostic_sha256:
