@@ -13,6 +13,14 @@ on:
         description: Optional public source patch for tools-image tracing
         type: string
         default: ""
+      cache_read:
+        description: Read registry cache in the cache-reuse scenario
+        type: boolean
+        default: true
+      expected_manifests:
+        description: Optional warm output digests by linux/amd64 and linux/arm64
+        type: string
+        default: "{}"
 permissions:
   contents: read
 jobs:
@@ -34,7 +42,7 @@ jobs:
       scenario: ${{ inputs.scenario }}
   cache-reuse:
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'cache-reuse' }}
-    name: Registry read/write warm build / ${{ matrix.arch }} / vfs
+    name: Registry read/write ${{ inputs.cache_read && 'warm' || 'cold' }} build / ${{ matrix.arch }} / vfs
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -47,6 +55,8 @@ jobs:
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:7d27c26808b902f8f7082de575a6d7838b6f5d3f6622cd8e214cdcd247a58bc3
             plan: .stoke/hosted-warm.json
             plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
+            cold_plan: .stoke/hosted-cold.json
+            cold_plan_id: 7be44ad88939e561d890e4e30c1069b2e63a18f383cf666f421b97792b7e5301
           - arch: arm64
             runner: ubuntu-24.04-arm
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
@@ -54,6 +64,8 @@ jobs:
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:7f141cb58fcbacd5a7ff88be154c2fe697a9a1dda35545d0aed818fb871c6f27
             plan: .stoke/hosted-arm-warm.json
             plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
+            cold_plan: .stoke/hosted-arm-cold.json
+            cold_plan_id: e579174fb6ab1916182914f1b366a3575aabbeb0c98de974072537b129f4d8b8
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -69,8 +81,12 @@ jobs:
       APPLICATION_SOURCE: ${{ matrix.source }}
       APPLICATION_PLATFORM: linux/${{ matrix.arch }}
       EXPECTED_MANIFEST: ${{ matrix.manifest }}
+      EXPECTED_MANIFESTS: ${{ inputs.expected_manifests || '{}' }}
+      CACHE_READ: ${{ inputs.cache_read }}
       STOKE_CI_PLAN: ${{ matrix.plan }}
       STOKE_CI_PLAN_ID: ${{ matrix.plan_id }}
+      STOKE_CI_COLD_PLAN: ${{ matrix.cold_plan }}
+      STOKE_CI_COLD_PLAN_ID: ${{ matrix.cold_plan_id }}
       GIT_OPTIONAL_LOCKS: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -85,6 +101,20 @@ jobs:
           test "$(git rev-parse HEAD)" = "$APPLICATION_SOURCE"
           test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
           printf 'APPLICATION_COMMIT=%s TREE=%s\n' "$APPLICATION_SOURCE" "$(git rev-parse 'HEAD^{tree}')"
+          python3 - <<'PY'
+          import json, os, re
+          overrides = json.loads(os.environ["EXPECTED_MANIFESTS"])
+          assert isinstance(overrides, dict) and overrides.keys() <= {"linux/amd64", "linux/arm64"}, "expected a platform-to-digest object"
+          assert all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in overrides.values()), "expected canonical sha256 digests"
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              output.write("EXPECTED_MANIFEST=" + overrides.get(os.environ["APPLICATION_PLATFORM"], os.environ["EXPECTED_MANIFEST"]) + "\n")
+              if os.environ["CACHE_READ"] == "false":
+                  with open(os.environ["STOKE_CI_COLD_PLAN"]) as source:
+                      plan = json.load(source)
+                  assert plan["id"] == os.environ["STOKE_CI_COLD_PLAN_ID"] and not plan["config"].get("cacheFrom"), "cold plan must have no registry cache reads"
+                  assert plan["config"].get("cacheTo") == ["ghcr.io/strio-dev/stoke-qualification-tools"], "cold plan changed the cache destination"
+                  output.write("STOKE_CI_PLAN=" + os.environ["STOKE_CI_COLD_PLAN"] + "\nSTOKE_CI_PLAN_ID=" + plan["id"] + "\n")
+          PY
       - id: auth
         name: Authenticate registry cache and exact-result publication
         shell: bash
@@ -97,7 +127,7 @@ jobs:
           printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
           printf '%s' "$GHCR_TOKEN" | coopr login --authfile "$auth_dir/auth.json" \
             --username "$GHCR_USER" --password-stdin ghcr.io
-      - name: Require read/write registry reuse of the frozen Go-build inputs
+      - name: Check the frozen Go build and registry cache behavior
         shell: bash
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
@@ -107,25 +137,42 @@ jobs:
           scope=$(GITHUB_SHA="$APPLICATION_SOURCE" stoke ci scope --plan-id "$STOKE_CI_PLAN_ID")
           printf '%s\n' "$scope"
           started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+          cache_args=()
+          if [[ "$CACHE_READ" = true ]]; then cache_args+=(--cache-from ghcr.io/strio-dev/stoke-qualification-tools); fi
+          status=0
           stoke ci run --plan "$STOKE_CI_PLAN" --plan-id "$STOKE_CI_PLAN_ID" \
             --job build --scope "$scope" --attempt "$GITHUB_RUN_ATTEMPT" \
             --needs-env --github-output "$GITHUB_OUTPUT" \
             --runtime crun --storage-driver vfs \
-            --cache-from ghcr.io/strio-dev/stoke-qualification-tools \
+            "${cache_args[@]}" \
             --cache-to ghcr.io/strio-dev/stoke-qualification-tools \
             --results-repository ghcr.io/strio-dev/stoke-qualification-tools \
             --authfile "$STOKE_GHCR_AUTH_DIR/auth.json" \
             --cache-dir "$RUNNER_TEMP/stoke-cache" --output "$RUNNER_TEMP/stoke-output" \
-            2>&1 | tee "$log"
-          python3 - "$started_ns" "$APPLICATION_PLATFORM" <<'PY'
-          import sys
-          import time
+            2>&1 | tee "$log" || status=$?
+          python3 - "$started_ns" "$APPLICATION_PLATFORM" "$log" <<'PY'
+          import json, os, re, sys, time
 
           elapsed_ns = time.monotonic_ns() - int(sys.argv[1])
-          print(f"STOKE_BUILD_ELAPSED_NS={elapsed_ns} platform={sys.argv[2]} driver=vfs cache=read-write")
+          cache_mode = "read-write" if os.environ["CACHE_READ"] == "true" else "write-only"
+          print(f"STOKE_BUILD_ELAPSED_NS={elapsed_ns} platform={sys.argv[2]} driver=vfs cache={cache_mode}")
+          with open(sys.argv[3]) as stream:
+              reports = [json.loads(line) for line in stream if line.startswith('{"status":')]
+          report = reports[0] if len(reports) == 1 else {}
+          tasks = report.get("tasks", [])
+          task = tasks[0] if len(tasks) == 1 else {}
+          print("STOKE_BUILD_RESULT=" + json.dumps({"source": os.environ["APPLICATION_SOURCE"], "platform": task.get("platform"), "status": task.get("status", report.get("status", "unreported")), "digest": task.get("digest")}))
+          assert len(reports) == 1, "expected one Stoke report"
+          assert len(report["tasks"]) == 1, "expected build alone"
+          assert report["status"] == "passed" and (task["name"], task["status"], task["kind"], task["platform"]) == ("build", "passed", "image", sys.argv[2]), "build did not pass alone on the expected platform"
+          assert isinstance(task.get("digest"), str) and re.fullmatch(r"sha256:[0-9a-f]{64}", task["digest"]), "build output lacks a canonical digest"
+          if os.environ["CACHE_READ"] == "true":
+              assert task["digest"] == os.environ["EXPECTED_MANIFEST"], "restored output differs from the expected producer"
+              print("STOKE_RESTORED_BUILD_DIGEST=" + task["digest"])
           PY
           in_go_run=0
           cached_go_run=0
+          executed_go_run=0
           while IFS= read -r line; do
             case "$line" in
               *"STEP "*"RUN "*"go build "*) in_go_run=1 ;;
@@ -133,29 +180,22 @@ jobs:
             esac
             if [[ "$in_go_run" = 1 && "$line" == *"Using cache"* ]]; then cached_go_run=1; fi
             if [[ "$line" == *STOKE_BUILD_EXECUTED && "$line" != *"echo STOKE_BUILD_EXECUTED"* ]]; then
-              echo '::error::The Go build executed instead of reusing the existing registry cache.'
-              exit 1
+              executed_go_run=1
             fi
           done < "$log"
-          test "$cached_go_run" = 1
-          python3 - "$log" "$EXPECTED_MANIFEST" "$APPLICATION_PLATFORM" <<'PY'
-          import json
-          import sys
-
-          with open(sys.argv[1]) as stream:
-              reports = [json.loads(line) for line in stream if line.startswith('{"status":')]
-          assert len(reports) == 1, "expected one Stoke report"
-          report = reports[0]
-          assert report["status"] == "passed" and len(report["tasks"]) == 1, "build did not pass alone"
-          task = report["tasks"][0]
-          assert (task["name"], task["status"], task["kind"], task["platform"], task["digest"]) == (
-              "build", "passed", "image", sys.argv[3], sys.argv[2]
-          ), "restored output differs from the original producer"
-          print("STOKE_RESTORED_BUILD_DIGEST=" + task["digest"])
-          PY
+          if [[ "$CACHE_READ" = true ]]; then
+            test "$cached_go_run" = 1
+            test "$executed_go_run" = 0
+            cache_result=REGISTRY_CACHE_REUSED
+          else
+            test "$cached_go_run" = 0
+            test "$executed_go_run" = 1
+            cache_result=COLD_BUILD_EXECUTED
+          fi
           test "$(git rev-parse HEAD)" = "$APPLICATION_SOURCE"
           test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
-          printf 'GO_RUN_REGISTRY_CACHE_REUSED application=%s\n' "$APPLICATION_SOURCE"
+          test "$status" = 0
+          printf 'GO_RUN_%s application=%s\n' "$cache_result" "$APPLICATION_SOURCE"
       - name: Remove registry credentials
         if: ${{ always() && steps.auth.outputs.directory != '' }}
         shell: bash
