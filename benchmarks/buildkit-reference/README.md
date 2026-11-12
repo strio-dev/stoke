@@ -40,3 +40,15 @@ crun compatibility, stock RootlessKit lifecycle/networking, real Go execution,
 registry cold/export/fresh import, output proof and timing remain runtime gates.
 A failure is reported as failure; it never enables extra privileges or changes
 host settings.
+
+The manual `engine-compare` scenario reuses the native cache job and its fixed
+container options. It checks out the frozen application separately from this
+reviewed harness. `compare.sh` executes both engines in the same native job:
+cold, local warm after process restart, and registry warm with a fresh store.
+It checks actual RUN execution, binary bytes/mode, functional image config and
+identical cold/warm OCI outputs within each engine. Coopr uses two public CLI
+commands for build and archive export; both are included in its core timer.
+Use the core timings for comparison. The outer timer includes different output
+proof work; it is a complete qualification wall time, not a pure engine measure.
+Coopr's shared cache keys do not prove exclusive ancestry from this run's cold
+publication. The result must pass all output checks before reporting speed.

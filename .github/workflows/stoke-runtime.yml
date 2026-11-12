@@ -7,7 +7,7 @@ on:
       scenario:
         description: Approved bounded qualification case
         type: choice
-        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, candidate, candidate-amd, candidate-arm]
+        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, engine-compare, candidate, candidate-amd, candidate-arm]
         default: roundtrip
       benchmark_reference:
         description: Include the standalone BuildKit reference in prepared images
@@ -47,8 +47,8 @@ jobs:
     with:
       scenario: ${{ inputs.scenario }}
   cache-reuse:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'cache-reuse' }}
-    name: Registry read/write ${{ inputs.cache_read && 'warm' || 'cold' }} build / ${{ matrix.arch }} / vfs
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["cache-reuse","engine-compare"]'), inputs.scenario) }}
+    name: ${{ inputs.scenario == 'engine-compare' && 'Engine comparison' || format('Registry read/write {0} build', inputs.cache_read && 'warm' || 'cold') }} / ${{ matrix.arch }} / vfs
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -59,6 +59,7 @@ jobs:
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:ca7ba59621d845c6192810246dfb4de08f4d6e70e5c6f4df02d8b98401b4106e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:22e3b902505753780e7f98adfeea91048d8fdcdcf811d1adab3c1548c7e73230
+            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:6b2132d0dfad7f5027f27e9b77ce8b8f100a5c1ee2abde95393a828e8c67b7f9
             plan: .stoke/hosted-warm.json
             plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
             cold_plan: .stoke/hosted-cold.json
@@ -68,6 +69,7 @@ jobs:
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:6c1a7fa3f5b974d1aee84fa81baf0b41ee52a06a2e3a01341ba9b872ef792b9e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:593c25e9cf20d7e4fa454ee18f79da09c75014b848e3e38534034df6d6e6e985
+            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:9c49df6ba2d552d80de01006942cdbaedc4120730b0406c27ed3ca227b25fcd6
             plan: .stoke/hosted-arm-warm.json
             plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
             cold_plan: .stoke/hosted-arm-cold.json
@@ -78,7 +80,7 @@ jobs:
       contents: read
       packages: write
     container:
-      image: ${{ matrix.image }}
+      image: ${{ inputs.scenario == 'engine-compare' && matrix.benchmark_image || matrix.image }}
       options: --security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw
       credentials:
         username: ${{ github.actor }}
@@ -99,7 +101,15 @@ jobs:
         with:
           ref: ${{ matrix.source }}
           persist-credentials: false
+          path: ${{ inputs.scenario == 'engine-compare' && 'application' || '.' }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ inputs.scenario == 'engine-compare' }}
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          path: benchmark-harness
       - name: Verify the original cold application checkout
+        working-directory: ${{ inputs.scenario == 'engine-compare' && 'application' || '.' }}
         shell: bash
         run: |
           printf 'AVAILABLE_CPUS=%s\n' "$(nproc)"
@@ -134,6 +144,7 @@ jobs:
           printf '%s' "$GHCR_TOKEN" | coopr login --authfile "$auth_dir/auth.json" \
             --username "$GHCR_USER" --password-stdin ghcr.io
       - name: Check the frozen Go build and registry cache behavior
+        if: ${{ inputs.scenario == 'cache-reuse' }}
         shell: bash
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
@@ -202,6 +213,16 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=all --ignored=matching)"
           test "$status" = 0
           printf 'GO_RUN_%s application=%s\n' "$cache_result" "$APPLICATION_SOURCE"
+      - name: Compare direct native Coopr and BuildKit cold and warm builds
+        if: ${{ inputs.scenario == 'engine-compare' }}
+        working-directory: application
+        shell: bash
+        env:
+          STOKE_GHCR_AUTH_DIR: ${{ steps.auth.outputs.directory }}
+        run: |
+          printf 'BENCHMARK_HARNESS_SOURCE=%s\n' "$GITHUB_SHA"
+          timeout --signal=TERM --kill-after=10s 35m \
+            bash "$GITHUB_WORKSPACE/benchmark-harness/benchmarks/buildkit-reference/compare.sh"
       - name: Remove registry credentials
         if: ${{ always() && steps.auth.outputs.directory != '' }}
         shell: bash
