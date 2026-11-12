@@ -1,9 +1,9 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "f541a9a084fb64b8fa63cf4253cf99c709ddf7325a8e5c95a19b2400ef2cb792",
+  "id": "62cce42c02d1e65943b9956ccc152691db47d62b3472506dc08fd9292a14e967",
   "config": {
-    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:7798424beb2fa42954c6d6c9fd94d0ea6e3cd24cb828dc2b5ec4f9c62dcf74a0",
+    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:03acbebd4417e0bd0eec87fccb7720b3a4dd9342e94c1a5a6ae7c4c5a9a1b99d",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
     "githubTokenAuth": true,
     "workflow": "examples/ci/stoke.yaml",

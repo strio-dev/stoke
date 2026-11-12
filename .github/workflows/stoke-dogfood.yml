@@ -32,3 +32,9 @@ jobs:
   arm-warm:
     needs: [arm-cold]
     uses: ./.github/workflows/hosted-arm-warm.generated.yml
+  candidate-amd:
+    if: ${{ inputs.scenario == 'candidate' }}
+    uses: ./.github/workflows/hosted-warm.generated.yml
+  candidate-arm:
+    if: ${{ inputs.scenario == 'candidate' }}
+    uses: ./.github/workflows/hosted-arm-warm.generated.yml

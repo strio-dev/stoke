@@ -1,9 +1,9 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "eb292d533085fe6e1d637b8a8f73490ecdaeb237ce008ee66e263f2e7e605c8e",
+  "id": "d50e47a8d3c4fd05ce34e9cde251ed8afda4d7ec1c6ef38a12f14fa53913766a",
   "config": {
-    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:2810897b2a4acb94f7b8b76fabc039ff9467816751be95d77b2e758936acda27",
+    "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:10e9bd7f43f1a54c87277416ca0fcc9b78a2a6fdda250552f9285c658e4c5df7",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
     "githubTokenAuth": true,
     "workflow": "examples/ci/failure.yaml",
