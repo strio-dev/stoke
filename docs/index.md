@@ -12,17 +12,11 @@ Your CI platform handles triggers, checkout, job placement, credentials and appr
 
 ## Start with a local workflow
 
-[Build Stoke](getting-started.md), then run the [first-workflow tutorial](tutorials/first-workflow.md). The example builds a file, tests it and exports a minimal artifact without compiling an application or requiring a hosted service.
-
-```sh
-stoke check -f examples/first-workflow/stoke.yaml
-stoke plan -f examples/first-workflow/stoke.yaml artifact
-stoke run -f examples/first-workflow/stoke.yaml --context examples/first-workflow artifact
-```
+[Get started](getting-started.md) to build Stoke, install Coopr and prepare rootless execution. Then follow the [first-workflow tutorial](tutorials/first-workflow.md) to build, test and package a text artifact.
 
 ## Reuse and move definitions
 
-Publish shared task definitions as OCI artifacts, import them by digest and carry their declared dependencies with Bale. [Declared inputs](guides/reusable-inputs.md) and `with` arguments let each invocation configure its own task dependency scope. Stoke includes Bale metadata integration; ordinary workflows do not require a Bale executable. Execution starts an explicitly selected API-capable Coopr process. Coopr `0.6.0` provides the service API. See [engine selection](guides/coopr-api.md). See [shared workflows](guides/shared-workflows.md).
+Publish shared task definitions as OCI artifacts, import them by digest and carry their declared dependencies with Bale. [Declared inputs](guides/reusable-inputs.md) and `with` arguments let each invocation configure its own task dependency scope. Stoke includes Bale metadata integration; ordinary workflows do not require a Bale executable. Execution starts an explicitly selected API-capable Coopr process. See [engine selection](guides/coopr-api.md) and [shared workflows](guides/shared-workflows.md).
 
 ## Know the first implementation
 
