@@ -104,6 +104,6 @@ for engine in ('coopr','buildkit'):
     own=[r for r in rows if r['engine']==engine]; assert len({r['imageDigest'] for r in own})==1,(engine,'own cold/warm OCI identity')
 assert len({r['binarySHA256'] for r in rows})==1
 assert all(r['functionalConfig']==rows[0]['functionalConfig'] for r in rows)
-print(json.dumps({'phase':'comparison-proof','passed':True,'cacheSeedBoundary':'Coopr shared mutable graph-v2 keys; exclusive own-cold ancestry unproven. BuildKit unique own-cold tag.','timerBoundary':'Engine core excludes output proof; RootlessKit outer includes setup and engine-specific proof.'},sort_keys=True))
+print(json.dumps({'phase':'comparison-proof','passed':True,'cacheSeedBoundary':'Coopr shared mutable input-keyed graph tags; exclusive own-cold ancestry unproven. BuildKit unique own-cold tag.','timerBoundary':'Engine core excludes output proof; RootlessKit outer includes setup and engine-specific proof.'},sort_keys=True))
 PY
 [[ -z $(git status --porcelain --untracked-files=all --ignored=matching) ]]
