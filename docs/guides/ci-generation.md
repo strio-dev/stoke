@@ -249,9 +249,16 @@ metadata fails clearly. GitHub's documentation does not guarantee old
 remains separate. The safe recovery is to rerun the producer and dependent gates
 or the whole invocation, rather than guess which registry object was tested.
 
-Only selected payload graphs are downloaded. Images retain their canonical remote
-identity and verified original OCI layout for final publication, even if native
-import changes a compressed representation. Publication requires Coopr's explicit
+Image execution passes the exact digest-pinned registry source to Coopr. Coopr
+checks its image-source policy and metadata, then pulls layers only when needed.
+A consumer cache hit can avoid the producer image while still restoring the
+consumer's requested outputs. A miss or fresh check must fetch its required
+inputs; unavailable content fails without replaying the producer. Coopr's native
+registry TLS and signature-policy settings apply to these image sources.
+
+Publication downloads the verified original OCI layout, retaining its canonical
+digest even if native execution uses another compressed representation.
+It requires Coopr's explicit
 `publish-oci-layout` capability and transfers the selected original manifest;
 an older engine fails instead of rebuilding or re-exporting the imported image.
 Components retain the original OCI archive bytes, auxiliary
@@ -366,9 +373,11 @@ would not establish equivalent execution inputs.
 Native metadata is size-bounded, uses separate per-variant environment slots and
 fails rather than truncates. The initial generator bounds total input environment
 size; runners with unusually low process limits need separate qualification.
-Exact import supports plain/gzip image layers and explicit graph/document/byte
-limits. Unsupported compression, wrong platform, malformed graphs and oversized
-payloads fail before consumer execution. Full native AMD64 and ARM64 workflows,
+Exact input metadata has graph, document and encoded-byte limits; wrong platforms
+and malformed metadata fail before consumer execution. Remote image expansion
+uses Coopr's native image validation and resource policy. Local OCI imports retain
+their plain/gzip validation and 32 GiB expanded-byte limit; components and captured
+host files retain bounded full-payload validation. Full native AMD64 and ARM64 workflows,
 including fresh test/vet jobs, package gates and exact GHCR result handoff,
 passed with the [documented images and container profile](../development/hosted-ci-qualification.md#verified-hosted-results).
 Other runner configurations and hosted retry behavior remain separately

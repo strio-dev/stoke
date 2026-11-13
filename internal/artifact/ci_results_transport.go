@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -798,10 +797,16 @@ func (c Client) PublishCIResult(ctx context.Context, repository string, result C
 }
 
 func (c Client) FetchCIPayload(ctx context.Context, repository, reference string, expect CIResultExpectation, directory string) (payload CIPayload, retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=fetch_payload seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
-	}()
+	return c.prepareCIInput(ctx, repository, reference, expect, directory, false)
+}
+
+// ResolveCIInput keeps exact image inputs as pinned registry sources for Coopr.
+// Components and captured host files still require a complete local payload.
+func (c Client) ResolveCIInput(ctx context.Context, repository, reference string, expect CIResultExpectation, directory string) (CIPayload, error) {
+	return c.prepareCIInput(ctx, repository, reference, expect, directory, true)
+}
+
+func (c Client) prepareCIInput(ctx context.Context, repository, reference string, expect CIResultExpectation, directory string, imageReference bool) (payload CIPayload, retErr error) {
 	session, err := c.ciSession(repository, expect.Scope)
 	if err != nil {
 		return payload, err
@@ -823,6 +828,9 @@ func (c Client) FetchCIPayload(ctx context.Context, repository, reference string
 		if err != nil {
 			return payload, err
 		}
+	}
+	if imageReference && result.Kind == "image" {
+		return CIPayload{Result: result, CanonicalReference: repository + "@" + result.Output.Digest.String()}, nil
 	}
 	if _, err := os.Lstat(directory); !errors.Is(err, os.ErrNotExist) {
 		return payload, errors.New("CI payload destination must be fresh")
@@ -878,15 +886,6 @@ func (c Client) FetchCIPayload(ctx context.Context, repository, reference string
 			return payload, errors.New("CI component archive root mismatch")
 		}
 	} else {
-		if result.Kind == "image" {
-			traceCopyStarted := time.Now()
-			defer func() {
-				bounded.budget.mu.Lock()
-				copied := MaxCITransferBytes - int64(bounded.metadataBytes) - bounded.budget.remaining
-				bounded.budget.mu.Unlock()
-				fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=image_payload_copy seconds=%.6f success=%t copied_leaf_bytes=%d verified_metadata_bytes=%d\n", time.Since(traceCopyStarted).Seconds(), retErr == nil, copied, bounded.metadataBytes)
-			}()
-		}
 		store, err := oci.New(filepath.Join(staging, relative))
 		if err != nil {
 			return payload, err

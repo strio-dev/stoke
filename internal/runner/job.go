@@ -25,7 +25,8 @@ type CIRequest struct {
 	Imports         map[string]CIImport
 }
 
-// CIImport identifies a verified canonical OCI output fetched by the caller.
+// CIImport identifies an exact output whose metadata was verified by the caller.
+// Images may use a pinned registry reference without a local OCI payload.
 // Images use an OCI layout directory; components use an OCI archive file.
 // CanonicalReference selects the original immutable payload for publication.
 type CIImport struct {

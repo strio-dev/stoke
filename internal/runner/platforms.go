@@ -18,7 +18,7 @@ func taskPlatform(task workflow.Task, results map[string]coopr.Result) (string, 
 		return requested, nil
 	}
 	producer, ok := results[task.From]
-	if !ok || producer.ImageID == "" {
+	if !ok || imageSource(producer) == "" {
 		return "", fmt.Errorf("task %q did not return a runnable image", task.From)
 	}
 	actual, err := workflow.NormalizePlatform(producer.Platform)

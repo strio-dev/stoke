@@ -16,7 +16,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -47,11 +46,7 @@ type ciImage struct {
 	config   v1.Image
 }
 
-func validateCIImport(ctx context.Context, input CIImport, definition workflow.Task) (retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=validate_import seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
-	}()
+func validateCIImport(ctx context.Context, input CIImport, definition workflow.Task) error {
 	if input.Kind == "host" {
 		if definition.OutputKind() != "host" {
 			return errors.New("host files differ from declared producer kind")
@@ -106,6 +101,9 @@ func validateCIImport(ctx context.Context, input CIImport, definition workflow.T
 	if definition.Coopr == nil && requested != "" && input.Platform != requested {
 		return fmt.Errorf("result platform %q differs from producer platform %q", input.Platform, requested)
 	}
+	if input.Kind == "image" && input.OCI == "" {
+		return nil
+	}
 	store, roots, err := openCIStore(ctx, input)
 	if err != nil {
 		return err
@@ -123,27 +121,18 @@ func validateCIImport(ctx context.Context, input CIImport, definition workflow.T
 		}
 	}
 	budget := ciGraphBudget{encoded: maxCIImportBytes, metadata: maxCIImportMetadata, seen: map[digest.Digest]v1.Descriptor{}}
-	traceGraphStarted := time.Now()
 	for _, root := range roots {
 		if err := verifyCIGraph(ctx, store, root, &budget, 0); err != nil {
-			fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=validate_graph seconds=%.6f success=false\n", time.Since(traceGraphStarted).Seconds())
 			return err
 		}
 	}
-	fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=validate_graph seconds=%.6f success=true\n", time.Since(traceGraphStarted).Seconds())
 	if input.Kind == "image" {
-		traceImageStarted := time.Now()
 		_, err = readCIImage(ctx, input.OCI, input.Digest, input.Platform)
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=validate_image seconds=%.6f success=%t\n", time.Since(traceImageStarted).Seconds(), err == nil)
 	}
 	return err
 }
 
-func loadCIImports(ctx context.Context, inputs map[string]CIImport, options Options, directory string, engine backend) (_ map[string]coopr.Result, retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=load_imports seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
-	}()
+func loadCIImports(ctx context.Context, inputs map[string]CIImport, options Options, directory string, engine backend) (map[string]coopr.Result, error) {
 	names := make([]string, 0, len(inputs))
 	for name := range inputs {
 		names = append(names, name)
@@ -175,6 +164,10 @@ func loadCIImports(ctx context.Context, inputs map[string]CIImport, options Opti
 				err = errors.New("loaded component does not retain its exact immutable root and delivery selector")
 			}
 		case "image":
+			if input.OCI == "" {
+				result = coopr.Result{Reference: input.CanonicalReference, CanonicalReference: input.CanonicalReference, ManifestDigest: input.Digest, Platform: input.Platform}
+				break
+			}
 			id := fmt.Sprintf("stoke-ci-import-%d", index)
 			program := coopr.Program{Platform: input.Platform, States: []coopr.State{{ID: id, From: coopr.Source{Image: "oci:" + filepath.Base(input.OCI)}}}, Output: id}
 			opts := coopr.Options{
@@ -185,9 +178,7 @@ func loadCIImports(ctx context.Context, inputs map[string]CIImport, options Opti
 				Registry: coopr.RegistryOptions{AuthFile: options.AuthFile, SignaturePolicyPath: options.SignaturePolicy, TLSVerify: options.TLSVerify},
 				Stdout:   options.Stdout, Stderr: options.Stderr,
 			}
-			traceExecuteStarted := time.Now()
 			result, err = engine.Execute(ctx, program, opts)
-			fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=import_image_execute seconds=%.6f success=%t\n", time.Since(traceExecuteStarted).Seconds(), err == nil)
 			if err == nil {
 				actual, platformErr := workflow.NormalizePlatform(result.Platform)
 				if platformErr != nil || actual != input.Platform || result.ImageID == "" {
@@ -506,12 +497,7 @@ func hashCIDescriptor(ctx context.Context, store content.ReadOnlyStorage, descri
 	return errors.Join(err, verified.Verify(), reader.Close())
 }
 
-func readCIImage(ctx context.Context, directory, identity, platform string) (_ ciImage, retErr error) {
-	traceStarted := time.Now()
-	var traceInflatedBytes int64
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=read_image seconds=%.6f success=%t inflated_bytes=%d\n", time.Since(traceStarted).Seconds(), retErr == nil, traceInflatedBytes)
-	}()
+func readCIImage(ctx context.Context, directory, identity, platform string) (ciImage, error) {
 	var image ciImage
 	store, roots, err := openCIStore(ctx, CIImport{Kind: "image", OCI: directory, Digest: identity})
 	if err != nil {
@@ -552,7 +538,6 @@ func readCIImage(ctx context.Context, directory, identity, platform string) (_ c
 	remaining := maxCIImportBytes
 	for index, layer := range image.manifest.Layers {
 		actual, size, err := ciLayerDiffID(ctx, store, layer, remaining)
-		traceInflatedBytes += size
 		if err != nil {
 			return image, err
 		}
@@ -564,24 +549,16 @@ func readCIImage(ctx context.Context, directory, identity, platform string) (_ c
 	return image, nil
 }
 
-func verifyCIImportedImage(ctx context.Context, input CIImport, result coopr.Result) (retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=verify_imported_image seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
-	}()
+func verifyCIImportedImage(ctx context.Context, input CIImport, result coopr.Result) error {
 	actual, err := workflow.NormalizePlatform(result.Platform)
 	if err != nil || actual != input.Platform || result.ImageID == "" {
 		return errors.New("imported image has no native identity or a different platform")
 	}
-	traceReadStarted := time.Now()
 	before, err := readCIImage(ctx, input.OCI, input.Digest, input.Platform)
-	fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=verify_read_before seconds=%.6f success=%t\n", time.Since(traceReadStarted).Seconds(), err == nil)
 	if err != nil {
 		return fmt.Errorf("exported image identity: %w", err)
 	}
-	traceReadStarted = time.Now()
 	after, err := readCIImage(ctx, result.OCI, result.ManifestDigest, input.Platform)
-	fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=verify_read_after seconds=%.6f success=%t\n", time.Since(traceReadStarted).Seconds(), err == nil)
 	if err != nil {
 		return fmt.Errorf("imported image identity: %w", err)
 	}
@@ -613,10 +590,6 @@ func verifyCIImportedImage(ctx context.Context, input CIImport, result coopr.Res
 }
 
 func ciLayerDiffID(ctx context.Context, store content.ReadOnlyStorage, descriptor v1.Descriptor, limit int64) (_ digest.Digest, size int64, retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=layer_diffid seconds=%.6f success=%t inflated_bytes=%d\n", time.Since(traceStarted).Seconds(), retErr == nil, size)
-	}()
 	_, compressed, err := ciLayerMediaType(descriptor.MediaType)
 	if err != nil {
 		return "", 0, err

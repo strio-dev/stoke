@@ -508,7 +508,7 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 			return coopr.Result{}, sourceErr
 		}
 		kind := "component"
-		if previous[publication.From].ImageID != "" {
+		if imageSource(previous[publication.From]) != "" {
 			kind = "image"
 			value = previous[publication.From].ImageID
 		}
@@ -550,10 +550,20 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 	return result, errors.Join(err, exportErr)
 }
 
+func imageSource(result coopr.Result) string {
+	if result.ImageID != "" {
+		return "containers-storage:" + result.ImageID
+	}
+	if result.Reference != "" && result.Reference == result.CanonicalReference && result.ManifestDigest != "" && result.OCI == "" && result.Filesystem == "" {
+		return result.Reference
+	}
+	return ""
+}
+
 func artifactSource(results map[string]coopr.Result, name string) (string, error) {
 	result, ok := results[name]
-	if ok && result.ImageID != "" {
-		return "containers-storage:" + result.ImageID, nil
+	if source := imageSource(result); ok && source != "" {
+		return source, nil
 	}
 	if ok && result.Reference != "" {
 		return result.Reference, nil
@@ -568,7 +578,7 @@ func compile(name string, task workflow.Task, results map[string]coopr.Result) (
 	}
 	from := coopr.Source{Image: task.Image}
 	if task.From != "" {
-		from.Image = "containers-storage:" + results[task.From].ImageID
+		from.Image = imageSource(results[task.From])
 	}
 	state := coopr.State{ID: name, From: from}
 	keys := make([]string, 0, len(task.Env))
@@ -602,7 +612,7 @@ func compile(name string, task workflow.Task, results map[string]coopr.Result) (
 				if results[step.Copy.From].ImageID == "" && results[step.Copy.From].Filesystem != "" {
 					copyOp.From.Context = hostContextName(step.Copy.From)
 				} else {
-					copyOp.From.Image = "containers-storage:" + results[step.Copy.From].ImageID
+					copyOp.From.Image = imageSource(results[step.Copy.From])
 				}
 			} else if step.Copy.Scope == "component" {
 				copyOp.From.Context = workflow.ComponentContext

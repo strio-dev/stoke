@@ -413,6 +413,20 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 	}
 	request := runner.CIRequest{Targets: p.Config.Targets, Execute: selected.Execute, RequiredOutputs: append(slices.Clone(selected.Exports), selected.Data...), Environments: p.Environments, Imports: map[string]runner.CIImport{}}
 	if len(selected.Imports) != 0 {
+		// Publication copies the original canonical layout. Execution inputs
+		// instead use Coopr's normal pinned image-source selection.
+		fetch := client.ResolveCIInput
+		expanded, err := w.Expand(p.Config.Targets)
+		if err != nil {
+			return nil, err
+		}
+		for _, group := range expanded.Groups {
+			for _, job := range group.Jobs {
+				if job.Definition.Publish != nil && slices.Contains(selected.Execute, job.Name) {
+					fetch = client.FetchCIPayload
+				}
+			}
+		}
 		directory, err := ciInputDirectory(options)
 		if err != nil {
 			return nil, err
@@ -426,7 +440,7 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 			if ref == "" || !exists {
 				return nil, fmt.Errorf("exact result for %q is missing; rerun producer and dependent gates", name)
 			}
-			payload, err := client.FetchCIPayload(ctx, exchange.Repository, ref, artifact.CIResultExpectation{Scope: scope, Producer: name, MaxAttempt: exchange.Attempt, Kind: value.Kind, Platform: value.Platform}, filepath.Join(directory, fmt.Sprintf("payload-%d", i)))
+			payload, err := fetch(ctx, exchange.Repository, ref, artifact.CIResultExpectation{Scope: scope, Producer: name, MaxAttempt: exchange.Attempt, Kind: value.Kind, Platform: value.Platform}, filepath.Join(directory, fmt.Sprintf("payload-%d", i)))
 			if err != nil {
 				return nil, fmt.Errorf("exact result %q unavailable; no producer replay: restore retained content or rerun producer and dependent gates: %w", name, err)
 			}

@@ -23,6 +23,7 @@ import (
 	cooprwire "github.com/strio-dev/coopr/api"
 	coopr "github.com/strio-dev/stoke/internal/engine"
 	"github.com/strio-dev/stoke/internal/ociarchive"
+	"github.com/strio-dev/stoke/internal/workflow"
 	"golang.org/x/sys/unix"
 	"oras.land/oras-go/v2/content"
 	"oras.land/oras-go/v2/content/memory"
@@ -104,13 +105,27 @@ func TestCIExactImportNeverRunsFreshProducerOrExternalGate(t *testing.T) {
 tasks:
   producer: {image: scratch, cache: false, steps: [{run: [random-output]}, {export: {source: /report, destination: producer-report}}]}
   gate: {image: scratch, cache: false, needs: [producer]}
-  test: {from: producer, cache: false, needs: [gate], steps: [{run: [test]}]}
+  test:
+    from: producer
+    cache: false
+    needs: [gate]
+    steps:
+      - copy: {from: producer, sources: [/value], destination: /copied}
+      - run: [test]
+        mounts: [{type: stage, from: producer, target: /producer}]
 `)
-	for _, forced := range []bool{false, true} {
-		t.Run(map[bool]string{false: "normal", true: "forced-fresh-consumer"}[forced], func(t *testing.T) {
-			input := ciImageFixture(t, true, "EXACT=one")
+	for _, tc := range []struct {
+		name           string
+		forced, remote bool
+	}{{"normal", false, false}, {"forced-fresh-consumer", true, false}, {"remote-registry", false, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			input := ciImageFixture(t, !tc.remote, "EXACT=one")
+			wantImports, source := 1, "containers-storage:imported-exact"
+			if tc.remote {
+				input.OCI, wantImports, source = "", 0, input.CanonicalReference
+			}
 			opts := testOptions(t)
-			opts.NoCache = forced
+			opts.NoCache = tc.forced
 			destination := filepath.Join(opts.ContextDir, "producer-report")
 			if err := os.WriteFile(destination, []byte("existing producer report"), 0600); err != nil {
 				t.Fatal(err)
@@ -119,18 +134,23 @@ tasks:
 			report, err := runCI(t.Context(), w, CIRequest{Execute: []string{"test"}, Imports: map[string]CIImport{"producer": input}}, opts, fakeEngine{execute: func(_ context.Context, p coopr.Program, o coopr.Options) (coopr.Result, error) {
 				if strings.HasPrefix(string(p.Output), "stoke-ci-import-") {
 					imports++
+					if tc.remote {
+						t.Fatal("remote exact image was eagerly imported")
+					}
 					if !o.Cache.NoCache || len(p.States[0].Operations) != 0 {
 						t.Error("import used cache or executed instructions")
 					}
 					return importedCIImage(t, input, o), nil
 				}
 				calls++
-				if string(p.Output) != "test" || p.States[0].From.Image != "containers-storage:imported-exact" || !o.Cache.NoCache {
+				operations := p.States[0].Operations
+				if string(p.Output) != "test" || p.Platform != input.Platform || p.States[0].From.Image != source || !o.Cache.NoCache ||
+					len(operations) != 2 || operations[0].From.Image != source || len(operations[1].Mounts) != 1 || operations[1].Mounts[0].From.Image != source {
 					t.Fatalf("wrong selected execution: %#v %#v", p, o.Cache)
 				}
 				return coopr.Result{ImageID: "tested", Platform: "linux/amd64"}, nil
 			}})
-			if err != nil || imports != 1 || calls != 1 || len(report.Tasks) != 1 || report.Tasks[0].Name != "test" || report.Status != "passed" {
+			if err != nil || imports != wantImports || calls != 1 || len(report.Tasks) != 1 || report.Tasks[0].Name != "test" || report.Status != "passed" {
 				t.Fatalf("imports=%d calls=%d report=%#v error=%v", imports, calls, report, err)
 			}
 			if data, err := os.ReadFile(destination); err != nil || string(data) != "existing producer report" || len(report.Tasks[0].Exports) != 0 {
@@ -138,6 +158,45 @@ tasks:
 			}
 			if !slices.Equal(w.Tasks["test"].Needs, []string{"gate"}) || w.Tasks["test"].From != "producer" {
 				t.Fatal("ordinary workflow mutated")
+			}
+		})
+	}
+}
+
+func TestCIRegistryImageArgumentsReuseSelectedSource(t *testing.T) {
+	for _, selected := range []string{"native", "inline"} {
+		t.Run(selected, func(t *testing.T) {
+			w := fixture(t, `version: 1
+tasks:
+  producer: {image: scratch, cache: false}
+  native: {coopr: {files: [image.coopr], args: {BASE: {from: producer}}}}
+  inline: {environment: {files: [image.coopr], args: {BASE: {from: producer}}}, steps: [{run: [check]}]}
+`)
+			input := ciImageFixture(t, false, "EXACT=one")
+			input.OCI = ""
+			builds, executions := 0, 0
+			wantExecutions := 0
+			if selected == "inline" {
+				wantExecutions = 1
+			}
+			report, err := runCI(t.Context(), w, CIRequest{Execute: []string{selected}, Imports: map[string]CIImport{"producer": input}}, nativeOptions(t), fakeEngine{
+				build: func(_ context.Context, b cooprwire.Build, component bool, _ coopr.Options) (coopr.Result, error) {
+					builds++
+					if component || b.Args["BASE"] != input.CanonicalReference {
+						t.Fatalf("native argument lost exact source: %+v", b)
+					}
+					return coopr.Result{ImageID: "configured", Platform: input.Platform}, nil
+				},
+				execute: func(_ context.Context, p coopr.Program, _ coopr.Options) (coopr.Result, error) {
+					executions++
+					if selected != "inline" || p.Output != "inline" || p.States[0].From.Image != "containers-storage:configured" {
+						t.Fatal("replayed an imported producer or lost its configured environment")
+					}
+					return coopr.Result{ImageID: "checked", Platform: input.Platform}, nil
+				},
+			})
+			if err != nil || report == nil || report.Status != "passed" || builds != 1 || executions != wantExecutions {
+				t.Fatalf("native exact source: builds=%d executions=%d report=%+v err=%v", builds, executions, report, err)
 			}
 		})
 	}
@@ -155,7 +214,7 @@ tasks:
 	input := ciImageFixture(t, true, "EXACT=published")
 	tested := false
 	published := false
-	report, err := runCI(t.Context(), w, CIRequest{Execute: []string{"test", "publish"}, Imports: map[string]CIImport{"producer": input}}, testOptions(t), fakeEngine{
+	engine := fakeEngine{
 		execute: func(_ context.Context, p coopr.Program, o coopr.Options) (coopr.Result, error) {
 			if strings.HasPrefix(string(p.Output), "stoke-ci-import-") {
 				return importedCIImage(t, input, o), nil
@@ -173,9 +232,15 @@ tasks:
 			published = true
 			return coopr.Result{Reference: "registry.invalid/final@" + input.Digest}, nil
 		},
-	})
+	}
+	report, err := runCI(t.Context(), w, CIRequest{Execute: []string{"test", "publish"}, Imports: map[string]CIImport{"producer": input}}, testOptions(t), engine)
 	if err != nil || !published || report.Status != "passed" || len(report.Tasks) != 2 {
 		t.Fatalf("report=%#v err=%v", report, err)
+	}
+	input.OCI, tested, published = "", false, false
+	report, err = runCI(t.Context(), w, CIRequest{Execute: []string{"test", "publish"}, Imports: map[string]CIImport{"producer": input}}, testOptions(t), engine)
+	if err == nil || !strings.Contains(err.Error(), "requires its verified original OCI layout and digest") || !tested || published || report.Status != "failed" {
+		t.Fatalf("remote publication report=%#v tested=%v published=%v err=%v", report, tested, published, err)
 	}
 }
 
@@ -204,7 +269,7 @@ tasks:
 }
 
 func TestCIExactImportsRejectInvalidPayloadBeforeState(t *testing.T) {
-	for _, scenario := range []string{"missing", "kind", "platform", "digest", "canonical-tag", "canonical-other", "missing-file", "symlink", "corrupt-config", "unused"} {
+	for _, scenario := range []string{"missing", "kind", "platform", "digest", "canonical-tag", "canonical-other", "missing-file", "symlink", "corrupt-config", "unused", "remote-kind", "remote-platform", "remote-digest"} {
 		t.Run(scenario, func(t *testing.T) {
 			input := ciImageFixture(t, false, "EXACT=one")
 			w := fixture(t, "version: 1\ntasks:\n  producer: {image: scratch}\n  unused: {image: scratch}\n  test: {from: producer}\n")
@@ -254,6 +319,16 @@ func TestCIExactImportsRejectInvalidPayloadBeforeState(t *testing.T) {
 				}
 			case "unused":
 				imports["unused"] = input
+			case "remote-kind":
+				input.OCI, input.Kind = "", "component"
+			case "remote-platform":
+				input.OCI, input.Platform = "", "linux/arm64"
+				producer := w.Tasks["producer"]
+				platform := "linux/amd64"
+				producer.Platform = &workflow.Platform{Value: &platform}
+				w.Tasks["producer"] = producer
+			case "remote-digest":
+				input.OCI, input.Digest = "", digest.FromString("wrong").String()
 			}
 			if imports != nil {
 				imports["producer"] = input

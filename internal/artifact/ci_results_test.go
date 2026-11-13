@@ -211,11 +211,17 @@ func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 	base := registryFixture(t)
 	var mu sync.Mutex
 	blobUploads, manifestUploads := map[string]bool{}, map[string]bool{}
+	blobReads := map[string]int{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if user, password, ok := r.BasicAuth(); !ok || user != "writer" || password != "fixture-password" {
 			w.Header().Set("WWW-Authenticate", `Basic realm="ci-results"`)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
+		}
+		if _, path := registryFixturePath(r.URL.Path); r.Method == http.MethodGet && strings.HasPrefix(path, "blobs/") {
+			mu.Lock()
+			blobReads[path]++
+			mu.Unlock()
 		}
 		if r.Method == http.MethodPut {
 			var manifestIdentity string
@@ -341,6 +347,23 @@ func TestCIResultAndInputSetRoundTrip(t *testing.T) {
 	data, err = io.ReadAll(archive)
 	if err := errors.Join(err, layer.Close()); err != nil || string(data) != value {
 		t.Fatal("large result bytes changed during authenticated handoff", err)
+	}
+	mu.Lock()
+	before := blobReads["blobs/"+manifest.Layers[0].Digest.String()]
+	mu.Unlock()
+	deferredPath := filepath.Join(t.TempDir(), "deferred")
+	resolved, err := consumer.ResolveCIInput(t.Context(), repository, dependentRef, expected, deferredPath)
+	if err != nil || resolved.Path != "" || resolved.CanonicalReference != repository+"@"+dependentRoot || resolved.Result.Execution != dependent.Execution {
+		t.Fatalf("resolved input lost its exact image identity: %+v, %v", resolved, err)
+	}
+	if _, err := os.Lstat(deferredPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("image resolution created an unrequested local payload", err)
+	}
+	mu.Lock()
+	after := blobReads["blobs/"+manifest.Layers[0].Digest.String()]
+	mu.Unlock()
+	if before == 0 || after != before {
+		t.Fatalf("metadata-only resolution fetched producer layer: before=%d after=%d", before, after)
 	}
 	if _, err := consumer.FetchCIPayload(t.Context(), repository, dependentRef, expected, dir); err == nil {
 		t.Fatal("overwrote existing result")

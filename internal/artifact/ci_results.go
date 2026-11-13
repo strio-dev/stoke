@@ -116,8 +116,9 @@ type CIResultExpectation struct {
 	Platform   string
 }
 
-// CIPayload is a selected result fetched into caller-owned fresh storage. Path
-// is an OCI layout for images and an OCI archive file for native components.
+// CIPayload identifies a verified exact result. Resolved image inputs have only
+// CanonicalReference; fetched payloads have a caller-owned OCI layout or archive
+// in Path. Captured host files and components are always fetched in full.
 type CIPayload struct {
 	Result             CIResult
 	Path               string

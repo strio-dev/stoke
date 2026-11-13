@@ -43,7 +43,7 @@ func TestExecutionCleanupAPIHelper(t *testing.T) {
 	}
 	server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/info" {
-			_ = json.NewEncoder(w).Encode(cooprwire.Info{APIVersion: cooprwire.Version, Version: "cleanup-fixture", Capabilities: []string{"execute", "build", "build-platform", "named-contexts"}})
+			_ = json.NewEncoder(w).Encode(cooprwire.Info{APIVersion: cooprwire.Version, Version: "cleanup-fixture", Capabilities: []string{"execute", "build", "build-platform", "named-contexts", "publish", "publish-oci-layout"}})
 			return
 		}
 		if r.Method != http.MethodPost {

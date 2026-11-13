@@ -91,7 +91,7 @@ func compileMount(mount workflow.Mount, results map[string]coopr.Result) coopr.M
 	case "image":
 		value.From.Image = mount.Image
 	case "stage":
-		value.From.Image = "containers-storage:" + results[mount.From].ImageID
+		value.From.Image = imageSource(results[mount.From])
 	case "artifact":
 		value.From.Image = mount.Ref
 	}

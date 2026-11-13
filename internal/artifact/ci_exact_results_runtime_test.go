@@ -2,15 +2,19 @@ package artifact
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // A scoped 404 proxy models an exact result removed/unavailable after success.
@@ -26,9 +30,13 @@ func exactResultFaultProxy(t *testing.T, f *ciRegistryFixture) func(string, bool
 	blocked := map[string]bool{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
-		deny := blocked[r.URL.Path]
+		// Blob bodies may be unavailable while their presence metadata remains readable.
+		deny := blocked[r.URL.Path] && (r.Method == http.MethodGet || !strings.Contains(r.URL.Path, "/blobs/"))
 		mu.Unlock()
 		if deny {
+			f.mu.Lock()
+			f.trace = append(f.trace, map[string]string{"method": r.Method, "path": r.URL.Path, "fault": "404"})
+			f.mu.Unlock()
 			http.NotFound(w, r)
 			return
 		}
@@ -49,7 +57,7 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"build":   map[string]any{"image": "scratch", "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("", "payload", "/value")}},
 		"test":    map[string]any{"from": "build", "cache": false, "outputs": map[string]any{"filesystem": false}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_TEST_RAN")}},
-		"package": map[string]any{"from": "build", "needs": []string{"test"}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_PACKAGE_RAN")}},
+		"package": map[string]any{"image": "scratch", "needs": []string{"test"}, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("build", "/value", "/result"), ciRegistryRun("echo RETRY_PACKAGE_RAN")}},
 	}}), 0600)
 	plan := f.generateExactPlan("retry", caller, "stoke.json", f.registry+"/cache/retry", f.registry+"/results/exact", nil, []string{"package"})
 	build, test, pack := plan.job(t, "build"), plan.job(t, "test"), plan.job(t, "package")
@@ -62,13 +70,94 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	if checked.CI.Inputs != first.CI.Inputs {
 		t.Fatal("pure gate did not forward the exact producer input binding")
 	}
+	seed, seedLog := f.runExactJob("retry-package-a1", caller, "retry.plan.json", plan, pack, scope, 1, plan.needs(t, pack, records), nil, true)
+	f.requireFile(seed.ciRegistryReport, "package", "result", "identical-payload\n")
+	f.requireMarkerCount(seedLog, "RETRY_PACKAGE_RAN", 1)
+	imageManifest := func(report ciRegistryReport, name string) v1.Manifest {
+		image := f.task(report, name)
+		source, err := newCILocalSource(f.ctx, os.DirFS(image.OCI), image.Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		root, err := source.Resolve(f.ctx, image.Digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := fetch(f.ctx, source, root, MaxCIMetadataBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var manifest v1.Manifest
+		if err := json.Unmarshal(data, &manifest); err != nil || root.MediaType != v1.MediaTypeImageManifest || len(manifest.Layers) == 0 {
+			t.Fatalf("fixture image manifest: %+v %v", root, err)
+		}
+		return manifest
+	}
+	producer := imageManifest(first.ciRegistryReport, "build")
+	packagedLayers := imageManifest(seed.ciRegistryReport, "package").Layers
+	var sourceLayer v1.Descriptor
+	for _, layer := range producer.Layers {
+		if !slices.ContainsFunc(packagedLayers, func(other v1.Descriptor) bool { return other.Digest == layer.Digest }) {
+			sourceLayer = layer
+			break
+		}
+	}
+	if sourceLayer.Digest == "" {
+		t.Fatal("fixture has no producer-only layer to block")
+	}
+	sourcePath := "/v2/results/exact/blobs/" + sourceLayer.Digest.String()
+	sourceReads := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		count := 0
+		for _, request := range f.trace {
+			if request["method"] == http.MethodGet && request["path"] == sourcePath {
+				count++
+			}
+		}
+		return count
+	}
+	before := sourceReads()
+	block(sourcePath, true)
 	retained, retainedLog := f.runExactJob("retry-package-only-a2", caller, "retry.plan.json", plan, pack, scope, 2, plan.needs(t, pack, records), nil, true)
 	if retained.CI.Inputs != first.CI.Inputs || len(retained.Tasks) != 1 || retained.Tasks[0].Name != "package" {
 		t.Fatal("package-only retry replaced prior bindings or replayed an upstream task")
 	}
 	f.requireFile(retained.ciRegistryReport, "package", "result", "identical-payload\n")
 	f.requireMarkerCount(retainedLog, "RETRY_TEST_RAN", 0)
-	f.requireMarkerCount(retainedLog, "RETRY_PACKAGE_RAN", 1)
+	f.requireMarkerCount(retainedLog, "RETRY_PACKAGE_RAN", 0)
+	warm := f.task(retained.ciRegistryReport, "package")
+	if warm.Cache == nil || warm.Cache.Hits < 1 || warm.Cache.Misses != 0 || warm.Cache.Errors != 0 || warm.Digest == "" || warm.Digest != f.task(seed.ciRegistryReport, "package").Digest || sourceReads() != before {
+		t.Fatalf("warm package fetched an unused producer layer or missed terminal cache: %+v", warm.Cache)
+	}
+	_, blockedLog := f.runExactJob("retry-fresh-test-source-unavailable", caller, "retry.plan.json", plan, test, scope, 2, plan.needs(t, test, records), nil, false)
+	if sourceReads() == before {
+		t.Fatal("fresh test did not demand its blocked producer layer")
+	}
+	f.requireMarkerCount(blockedLog, "RETRY_TEST_RAN", 0)
+	block(sourcePath, false)
+	// A cached consumer does not bypass the original registry source policy.
+	originalPolicy := f.read(f.policy)
+	var policy struct {
+		Default    []map[string]string                       `json:"default"`
+		Transports map[string]map[string][]map[string]string `json:"transports"`
+	}
+	if err := json.Unmarshal(originalPolicy, &policy); err != nil {
+		t.Fatal(err)
+	}
+	policy.Transports["docker"][f.registry+"/results/exact"] = []map[string]string{{"type": "reject"}}
+	f.write(f.policy, f.encode(policy), 0600)
+	_, policyLog := f.runExactJob("retry-source-policy-rejected", caller, "retry.plan.json", plan, pack, scope, 2, plan.needs(t, pack, records), nil, false)
+	if !bytes.Contains(policyLog, []byte("rejected by policy")) || !bytes.Contains(policyLog, []byte(f.registry+"/results/exact@")) {
+		t.Fatalf("registry policy failure was not reported: %s", policyLog)
+	}
+	f.requireMarkerCount(policyLog, "RETRY_PACKAGE_RAN", 0)
+	f.write(f.policy, originalPolicy, 0600)
+	_, tlsLog := f.runExactJob("retry-source-tls-required", caller, "retry.plan.json", plan, pack, scope, 2, plan.needs(t, pack, records), []string{"--tls-verify=true"}, false)
+	if !bytes.Contains(tlsLog, []byte(f.registry+"/results/exact@")) || !bytes.Contains(tlsLog, []byte("HTTPS")) && !bytes.Contains(tlsLog, []byte("TLS")) {
+		t.Fatalf("required registry TLS failure was not reported: %s", tlsLog)
+	}
+	f.requireMarkerCount(tlsLog, "RETRY_PACKAGE_RAN", 0)
 	second, _ := f.runExactJob("retry-build-a2", caller, "retry.plan.json", plan, build, scope, 2, nil, nil, true)
 	client := Client{PlainHTTP: true}
 	one, err := client.ReadCIInputSet(f.ctx, plan.Config.ResultsRepository, first.CI.Inputs, scope)
@@ -172,7 +261,7 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 		t.Fatal("co-located execution accessed exact-result registry")
 	}
 	f.requireFile(local.ciRegistryReport, "package", "result", "identical-payload\n")
-	f.checks = append(f.checks, "package-only-retry-retains-exact-prior-build-binding-without-gate-image-exports", "equal-payload-producer-attempt2-conflicts-with-old-successful-test-attempt1", "explicit-prior-inputs-and-rerun-dependent-gates-restore-consistent-lineage", "concurrent-invocation-scopes-remain-isolated", "selected-result-404-fails-before-runner-without-producer-replay", "missing-repository-errors-and-explicit-co-location-runs-with-no-registry-access")
+	f.checks = append(f.checks, "package-only-retry-retains-exact-prior-build-binding-without-gate-image-exports", "cached-package-does-not-fetch-unused-producer-layer-while-fresh-gate-demands-it", "equal-payload-producer-attempt2-conflicts-with-old-successful-test-attempt1", "explicit-prior-inputs-and-rerun-dependent-gates-restore-consistent-lineage", "concurrent-invocation-scopes-remain-isolated", "selected-result-404-fails-before-runner-without-producer-replay", "missing-repository-errors-and-explicit-co-location-runs-with-no-registry-access")
 }
 
 func TestCIExactNativeAndEnvironmentResultsWithCoopr(t *testing.T) {

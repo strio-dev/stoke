@@ -157,8 +157,10 @@ func TestCIPayloadPreflightRejectsOversizeBeforeBlobDownloads(t *testing.T) {
 			clear(reads)
 			mu.Unlock()
 			parent := t.TempDir()
-			if _, err := client.FetchCIPayload(t.Context(), repository, ref, CIResultExpectation{Scope: ciTestScope(), Producer: "build", MaxAttempt: 1}, filepath.Join(parent, "payload")); err == nil {
-				t.Fatal("oversized/conflicting/deep graph accepted")
+			for _, prepare := range []func(context.Context, string, string, CIResultExpectation, string) (CIPayload, error){client.FetchCIPayload, client.ResolveCIInput} {
+				if _, err := prepare(t.Context(), repository, ref, CIResultExpectation{Scope: ciTestScope(), Producer: "build", MaxAttempt: 1}, filepath.Join(parent, "payload")); err == nil {
+					t.Fatal("oversized/conflicting/deep graph accepted")
+				}
 			}
 			mu.Lock()
 			for _, value := range neverRead {

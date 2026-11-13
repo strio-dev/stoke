@@ -151,7 +151,9 @@ func TestCIExecutionCleanupPreservesDownloadedInputsOnlyOnUnconfirmedCleanup(t *
 		t.Run(code, func(t *testing.T) {
 			root, engine, recordPath := executionCleanupFixture(t)
 			t.Setenv("STOKE_CLEANUP_CODE", code)
-			if err := os.WriteFile("stoke.yaml", []byte("version: 1\ntasks:\n  build: {image: scratch, platform: linux/amd64}\n  test: {from: build, cache: false}\n"), 0o600); err != nil {
+			// Publication still needs the original downloaded layout. The typed
+			// import failure below occurs before any publication can execute.
+			if err := os.WriteFile("stoke.yaml", []byte("version: 1\ntasks:\n  build: {image: scratch, platform: linux/amd64}\n  test: {publish: {from: build, destinations: ['registry.invalid/never:published']}}\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			registry := executionCleanupRegistry(t)
