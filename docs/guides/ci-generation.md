@@ -249,8 +249,9 @@ metadata fails clearly. GitHub's documentation does not guarantee old
 remains separate. The safe recovery is to rerun the producer and dependent gates
 or the whole invocation, rather than guess which registry object was tested.
 
-Image execution passes the exact digest-pinned registry source to Coopr. Coopr
-checks its image-source policy and metadata, then pulls layers only when needed.
+Execution-only CI image inputs pass the exact digest-pinned registry source to
+Coopr. Coopr checks its image-source policy and metadata, then pulls layers only
+when needed.
 A consumer cache hit can avoid the producer image while still restoring the
 consumer's requested outputs. A miss or fresh check must fetch its required
 inputs; unavailable content fails without replaying the producer. Coopr's native
