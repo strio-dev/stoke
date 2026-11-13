@@ -35,6 +35,7 @@ const (
 type Client struct {
 	PlainHTTP bool
 	AuthFile  string
+	ciRead    *ciReadSession
 }
 type Document struct {
 	Data         []byte

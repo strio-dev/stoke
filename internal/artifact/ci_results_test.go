@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -534,6 +535,88 @@ func TestCIInputSetLineageIsClosedAndPayloadFetchIsSelective(t *testing.T) {
 	if _, err := client.ReadCIInputSet(t.Context(), repository, childSet, scope); err != nil {
 		t.Fatal(err)
 	}
+	scoped, err := client.WithCIReadSession(repository, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	clear(reads)
+	mu.Unlock()
+	admitted, err := scoped.ReadCIInputSet(t.Context(), repository, childSet, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	metadataReads := maps.Clone(reads)
+	mu.Unlock()
+	admitted.Bindings["build"] = "caller-mutated"
+	expect := CIResultExpectation{Scope: scope, Producer: "package", Kind: "image", Platform: "linux/amd64", MaxAttempt: 1}
+	if _, err := scoped.ReadCIResult(t.Context(), repository, childRef, expect); err != nil {
+		t.Fatal(err)
+	}
+	merged, bindings, err := scoped.MergeCIInputSets(t.Context(), repository, scope, []string{parentSet, childSet})
+	if err != nil || merged != childSet || bindings.Bindings["build"] != parent {
+		t.Fatalf("shared metadata or returned bindings changed: %s %+v %v", merged, bindings, err)
+	}
+	if _, err := scoped.ResolveCIInput(t.Context(), repository, childRef, expect, filepath.Join(t.TempDir(), "metadata-only")); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	for path, count := range metadataReads {
+		if reads[path] != count {
+			t.Errorf("verified metadata %s reread: %d -> %d", path, count, reads[path])
+		}
+	}
+	mu.Unlock()
+	if t.Failed() {
+		t.FailNow()
+	}
+	for _, wrong := range []CIResultExpectation{{Scope: scope, Producer: "package", Kind: "component"}, {Scope: scope, Producer: "package", Platform: "linux/arm64"}} {
+		if _, err := scoped.ReadCIResult(t.Context(), repository, childRef, wrong); err == nil {
+			t.Fatal("memoized result bypassed expectation")
+		}
+	}
+	canceled, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := scoped.ReadCIInputSet(canceled, repository, childSet, scope); !errors.Is(err, context.Canceled) {
+		t.Fatalf("memoized set ignored cancellation: %v", err)
+	}
+	if _, err := scoped.ReadCIResult(canceled, repository, childRef, expect); !errors.Is(err, context.Canceled) {
+		t.Fatalf("memoized result ignored cancellation: %v", err)
+	}
+	other := scope
+	other.Invocation += "-other"
+	for _, invalid := range []struct {
+		repository string
+		scope      CIScope
+		auth       string
+		plainHTTP  bool
+	}{
+		{repository + "-other", scope, "", true}, {repository, other, "", true},
+		{repository, scope, "changed", true}, {repository, scope, "", false},
+	} {
+		reader := scoped
+		reader.AuthFile, reader.PlainHTTP = invalid.auth, invalid.plainHTTP
+		if _, err := reader.ReadCIInputSet(t.Context(), invalid.repository, childSet, invalid.scope); err == nil || !strings.Contains(err.Error(), "CI read session") {
+			t.Fatalf("shared reader crossed scope or client configuration: %v", err)
+		}
+	}
+	mu.Lock()
+	before := reads["/v2/results/manifests/"+strings.Split(childSet, "@")[1]]
+	mu.Unlock()
+	fresh, err := scoped.WithCIReadSession(repository, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fresh.ReadCIInputSet(t.Context(), repository, childSet, scope); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	after := reads["/v2/results/manifests/"+strings.Split(childSet, "@")[1]]
+	mu.Unlock()
+	if after != before+1 {
+		t.Fatal("new scoped reader reused invocation metadata")
+	}
 	// The child's ancestor image layer is reachable remotely for GC but is not
 	// downloaded as execution input when only the child result is requested.
 	parentStore, err := oci.NewFromFS(t.Context(), os.DirFS(parentPath))
@@ -622,6 +705,15 @@ func TestCIComponentPayloadArchiveAndCanceledFetchCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	index.Annotations = map[string]string{"io.strio.fixture.archive-repository": "example.test/original"}
+	for i := range index.Manifests {
+		if index.Manifests[i].Digest.String() == root {
+			if index.Manifests[i].Annotations == nil {
+				index.Manifests[i].Annotations = map[string]string{}
+			}
+			index.Manifests[i].Annotations["io.strio.fixture.scoped"] = "original"
+			index.Manifests[i].Platform = &v1.Platform{OS: "linux", Architecture: "amd64"}
+		}
+	}
 	indexData, err = json.Marshal(index)
 	if err != nil {
 		t.Fatal(err)
@@ -644,16 +736,33 @@ func TestCIComponentPayloadArchiveAndCanceledFetchCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	resultIndex, metadata := ciTestMetadata(t, client, repository, ref)
-	result, err := client.ReadCIResult(t.Context(), repository, ref, CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1})
+	scoped, err := client.WithCIReadSession(repository, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expect := CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1}
+	result, err := scoped.ReadCIResult(t.Context(), repository, ref, expect)
 	if err != nil || result.Archive == nil {
 		t.Fatal("component result lost its original archive descriptor", err)
 	}
 	if len(resultIndex.Manifests) != 2 || !content.Equal(resultIndex.Manifests[1], result.Output) || len(metadata.Layers) != 1 || !content.Equal(metadata.Layers[0], *result.Archive) {
 		t.Fatal("component output and archive use the wrong OCI child roles")
 	}
-	payload, err := client.FetchCIPayload(t.Context(), repository, ref, CIResultExpectation{Scope: scope, Producer: "component", Kind: "component", MaxAttempt: 1}, filepath.Join(t.TempDir(), "component"))
+	archiveDigest := result.Archive.Digest
+	result.Archive.Digest = digest.FromString("caller-mutated")
+	result.Output.Annotations["io.strio.fixture.scoped"] = "changed"
+	result.Output.Platform.Architecture = "changed"
+	result, err = scoped.ReadCIResult(t.Context(), repository, ref, expect)
+	if err != nil || result.Archive.Digest != archiveDigest || result.Output.Annotations["io.strio.fixture.scoped"] != "original" || result.Output.Platform.Architecture != "amd64" {
+		t.Fatalf("returned result mutated verified metadata: %+v %v", result, err)
+	}
+	payload, err := scoped.FetchCIPayload(t.Context(), repository, ref, expect, filepath.Join(t.TempDir(), "component"))
 	if err != nil {
 		t.Fatal(err)
+	}
+	payload.Result.Archive.Digest = digest.FromString("caller-mutated-payload")
+	if next, err := scoped.ReadCIResult(t.Context(), repository, ref, expect); err != nil || next.Archive.Digest != archiveDigest {
+		t.Fatalf("payload result mutated reader: %+v %v", next, err)
 	}
 	fetchedBytes, err := os.ReadFile(payload.Path)
 	if err != nil || !bytes.Equal(fetchedBytes, originalBytes) {

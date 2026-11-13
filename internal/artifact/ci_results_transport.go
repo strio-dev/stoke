@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -75,6 +74,8 @@ type ciReadSession struct {
 	storage        content.ReadOnlyStorage
 	repository     string
 	scope          CIScope
+	authFile       string
+	plainHTTP      bool
 	sets           map[string]CIInputSet
 	results        map[string]CIResult
 	descriptors    map[string]v1.Descriptor
@@ -83,15 +84,34 @@ type ciReadSession struct {
 	metadata       map[digest.Digest]ciMetadata
 }
 
+// WithCIReadSession reuses verified immutable CI metadata for one invocation.
+// The returned copy requires sequential use and fixed repository, scope and
+// client authentication configuration. New invocations need a new scoped copy.
+func (c Client) WithCIReadSession(repository string, scope CIScope) (Client, error) {
+	c.ciRead = nil
+	session, err := c.ciSession(repository, scope)
+	if err != nil {
+		return Client{}, err
+	}
+	c.ciRead = session
+	return c, nil
+}
+
 func (c Client) ciSession(repository string, scope CIScope) (*ciReadSession, error) {
 	if err := scope.Validate(); err != nil {
 		return nil, err
+	}
+	if session := c.ciRead; session != nil {
+		if session.repository != repository || session.scope != scope || session.authFile != c.AuthFile || session.plainHTTP != c.PlainHTTP {
+			return nil, errors.New("CI read session repository, scope or client configuration mismatch")
+		}
+		return session, nil
 	}
 	repo, err := c.ciRepository(repository)
 	if err != nil {
 		return nil, err
 	}
-	return &ciReadSession{repo: repo, repository: repository, scope: scope,
+	return &ciReadSession{repo: repo, repository: repository, scope: scope, authFile: c.AuthFile, plainHTTP: c.PlainHTTP,
 		sets: map[string]CIInputSet{}, results: map[string]CIResult{}, active: map[string]bool{}, descriptors: map[string]v1.Descriptor{}}, nil
 }
 
@@ -255,6 +275,9 @@ func (s *ciReadSession) object(ctx context.Context, reference, artifactType, con
 }
 
 func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInputSet, error) {
+	if err := ctx.Err(); err != nil {
+		return CIInputSet{}, err
+	}
 	if set, exists := s.sets[reference]; exists {
 		return set, nil
 	}
@@ -303,6 +326,9 @@ func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInput
 }
 
 func (s *ciReadSession) result(ctx context.Context, reference string) (CIResult, error) {
+	if err := ctx.Err(); err != nil {
+		return CIResult{}, err
+	}
 	if result, exists := s.results[reference]; exists {
 		return result, nil
 	}
@@ -450,7 +476,9 @@ func (c Client) ReadCIInputSet(ctx context.Context, repository, reference string
 	if err != nil {
 		return CIInputSet{}, err
 	}
-	return session.inputSet(ctx, reference)
+	set, err := session.inputSet(ctx, reference)
+	set.Bindings = maps.Clone(set.Bindings)
+	return set, err
 }
 
 func (c Client) ReadCIResult(ctx context.Context, repository, reference string, expect CIResultExpectation) (CIResult, error) {
@@ -462,7 +490,26 @@ func (c Client) ReadCIResult(ctx context.Context, repository, reference string, 
 	if err == nil {
 		err = result.validate(expect)
 	}
-	return result, err
+	return copyCIResult(result), err
+}
+
+// Cached descriptors remain private even when a caller changes returned metadata.
+func copyCIResult(result CIResult) CIResult {
+	copyDescriptor := func(value v1.Descriptor) v1.Descriptor {
+		value.Annotations = maps.Clone(value.Annotations)
+		if value.Platform != nil {
+			platform := *value.Platform
+			platform.OSFeatures = slices.Clone(platform.OSFeatures)
+			value.Platform = &platform
+		}
+		return value
+	}
+	result.Output = copyDescriptor(result.Output)
+	if result.Archive != nil {
+		archive := copyDescriptor(*result.Archive)
+		result.Archive = &archive
+	}
+	return result
 }
 
 func (c Client) pushCIObject(ctx context.Context, repository, artifactType, configType string, scope CIScope, producer string, value any, children []v1.Descriptor) (string, error) {
@@ -808,10 +855,6 @@ func (c Client) ResolveCIInput(ctx context.Context, repository, reference string
 }
 
 func (c Client) prepareCIInput(ctx context.Context, repository, reference string, expect CIResultExpectation, directory string, imageReference bool) (payload CIPayload, retErr error) {
-	traceStarted := time.Now()
-	defer func() {
-		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=fetch_payload seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
-	}()
 	session, err := c.ciSession(repository, expect.Scope)
 	if err != nil {
 		return payload, err
@@ -823,6 +866,7 @@ func (c Client) prepareCIInput(ctx context.Context, repository, reference string
 	if err := result.validate(expect); err != nil {
 		return payload, err
 	}
+	result = copyCIResult(result)
 	var bounded *ciPayloadSource
 	if result.Kind == "component" {
 		if err := validateCIArchiveTransfer(*result.Archive, session.bytes); err != nil {
@@ -833,15 +877,6 @@ func (c Client) prepareCIInput(ctx context.Context, repository, reference string
 		if err != nil {
 			return payload, err
 		}
-	}
-	if result.Kind == "image" {
-		traceCopyStarted := time.Now()
-		defer func() {
-			bounded.budget.mu.Lock()
-			copied := MaxCITransferBytes - int64(bounded.metadataBytes) - bounded.budget.remaining
-			bounded.budget.mu.Unlock()
-			fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=image_payload_copy seconds=%.6f success=%t copied_leaf_bytes=%d verified_metadata_bytes=%d\n", time.Since(traceCopyStarted).Seconds(), retErr == nil, copied, bounded.metadataBytes)
-		}()
 	}
 	if imageReference && result.Kind == "image" {
 		return CIPayload{Result: result, CanonicalReference: repository + "@" + result.Output.Digest.String()}, nil

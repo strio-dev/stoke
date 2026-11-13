@@ -361,6 +361,10 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 		if err := artifact.ValidateCIRepository(exchange.Repository); err != nil {
 			return nil, err
 		}
+		client, err = client.WithCIReadSession(exchange.Repository, scope)
+		if err != nil {
+			return nil, err
+		}
 	}
 	refs, err := readCINativeInputs(p, selected, exchange, scopeHash)
 	if err != nil {
