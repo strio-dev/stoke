@@ -46,15 +46,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Preserve candidate plan outside the measured context
-        shell: bash
-        run: cp '.stoke/hosted-warm.json' "$RUNNER_TEMP/stoke-measurement-plan.json"
-      - name: Check out the measured application
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          path: application-baseline
-          persist-credentials: false
       - id: stoke_auth
         name: Authenticate GHCR
         env:
@@ -69,14 +60,11 @@ jobs:
             --username "$STOKE_GHCR_USER" --password-stdin ghcr.io
       - id: stoke
         name: Run Stoke job
-        working-directory: application-baseline
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.stoke_auth.outputs.directory }}
         shell: bash
         run: |-
-          test "$(git rev-parse HEAD)" = 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          printf 'MEASURED_APPLICATION_SOURCE=%s\n' "$(git rev-parse HEAD)"
-          stoke ci run --plan "$RUNNER_TEMP/stoke-measurement-plan.json" --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
+          stoke ci run --plan '.stoke/hosted-warm.json' --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
             --job "$STOKE_CI_JOB" \
             --scope "$STOKE_CI_SCOPE" \
             --attempt "$GITHUB_RUN_ATTEMPT" \
@@ -132,15 +120,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Preserve candidate plan outside the measured context
-        shell: bash
-        run: cp '.stoke/hosted-warm.json' "$RUNNER_TEMP/stoke-measurement-plan.json"
-      - name: Check out the measured application
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          path: application-baseline
-          persist-credentials: false
       - id: stoke_auth
         name: Authenticate GHCR
         env:
@@ -155,14 +134,11 @@ jobs:
             --username "$STOKE_GHCR_USER" --password-stdin ghcr.io
       - id: stoke
         name: Run Stoke job
-        working-directory: application-baseline
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.stoke_auth.outputs.directory }}
         shell: bash
         run: |-
-          test "$(git rev-parse HEAD)" = 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          printf 'MEASURED_APPLICATION_SOURCE=%s\n' "$(git rev-parse HEAD)"
-          stoke ci run --plan "$RUNNER_TEMP/stoke-measurement-plan.json" --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
+          stoke ci run --plan '.stoke/hosted-warm.json' --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
             --job "$STOKE_CI_JOB" \
             --scope "$STOKE_CI_SCOPE" \
             --attempt "$GITHUB_RUN_ATTEMPT" \
@@ -211,15 +187,6 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Preserve candidate plan outside the measured context
-        shell: bash
-        run: cp '.stoke/hosted-warm.json' "$RUNNER_TEMP/stoke-measurement-plan.json"
-      - name: Check out the measured application
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          path: application-baseline
-          persist-credentials: false
       - id: stoke_auth
         name: Authenticate GHCR
         env:
@@ -234,14 +201,11 @@ jobs:
             --username "$STOKE_GHCR_USER" --password-stdin ghcr.io
       - id: stoke
         name: Run Stoke job
-        working-directory: application-baseline
         env:
           STOKE_GHCR_AUTH_DIR: ${{ steps.stoke_auth.outputs.directory }}
         shell: bash
         run: |-
-          test "$(git rev-parse HEAD)" = 4afb265a1089c8cb9d9fab3505ee97d247b17d67
-          printf 'MEASURED_APPLICATION_SOURCE=%s\n' "$(git rev-parse HEAD)"
-          stoke ci run --plan "$RUNNER_TEMP/stoke-measurement-plan.json" --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
+          stoke ci run --plan '.stoke/hosted-warm.json' --plan-id '5fe0ab05c41f2738dce8848ab6b361f96d22ff3218f2797badddb419887e2981' \
             --job "$STOKE_CI_JOB" \
             --scope "$STOKE_CI_SCOPE" \
             --attempt "$GITHUB_RUN_ATTEMPT" \

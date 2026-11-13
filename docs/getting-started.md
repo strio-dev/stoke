@@ -1,6 +1,6 @@
 # Get started
 
-Build Stoke from this checkout and validate a workflow before running it. No published Stoke binary release is required or assumed.
+Build Stoke from this checkout, install Coopr, and run your first workflow.
 
 ## Build with Nix
 
@@ -14,7 +14,18 @@ go build -o /tmp/stoke ./cmd/stoke
 
 The development shell supplies the selected Go toolchain and development tooling. `just build` builds the Nix package; run `./result-stoke/bin/stoke --help` afterward. `nix run path:. -- --help` runs the same packaged command.
 
-Stoke is an independent Go client. Install Coopr `0.6.0` for container execution. The engine executable and the SDK in this checkout share the release source revision. See [engine selection](guides/coopr-api.md) for installation and the matching source build.
+## Install Coopr
+
+Stoke uses Coopr for container execution. Install the latest stable release:
+
+```sh
+curl -fsSL https://coopr.strio.dev/install.sh | sh
+coopr --version
+```
+
+The installer installs the executable and its build helpers under `/usr/local`,
+using `sudo` when needed. See [Coopr installation](https://coopr.strio.dev/getting-started/)
+for prerequisites and other installation locations.
 
 Set `STOKE_COOPR_BINARY` if your Coopr executable is outside PATH.
 
@@ -32,13 +43,23 @@ Host policy applies even inside another container or CI runner. A machine with u
 
 ## Validate, inspect, run
 
+Run the checked-in build, test and artifact workflow from the repository root:
+
 ```sh
+stoke_output="$(mktemp -d)/outputs"
 /tmp/stoke check -f examples/first-workflow/stoke.yaml
 /tmp/stoke plan -f examples/first-workflow/stoke.yaml artifact
-/tmp/stoke run -f examples/first-workflow/stoke.yaml --context examples/first-workflow artifact
+/tmp/stoke run -f examples/first-workflow/stoke.yaml \
+  --context examples/first-workflow --output "$stoke_output" artifact
+cat "$stoke_output/artifact/rootfs/message.txt"
 ```
 
-`check` validates definitions and resolves imports without running task commands. OCI imports require registry access. `plan` prints the selected dependency closure in stable order. `run` automatically schedules ready tasks concurrently and retains outputs and a run report. The current scheduler admits at most four jobs at once across the workflow; each matrix's `strategy.max-parallel` also applies. See [parallel tasks](guides/parallel-tasks.md). Follow [the tutorial](tutorials/first-workflow.md) for the artifact and [the CLI reference](reference/cli.md) for paths and flags.
+The last command prints `HELLO FROM STOKE`. The run also retains an OCI image
+layout at `$stoke_output/artifact/image` and reports its run directory. Registry
+access is needed to fetch the BusyBox image. Follow [the tutorial](tutorials/first-workflow.md)
+to see how the build, test and artifact tasks fit together.
+
+`check` validates definitions and resolves imports without running task commands. OCI imports require registry access. `plan` prints the selected dependency closure in stable order. `run` automatically schedules ready tasks concurrently and retains outputs and a run report. The current scheduler admits at most four jobs at once across the workflow; each matrix's `strategy.max-parallel` also applies. See [parallel tasks](guides/parallel-tasks.md) and [the CLI reference](reference/cli.md) for paths and flags.
 
 For existing Coopr definitions, follow [native image/component builds](guides/native-coopr.md). They can feed normal `from`/`copy.from` tasks and explicit publication tasks in the same workflow. A run with no targets selects every root task, including declared publication; choose a build/test target when delivery is not wanted.
 
