@@ -4,25 +4,28 @@ Stoke delegates container execution to a Coopr executable through HTTP over a pr
 
 ## Select a compatible executable
 
-Install Coopr `0.6.0` from the published Linux archives for AMD64 or ARM64.
-Check the archive against `SHA256SUMS` and keep `coopr` with its packaged
-`libexec` directory. Put `coopr` on PATH or select it explicitly as shown below.
-See the [Coopr release](https://github.com/strio-dev/coopr/releases/tag/0.6.0).
-
-Stoke uses the public SDK from commit `35871e4b01e60657b45fd17e04ac1db119f839e6`.
-Go resolves the release’s `0.6.0` tag to `v0.0.0-20261110160832-35871e4b01e6`.
-To build an executable from that same source with Nix:
+Export steps require the ordered-state implementation in the
+[Coopr PR25 candidate](https://github.com/strio-dev/coopr/pull/25), commit
+`06855af48f8d38197aee402ba5c9f7604f273ea9`, and its
+`selected-file-exports` capability. Stoke currently selects that source's public
+SDK as `v0.0.0-20261113074247-06855af48f8d`. Build the matching executable with Nix:
 
 ```sh
 nix build --no-update-lock-file \
-  github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6#coopr \
+  github:strio-dev/coopr/06855af48f8d38197aee402ba5c9f7604f273ea9#coopr \
   --out-link result-coopr-source
 stoke run --coopr-binary "$PWD/result-coopr-source/bin/coopr" test
 ```
 
-The source build uses the flake’s development version label. The release
-archive supplies the `0.6.0` binary. Both routes use the same source and
-Stoke checks API version and capabilities at startup.
+The source build uses the flake's development version label. Stoke checks API
+version and required capabilities at startup. The candidate supplies ordered
+export capture; it is separate from the published `0.6.0` release.
+
+Workflows using the previously available features can still use Coopr `0.6.0`
+from the published Linux archives for AMD64 or ARM64.
+Check the archive against `SHA256SUMS` and keep `coopr` with its packaged
+`libexec` directory. Put `coopr` on PATH or select it explicitly as shown below.
+See the [Coopr release](https://github.com/strio-dev/coopr/releases/tag/0.6.0).
 
 Select an executable for local workflows.
 
@@ -38,6 +41,11 @@ stoke run --coopr-binary /absolute/path/to/compatible/coopr test
 ```
 
 The flag takes precedence over `STOKE_COOPR_BINARY`; otherwise Stoke looks for `coopr` on PATH. It checks API version `1`, literal execution support and the `build`, `component` or `publish` capabilities required by selected native tasks. A missing binary, unsupported service command or incompatible API fails the run. Stoke does not fall back to an embedded backend or reinterpret normal Coopr CLI output.
+
+Selected `steps[].export` operations additionally require
+`selected-file-exports`. Stoke checks this before executing tasks. It sends the
+ordered checkpoints through the typed program's state selectors in one request;
+Coopr owns their execution, cache reuse and capture. See [selected outputs](native-coopr.md#choose-exported-outputs).
 
 `--cache-from` and `--cache-to` additionally require the `registry-cache`
 capability, which Coopr `0.6.0` provides.

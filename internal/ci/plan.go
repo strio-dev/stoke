@@ -314,6 +314,9 @@ func Build(w *workflow.Workflow, config Config) (*Plan, error) {
 			if len(task.AllMounts()) != 0 {
 				capabilities["run-mounts"] = true
 			}
+			if len(task.FileExports()) != 0 {
+				capabilities["selected-file-exports"] = true
+			}
 			platform, err := task.ResolvedPlatform()
 			if err != nil {
 				return nil, err

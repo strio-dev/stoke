@@ -67,7 +67,10 @@ func TestSchedulerGivesWaitingGroupNextAvailableSlot(t *testing.T) {
 	defer func() {
 		cancel()
 		select {
-		case <-done:
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Errorf("scheduler cancellation: %v", err)
+			}
 		case <-time.After(5 * time.Second):
 			t.Error("scheduler did not drain canceled jobs")
 		}

@@ -21,6 +21,7 @@ tasks:
     from: build
     steps:
       - copy: {scope: component, sources: [scripts/check.sh], destination: /check.sh}
+      - export: {source: /dist/tool, destination: dist/tool}
 `
 	w, err := Decode(strings.NewReader(document))
 	if err != nil {
@@ -29,6 +30,9 @@ tasks:
 	build := w.Tasks["build"]
 	build.ComponentDir = "/private/package"
 	w.Tasks["build"] = build
+	test := w.Tasks["test"]
+	test.ComponentDir = build.ComponentDir
+	w.Tasks["test"] = test
 	encoded, err := yaml.Marshal(w)
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +47,9 @@ tasks:
 	plan, err := w.Expand([]string{"test"})
 	if err != nil || plan.Groups[0].Jobs[0].Definition.ComponentDir != "/private/package" {
 		t.Fatalf("owner lost in expansion: %v %v", plan, err)
+	}
+	if got := plan.Groups[1].Jobs[0].Definition.FileExports()[0]; got.Source != "/dist/tool" || got.Destination != "dist/tool" || reloaded.Tasks["test"].FileExports()[0] != got || plan.Groups[1].Jobs[0].Definition.ComponentDir != "/private/package" {
+		t.Fatalf("package ownership changed caller export paths: %#v", got)
 	}
 }
 

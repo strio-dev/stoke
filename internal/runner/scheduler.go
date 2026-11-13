@@ -57,6 +57,7 @@ func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.
 			indices[job.Name] = index
 			item := jobResult(job, coopr.Result{}, nil)
 			item.Status, item.Error = "skipped", "workflow stopped before job started"
+			item.Exports = skippedJobFileExports(job, options.ContextDir, item.Error)
 			items = append(items, item)
 		}
 	}
@@ -246,7 +247,7 @@ func jobResult(job workflow.Job, result coopr.Result, err error) TaskResult {
 	if job.Definition.Publish != nil {
 		kind = "publish"
 	}
-	item := TaskResult{Name: job.Name, Task: job.Task, Matrix: job.Matrix, Status: "passed", Kind: kind, ImageID: result.ImageID, Platform: result.Platform, Digest: result.ManifestDigest, OCI: result.OCI, Filesystem: result.Filesystem, Reference: result.Reference, Metadata: result.Metadata, Destinations: result.Destinations, ProgressDropped: result.ProgressDropped}
+	item := TaskResult{Name: job.Name, Task: job.Task, Matrix: job.Matrix, Status: "passed", Kind: kind, ImageID: result.ImageID, Platform: result.Platform, Digest: result.ManifestDigest, OCI: result.OCI, Filesystem: result.Filesystem, Reference: result.Reference, Metadata: result.Metadata, Destinations: result.Destinations, ProgressDropped: result.ProgressDropped, Exports: result.Exports}
 	if result.CacheAvailable {
 		item.Cache = &result.Cache
 	}

@@ -24,3 +24,6 @@ tasks:
           from: build
           sources: [/out/message.txt]
           destination: /message.txt
+      - export:
+          source: /message.txt
+          destination: artifacts/message.txt

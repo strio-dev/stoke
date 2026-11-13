@@ -120,7 +120,7 @@ func TestNativeBuildComponentBindingsAndPublication(t *testing.T) {
 		},
 		publish: func(_ context.Context, p cooprwire.Publish, o coopr.Options) (coopr.Result, error) {
 			record("publish-" + p.Artifact)
-			if p.ComponentStoreDir != componentStore || o.Output != (coopr.Output{}) || !o.Cache.NoCache {
+			if p.ComponentStoreDir != componentStore || !reflect.DeepEqual(o.Output, coopr.Output{}) || !o.Cache.NoCache {
 				t.Error("publication resources/cache policy")
 			}
 			if p.Artifact == "image" && p.Source != "built-image" || p.Artifact == "component" && p.Source != "sha256:component" {

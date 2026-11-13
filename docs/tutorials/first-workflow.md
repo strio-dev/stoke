@@ -32,6 +32,9 @@ tasks:
           from: build
           sources: [/out/message.txt]
           destination: /message.txt
+      - export:
+          source: /message.txt
+          destination: artifacts/message.txt
 ```
 
 `from: build` starts the test from the build's completed image. The artifact copies from the build but also declares `needs: [test]`, so a failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result.
@@ -51,7 +54,7 @@ The selected order is `build`, `test`, `artifact`. Tasks outside this closure ar
 stoke run -f examples/first-workflow/stoke.yaml --context examples/first-workflow artifact
 ```
 
-The command reports the retained run directory. Each successful task has an OCI image layout and a flattened filesystem export; `run.json` records execution results. The artifact task's filesystem contains `/message.txt` with `HELLO FROM STOKE` followed by a newline.
+The command reports the retained run directory. Each successful task has an OCI image layout; `run.json` records execution results. The artifact's export step copies only `/message.txt` into `examples/first-workflow/artifacts/message.txt`, relative to the supplied caller context. It contains `HELLO FROM STOKE` followed by a newline. The artifact task omits the full rootfs by default because it has an export step; add `outputs: {filesystem: true}` only when the full filesystem is wanted.
 
 For a known location, choose a fresh path outside the input context:
 
@@ -60,8 +63,8 @@ stoke run -f examples/first-workflow/stoke.yaml \
   --context examples/first-workflow --output /tmp/stoke-first-run artifact
 ```
 
-The destination must not already exist. Keep execution stores and cache outside the context to avoid copying generated state back into later builds.
+The output directory and exported file destination must not already exist. `--output` moves run outputs, while the selected file still goes to the caller workspace. Keep execution stores and cache outside the context to avoid copying generated state back into later builds.
 
 ## Run again
 
-Repeat the command without `--output`, or choose a different fresh output directory. Coopr can reuse cached build instructions; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.
+Move the previous `artifacts/message.txt` export out of the caller context, then repeat the command without `--output`, or choose a different fresh output directory. Existing export destinations are never overwritten. Coopr can reuse cached build instructions; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.

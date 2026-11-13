@@ -54,10 +54,11 @@ type Task struct {
 
 // Step contains exactly one operation. Run executes literal argv without a shell.
 type Step struct {
-	Run    []string `yaml:"run,omitempty"`
-	Copy   *Copy    `yaml:"copy,omitempty"`
-	Mounts []Mount  `yaml:"mounts,omitempty"`
-	Stdout string   `yaml:"stdout,omitempty" json:",omitempty"`
+	Run    []string    `yaml:"run,omitempty"`
+	Copy   *Copy       `yaml:"copy,omitempty"`
+	Export *FileExport `yaml:"export,omitempty" json:",omitempty"`
+	Mounts []Mount     `yaml:"mounts,omitempty"`
+	Stdout string      `yaml:"stdout,omitempty" json:",omitempty"`
 }
 
 // Copy reads from the host context or a named task's output.
@@ -296,8 +297,14 @@ func (w *Workflow) Validate() error {
 			}
 		}
 		for i, s := range t.Steps {
-			if (s.Run == nil) == (s.Copy == nil) {
-				return fail(fmt.Sprintf("step %d requires exactly one of run or copy", i+1))
+			operations := 0
+			for _, selected := range []bool{s.Run != nil, s.Copy != nil, s.Export != nil} {
+				if selected {
+					operations++
+				}
+			}
+			if operations != 1 {
+				return fail(fmt.Sprintf("step %d requires exactly one of run, copy or export", i+1))
 			}
 			if s.Run != nil {
 				if len(s.Run) == 0 || s.Run[0] == "" {

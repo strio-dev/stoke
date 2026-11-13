@@ -30,6 +30,9 @@ tasks:
           from: build
           sources: [/output.txt]
           destination: /output.txt
+      - export:
+          source: /output.txt
+          destination: artifacts/native/output.txt
 
   publish:
     needs: [test]

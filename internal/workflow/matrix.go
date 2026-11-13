@@ -358,6 +358,10 @@ func (t Task) Clone() Task {
 			copy.Sources = slices.Clone(c.Sources)
 			t.Steps[i].Copy = &copy
 		}
+		if e := t.Steps[i].Export; e != nil {
+			export := *e
+			t.Steps[i].Export = &export
+		}
 	}
 	if t.Cache != nil {
 		value := *t.Cache

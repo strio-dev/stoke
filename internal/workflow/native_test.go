@@ -36,7 +36,9 @@ tasks:
   test:
     from: image
     cache: false
-    steps: [{run: [check]}]
+    steps:
+      - export: {source: /workspace/dist/tool, destination: dist/tool}
+      - run: [check]
   deliver:
     needs: [test]
     publish:
@@ -47,7 +49,7 @@ tasks:
 	if err != nil || !reflect.DeepEqual(order, []string{"toolkit", "image", "test", "deliver"}) {
 		t.Fatalf("order=%v err=%v", order, err)
 	}
-	if w.Tasks["toolkit"].OutputKind() != "component" || w.Tasks["toolkit"].FilesystemEnabled() || w.Tasks["image"].OutputKind() != "image" || w.Tasks["image"].FilesystemEnabled() || !w.Tasks["test"].FilesystemEnabled() {
+	if w.Tasks["toolkit"].OutputKind() != "component" || w.Tasks["toolkit"].FilesystemEnabled() || w.Tasks["image"].OutputKind() != "image" || w.Tasks["image"].FilesystemEnabled() || w.Tasks["test"].FilesystemEnabled() {
 		t.Fatal("artifact kinds/filesystem declarations lost")
 	}
 	if w.Tasks["deliver"].OutputKind() != "" || w.Tasks["deliver"].CacheEnabled() || w.Tasks["deliver"].FilesystemEnabled() {
@@ -63,10 +65,81 @@ tasks:
 	}
 }
 
+func TestExportStepsSelectFilesystemOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		task string
+		full bool
+	}{
+		{"image: scratch", true},
+		{"image: scratch, outputs: {}", true},
+		{"image: scratch, outputs: {filesystem: false}", false},
+		{"image: scratch, steps: [{export: {source: /report, destination: reports/report}}]", false},
+		{"image: scratch, steps: [{export: {source: /report, destination: reports/report}}], outputs: {filesystem: true}", true},
+		{"image: scratch, steps: [{export: {source: /report, destination: reports/report}}], outputs: {filesystem: false}", false},
+	} {
+		w := nativeWorkflow(t, "version: 1\ntasks:\n  test: {"+tc.task+"}\n")
+		if got := w.Tasks["test"].FilesystemEnabled(); got != tc.full {
+			t.Fatalf("full filesystem export=%v want=%v for %s", got, tc.full, tc.task)
+		}
+	}
+}
+
+func TestExportStepsPreserveOrderAndMatrixOwnership(t *testing.T) {
+	w := nativeWorkflow(t, `version: 1
+tasks:
+  test:
+    image: scratch
+    strategy: {matrix: {mode: [debug, release]}}
+    steps:
+      - run: [produce]
+      - export: {source: /first, destination: first}
+      - run: [change]
+      - export: {source: /later, destination: later}
+`)
+	plan, err := w.Expand(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobs := plan.Groups[0].Jobs
+	want := []FileExport{{Source: "/first", Destination: "first"}, {Source: "/later", Destination: "later"}}
+	if len(jobs) != 2 || !reflect.DeepEqual(jobs[0].Definition.FileExports(), want) || jobs[0].Definition.Steps[1].Export == nil || jobs[0].Definition.Steps[2].Run[0] != "change" {
+		t.Fatalf("export placement or order lost: %+v", jobs)
+	}
+	jobs[0].Definition.Steps[1].Export.Destination = "changed"
+	if !reflect.DeepEqual(jobs[1].Definition.FileExports(), want) || !reflect.DeepEqual(w.Tasks["test"].FileExports(), want) {
+		t.Fatal("export steps alias their matrix template or sibling")
+	}
+}
+
 func TestNativeSchemaRejectsInvalidDefinitions(t *testing.T) {
 	for _, tc := range []struct{ name, tasks string }{
 		{"unknown native field", "a: {coopr: {files: [x.coopr], typo: true}}"},
 		{"unknown outputs field", "a: {image: scratch, outputs: {typo: false}}"},
+		{"task-level file exports", "a: {image: scratch, outputs: {files: [{source: /out, destination: out}]}}"},
+		{"run and export", "a: {image: scratch, steps: [{run: [true], export: {source: /out, destination: out}}]}"},
+		{"copy and export", "a: {image: scratch, steps: [{copy: {sources: [in], destination: /out}, export: {source: /out, destination: out}}]}"},
+		{"native export step", "a: {coopr: {files: [x.coopr]}, steps: [{export: {source: /out, destination: out}}]}"},
+		{"host export step", "a: {host: {tools: [sh]}, platform: linux/amd64, steps: [{export: {source: /out, destination: out}}]}"},
+		{"publication export step", "a: {image: scratch}\nb: {publish: {from: a, destinations: [example.test/a:v1]}, steps: [{export: {source: /out, destination: out}}]}"},
+		{"export mounts", "a: {image: scratch, steps: [{export: {source: /out, destination: out}, mounts: [{type: tmpfs, target: /tmp}]}]}"},
+		{"unknown file export field", "a: {image: scratch, steps: [{export: {source: /out, destination: out, typo: true}}] }"},
+		{"missing export source", "a: {image: scratch, steps: [{export: {destination: out}}] }"},
+		{"relative export source", "a: {image: scratch, steps: [{export: {source: out, destination: out}}] }"},
+		{"root export source", "a: {image: scratch, steps: [{export: {source: /, destination: out}}] }"},
+		{"noncanonical export source", "a: {image: scratch, steps: [{export: {source: /work/../out, destination: out}}] }"},
+		{"glob export source", "a: {image: scratch, steps: [{export: {source: '/out/*', destination: out}}] }"},
+		{"missing export destination", "a: {image: scratch, steps: [{export: {source: /out}}] }"},
+		{"absolute export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: /out}}] }"},
+		{"escaping export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: ../out}}] }"},
+		{"noncanonical export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: ./out}}] }"},
+		{"root export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: .}}] }"},
+		{"glob export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: 'out?'}}] }"},
+		{"git export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: .git/config}}] }"},
+		{"stoke export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: .stoke/run}}] }"},
+		{"workflow export destination", "a: {image: scratch, steps: [{export: {source: /out, destination: stoke.yaml}}] }"},
+		{"duplicate export destination", "a: {image: scratch, steps: [{export: {source: /a, destination: out}}, {export: {source: /b, destination: out}}]}"},
+		{"overlapping export destinations", "a: {image: scratch, steps: [{export: {source: /a, destination: out/nested}}, {export: {source: /b, destination: out}}]}"},
+		{"component selected exports", "a: {coopr: {files: [x.coopr], kind: component}, steps: [{export: {source: /out, destination: out}}] }"},
 		{"unknown publication field", "a: {image: scratch}\nb: {publish: {from: a, destinations: [example.test/a:v1], typo: false}}"},
 		{"selector collision", "a: {image: scratch, coopr: {files: [x.coopr]}}"},
 		{"missing files", "a: {coopr: {}}"},
@@ -132,7 +205,8 @@ tasks:
         MODE: {matrix: mode}
         FLAVOR: {matrix: flavor}
         LITERAL: '${literal}'
-    outputs: {filesystem: false}
+    outputs:
+      filesystem: false
     strategy:
       matrix:
         mode: [debug, release]

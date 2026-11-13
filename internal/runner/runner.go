@@ -57,6 +57,7 @@ type TaskResult struct {
 	Metadata        map[string]json.RawMessage `json:"metadata,omitempty"`
 	ProgressDropped uint64                     `json:"progressDropped,omitempty"`
 	Destinations    []cooprwire.Destination    `json:"destinations,omitempty"`
+	Exports         []cooprwire.ExportResult   `json:"exports,omitempty"`
 }
 
 type Report struct {
@@ -149,6 +150,9 @@ func validateCapabilities(ctx context.Context, plan *workflow.ExecutionPlan, cli
 			var required []string
 			if len(job.Definition.AllMounts()) != 0 {
 				required = append(required, cooprwire.CapabilityRunMounts)
+			}
+			if len(job.Definition.FileExports()) != 0 {
+				required = append(required, cooprwire.CapabilitySelectedFileExports)
 			}
 			if job.Definition.Coopr != nil {
 				platform, err := job.Definition.ResolvedPlatform()
@@ -252,6 +256,9 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 	}
 	plan, err = lowerEnvironments(plan)
 	if err != nil {
+		return nil, options, err
+	}
+	if err := admitFileExports(plan, options.ContextDir); err != nil {
 		return nil, options, err
 	}
 	// Native stores and generated exports must never become COPY inputs.
@@ -382,7 +389,12 @@ func synchronize(out io.Writer, mu *sync.Mutex) io.Writer {
 	return synchronizedWriter{out: out, mu: mu}
 }
 
-func executeJob(ctx context.Context, job workflow.Job, options Options, dir, output string, previous map[string]coopr.Result, engine backend) (coopr.Result, error) {
+func executeJob(ctx context.Context, job workflow.Job, options Options, dir, output string, previous map[string]coopr.Result, engine backend) (result coopr.Result, retErr error) {
+	defer func() {
+		if len(job.Definition.FileExports()) != 0 && len(result.Exports) == 0 {
+			result.Exports = skippedJobFileExports(job, options.ContextDir, "task did not produce selected files")
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return coopr.Result{}, err
 	}
@@ -434,10 +446,23 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 	if !job.Definition.FilesystemEnabled() {
 		opts.Output.Filesystem = ""
 	}
+	staging, exports, err := stageJobFileExports(job, options.ContextDir)
+	if err != nil {
+		return coopr.Result{}, err
+	}
+	opts.Output.Exports = exports
+	if staging != "" {
+		defer func() {
+			if errors.Is(retErr, coopr.ErrCleanupFailed) {
+				retErr = errors.Join(retErr, fmt.Errorf("file export staging retained after unconfirmed cleanup: %s", staging))
+			} else {
+				retErr = errors.Join(retErr, os.RemoveAll(staging))
+			}
+		}()
+	}
 	if options.Stderr != nil {
 		_, _ = fmt.Fprintf(options.Stderr, "==> %s (cache=%t)\n", job.Name, !opts.Cache.NoCache)
 	}
-	var result coopr.Result
 	switch {
 	case job.Definition.Coopr != nil:
 		build := job.Definition.Coopr
@@ -493,15 +518,19 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 			actual, platformErr := workflow.NormalizePlatform(result.Platform)
 			if platformErr != nil {
 				err = fmt.Errorf("coopr did not report a valid result platform: %w", platformErr)
+				result.Exports = nil
 			} else if actual != program.Platform {
 				err = fmt.Errorf("coopr returned platform %q for requested platform %q", actual, program.Platform)
+				result.Exports = nil
 			}
 		}
 	}
 	if options.Stderr != nil && err == nil && result.CacheAvailable {
 		_, _ = fmt.Fprintf(options.Stderr, "    %s: cache hits=%d misses=%d stored=%d skipped=%d errors=%d\n", job.Name, result.Cache.Hits, result.Cache.Misses, result.Cache.Stored, result.Cache.Skipped, result.Cache.Errors)
 	}
-	return result, err
+	var exportErr error
+	result.Exports, exportErr = publishJobFileExports(ctx, job, options.ContextDir, staging, exports, result.Exports, err)
+	return result, errors.Join(err, exportErr)
 }
 
 func artifactSource(results map[string]coopr.Result, name string) (string, error) {
@@ -536,7 +565,20 @@ func compile(name string, task workflow.Task, results map[string]coopr.Result) (
 	if task.Workdir != "" {
 		state.Operations = append(state.Operations, coopr.Operation{Kind: "workdir", Path: task.Workdir})
 	}
+	var states []coopr.State
+	exportStates := fileExportStates(name, task.Steps)
+	exportIndex := 0
 	for _, step := range task.Steps {
+		if step.Export != nil {
+			id := exportStates[exportIndex]
+			exportIndex++
+			if len(states) == 0 || states[len(states)-1].ID != id {
+				state.ID = id
+				states = append(states, state)
+				state = coopr.State{ID: name, From: coopr.Source{State: id}}
+			}
+			continue
+		}
 		if step.Copy != nil {
 			copyOp := coopr.Operation{Kind: "copy", Sources: step.Copy.Sources, Destination: step.Copy.Destination}
 			if step.Copy.From != "" {
@@ -557,7 +599,10 @@ func compile(name string, task workflow.Task, results map[string]coopr.Result) (
 			state.Operations = append(state.Operations, run)
 		}
 	}
-	return coopr.Program{Platform: platform, States: []coopr.State{state}, Output: state.ID}, nil
+	if len(states) == 0 || len(state.Operations) != 0 {
+		states = append(states, state)
+	}
+	return coopr.Program{Platform: platform, States: states, Output: states[len(states)-1].ID}, nil
 }
 
 func defaults(options Options) (Options, error) {

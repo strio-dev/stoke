@@ -35,10 +35,11 @@ The socket provides same-account access to the service's authority. It is not an
 
 ## Product surface and release gate
 
-Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks can disable flattened filesystem export while retaining OCI/native images. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
+Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks retain OCI/native images. Explicit export steps use negotiated `selected-file-exports`; those stages omit the redundant full filesystem unless explicitly requested, while existing tasks keep their prior output default. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
 
-Coopr `0.6.0` provides the service and the public SDK used by Stoke. Select the
-released executable or build its matching source. The [runtime guide](../guides/coopr-api.md)
+Coopr `0.6.0` provides the base service. Export steps require the
+`selected-file-exports` capability from the matching candidate source selected
+by the public SDK. The [runtime guide](../guides/coopr-api.md)
 records the immutable revision and startup capability checks.
 
 Workflow artifacts have one YAML layer and optional declared file layers. YAML-only packages remain valid. Imported templates retain their own file snapshots, including across `uses` and matrix expansion. Loader-owned temporary trees are removed on load failure or after confirmed engine cleanup. Unconfirmed cleanup retains borrowed inputs and staging for investigation. No shared persistent content store is introduced.

@@ -49,13 +49,14 @@ type Result struct {
 	ProgressDropped uint64
 	Metadata        map[string]json.RawMessage
 	Destinations    []cooprwire.Destination
+	Exports         []cooprwire.ExportResult
 }
 
 func options(o Options) cooprwire.Options {
 	return cooprwire.Options{Contexts: o.Contexts, Store: o.Store, ContextDir: o.ContextDir, Runtime: o.Runtime, Isolation: o.Isolation, Network: o.Network, Jobs: o.Jobs, Output: o.Output, Cache: o.Cache, Registry: o.Registry}
 }
 func result(r cooprwire.Result) Result {
-	out := Result{ImageID: r.ImageID, ManifestDigest: r.ManifestDigest, Platform: r.Platform, OCI: r.OCI, Filesystem: r.Filesystem, Reference: r.Reference, Metadata: r.Metadata, Destinations: r.Destinations, ProgressDropped: r.ProgressDropped}
+	out := Result{ImageID: r.ImageID, ManifestDigest: r.ManifestDigest, Platform: r.Platform, OCI: r.OCI, Filesystem: r.Filesystem, Reference: r.Reference, Metadata: r.Metadata, Destinations: r.Destinations, Exports: r.Exports, ProgressDropped: r.ProgressDropped}
 	if r.Cache != nil {
 		out.Cache = *r.Cache
 		out.CacheAvailable = true

@@ -769,8 +769,7 @@ func TestCILocalContentRejectsFIFOWithoutWriter(t *testing.T) {
 		if fd, err := unix.Open(name, unix.O_WRONLY|unix.O_NONBLOCK, 0); err == nil {
 			_ = unix.Close(fd)
 		}
-		<-done
-		t.Fatal("OCI content open waited for a FIFO writer")
+		t.Fatalf("OCI content open waited for a FIFO writer: %v", <-done)
 	}
 }
 

@@ -146,8 +146,8 @@ func TestCancellationWaitsForAcknowledgement(t *testing.T) {
 	cancel()
 	<-deleteEntered
 	select {
-	case <-done:
-		t.Fatal("returned before cleanup acknowledgement")
+	case err := <-done:
+		t.Fatalf("returned before cleanup acknowledgement: %v", err)
 	default:
 	}
 	close(release)

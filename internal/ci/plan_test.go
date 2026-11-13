@@ -359,13 +359,13 @@ tasks:
     platform: linux/arm64
     needs: [native]
     mounts: [{type: stage, from: native, target: /native}]
-    steps: [{run: [true]}]
+    steps: [{run: [true]}, {export: {source: /out, destination: reports}}]
 `)
 	p := buildPlanFixture(t, w, Config{})
 	if len(p.Groups) != 3 || len(p.Environments) != 0 || !slices.Equal(groupNamed(t, p, "check").Jobs[0].Imports, []string{"component", "native"}) {
 		t.Fatal("single env leaked or exact inputs lost")
 	}
-	for _, capability := range []string{"component", "build", "execute", "run-mounts", "build-platform", "component-load"} {
+	for _, capability := range []string{"component", "build", "execute", "run-mounts", "build-platform", "component-load", "selected-file-exports"} {
 		if !slices.Contains(p.Engine.Capabilities, capability) {
 			t.Fatalf("missing %s", capability)
 		}

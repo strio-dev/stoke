@@ -84,7 +84,7 @@ Asset entries are canonical relative paths with slash separators. They name regu
 | `cache` | Boolean; container builds default to `true`, host tasks to `false`. Host opt-in requires the explicit captured-effect/input/output/toolchain contract below. `false` bypasses result reuse. Publication always executes. |
 | `strategy` | Optional matrix axes, variant concurrency and failure policy for build tasks. |
 | `outputs` | Optional container filesystem export control. Host captures use `host.outputs` instead. |
-| `steps` | Ordered list of `run` or `copy` operations. May be omitted for a task that only selects an image. |
+| `steps` | Ordered list of `run`, `copy` or `export` operations. May be omitted for a task that only selects an image. |
 
 A task selects exactly one of `image`, `from`, `coopr`, `environment`, `host`, `publish` and `uses`. Imported templates can be overridden with local `needs`, `env`, `workdir`, `cache` and `outputs`, subject to the resolved task kind's restrictions. Local selectors and steps cannot replace a template's execution. A `uses` caller cannot override template mounts or named contexts. A local `strategy` replaces the entire inherited strategy; omitted strategy inherits it. Local environment entries override matching template entries. Imported task dependencies receive the invocation namespace; local `needs` can add local prerequisites in the caller scope. Namespace collisions fail rather than replacing tasks.
 
@@ -326,14 +326,28 @@ valid. See [task environments](../guides/environments.md).
 
 ## Outputs
 
+Place an `export` operation inside an ordinary task's ordered steps:
+
 ```yaml
-outputs:
-  filesystem: false
+steps:
+  - run: [sh, -eu, -c, 'mkdir -p /reports; echo first > /reports/result.txt']
+  - export:
+      source: /reports
+      destination: reports
+  - run: [sh, -eu, -c, 'echo later > /reports/result.txt']
 ```
 
-Image tasks, including native image builds, export an OCI layout at `JOB/image` and by default a flattened filesystem at `JOB/rootfs`. Set `filesystem: false` to omit the flattened export. This does not remove the native image or prevent later `from` and `copy.from` consumers.
+The export snapshots the file or directory at that position. Later RUNs do not change the already captured bytes: this example exports `first`, while the final image contains `later`. A `source` is a canonical absolute container path; a `destination` is a canonical relative caller-workspace path. A directory's contents appear under that exact destination. Paths are literal, without globs or matrix interpolation. Imported tasks retain the caller workspace destination, not their component asset directory.
 
-Component tasks export an OCI archive file at `JOB/component.oci.tar` and a native component reference. They cannot export a flattened filesystem or serve as a container base/COPY source. OCI is an automatic build output; the schema does not offer arbitrary named file exports or an OCI-disable switch. Paths are relative to the run's recorded output directory.
+Export sources cannot be `/`; destinations cannot escape the workspace, overlap one another, replace existing paths, or target the root `.git`, `.stoke` or `stoke.yaml` paths and their subtrees. Use distinct destinations when multiple jobs export files. Files and directories preserve executable modes and relative symlinks that resolve within the selected directory. Dangling or escaping links and special files are rejected.
+
+The workspace parent must be writable for private export staging, and each destination must use that same filesystem. Stoke rejects unsupported layouts before starting tasks and never overwrites an existing destination. The engine must advertise `selected-file-exports`; older engines fail capability preflight.
+
+Cached prefixes restore the corresponding selected files without rerunning cached instructions. When an ordinary RUN fails before a following export, its declared report paths are attempted from that failed filesystem before builder teardown. The task remains failed and dependent success gates remain blocked. A missing source or failed export fails an otherwise successful task; capture errors do not replace the original execution failure. Stoke does not upload these paths to a CI artifact service.
+
+Image tasks export an OCI layout at `JOB/image`. Without export steps, they retain the default flattened filesystem at `JOB/rootfs`. A task with explicit export steps defaults to only those selected files; `outputs: {filesystem: true}` additionally requests the full rootfs, while `filesystem: false` always disables it. These controls do not remove the native image or prevent later `from` and `copy.from` consumers. `--output` relocates the run's OCI/rootfs outputs; export destinations remain relative to the caller workspace.
+
+Native `coopr` tasks cannot mix `steps` into their definitions. Export from an ordinary task using `from: build`, or use an inline native `environment` with ordinary steps. Exports do not address discarded internal stages of a native definition. Component tasks export an OCI archive at `JOB/component.oci.tar` and a native component reference; they cannot export a flattened filesystem or serve as a container base/COPY source. OCI remains an automatic build output with no disable switch. Host tasks retain their separate `host.outputs` contract.
 
 ## Publish a built artifact
 

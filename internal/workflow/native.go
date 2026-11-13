@@ -104,9 +104,49 @@ func (a Argument) validate() error {
 	return nil
 }
 
-// Outputs controls flattened filesystem export; every build also exports OCI.
+// Outputs controls flattened filesystem export; every image build also exports OCI.
 type Outputs struct {
 	Filesystem *bool `yaml:"filesystem,omitempty"`
+}
+
+// FileExport snapshots one file or directory at its step's position into the
+// caller workspace. Imported templates retain the caller destination.
+type FileExport struct {
+	Source      string `yaml:"source"`
+	Destination string `yaml:"destination"`
+}
+
+// FileExports collects explicit export operations in their authored order.
+func (t Task) FileExports() []FileExport {
+	var exports []FileExport
+	for _, step := range t.Steps {
+		if step.Export != nil {
+			exports = append(exports, *step.Export)
+		}
+	}
+	return exports
+}
+
+func (t Task) validateFileExports() error {
+	exports := t.FileExports()
+	for i, file := range exports {
+		if !validInputString(file.Source) || !path.IsAbs(file.Source) || path.Clean(file.Source) != file.Source || file.Source == "/" || strings.ContainsAny(file.Source, "\\\r\n*?[") {
+			return fmt.Errorf("export source %q must be a canonical absolute file or directory path without globs", file.Source)
+		}
+		if !hostPath(file.Destination, false) || strings.ContainsAny(file.Destination, "*?[") {
+			return fmt.Errorf("export destination %q must be a canonical relative workspace path without globs", file.Destination)
+		}
+		first, _, _ := strings.Cut(file.Destination, "/")
+		if first == ".git" || first == ".stoke" || first == "stoke.yaml" {
+			return fmt.Errorf("export destination %q is reserved", file.Destination)
+		}
+		for _, prior := range exports[:i] {
+			if hostPathOverlap(prior.Destination, file.Destination) {
+				return errors.New("export destinations must not overlap or repeat")
+			}
+		}
+	}
+	return nil
 }
 
 // Publish transfers a completed task's artifact after all prerequisite gates.
@@ -137,10 +177,16 @@ func (t Task) FilesystemEnabled() bool {
 	if t.OutputKind() != "image" {
 		return false
 	}
-	return t.Outputs == nil || t.Outputs.Filesystem == nil || *t.Outputs.Filesystem
+	if t.Outputs != nil && t.Outputs.Filesystem != nil {
+		return *t.Outputs.Filesystem
+	}
+	return len(t.FileExports()) == 0
 }
 
 func (t Task) validateNative() error {
+	if err := t.validateFileExports(); err != nil {
+		return err
+	}
 	if t.Environment != nil {
 		if t.Environment.Kind != "" && t.Environment.Kind != "image" {
 			return errors.New("environment must build an image, not a component")
