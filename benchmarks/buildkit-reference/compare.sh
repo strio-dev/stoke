@@ -34,15 +34,26 @@ for engine in buildkit coopr; do
         args=(--cache-to "$repo")
         [[ "$phase" != registry-warm ]] || args+=(--cache-from "$repo")
         start=$(python3 -c "import time; print(time.monotonic_ns())")
+        build_started=$EPOCHREALTIME
         "${base[@]}" build --file "$context/examples/ci/build.coopr" "$context" \
           --platform "$platform" --runtime /bin/crun --network ns:/proc/self/ns/net \
           --timestamp=0 --rewrite-timestamp --format oci --authfile "$auth" \
+          --metadata-file "$dir/metadata.json" \
           --iidfile "$dir/id" --output "type=local,dest=$dir/fs" "${args[@]}"
+        build_completed=$EPOCHREALTIME
         "${base[@]}" push --platform "$platform" --authfile "$auth" --format oci \
           --digestfile "$dir/digest" "$(cat "$dir/id")" "oci-archive:$dir/output.oci.tar:binary"
         python3 - "$start" <<PY
 import json,sys,time
 print(json.dumps({"phase":"engine-core-total","seconds":(time.monotonic_ns()-int(sys.argv[1]))/1e9,"engine":"coopr","includes":"build+cache-export+push+both-CLI-bootstrap"}))
+PY
+        python3 - "$dir/metadata.json" "$build_started" "$build_completed" <<PY
+import datetime,json,sys
+metadata=json.load(open(sys.argv[1]))
+events=metadata.get("coopr.operation.progress", [])
+exports=[{key:event[key] for key in ("instruction","phase","stage","cache","state","durationNanos") if key in event} for event in events if event.get("phase")=="export" and event.get("state")=="completed"]
+completed=[datetime.datetime.fromisoformat(event["completed"].replace("Z", "+00:00")).timestamp() for event in events if event.get("completed")]
+print(json.dumps({"phase":"native-build-phase-profile","buildSeconds":float(sys.argv[3])-float(sys.argv[2]),"exportPhases":exports,"progressDropped":metadata.get("coopr.operation.progress.dropped",0),"lastObservedPhaseToBuildReturnSeconds":float(sys.argv[3])-max(completed) if completed else None}))
 PY
         # Native archive ingestion and filesystem verification are OUTSIDE core time.
         proof=(coopr --root "$dir/proof/root" --runroot "$dir/proof/run" --storage-driver vfs)
