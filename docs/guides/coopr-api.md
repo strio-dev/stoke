@@ -6,13 +6,13 @@ Stoke delegates container execution to a Coopr executable through HTTP over a pr
 
 Export steps require the ordered-state implementation in the
 [Coopr PR25 candidate](https://github.com/strio-dev/coopr/pull/25), commit
-`ec705285b1c74115676917f8d3b323273586c5c0`, and its
+`bfc19070915b33e98b7b0f0250b1ac282f75de84`, and its
 `selected-file-exports` capability. Stoke currently selects that source's public
-SDK as `v0.0.0-20261113110052-ec705285b1c7`. Build the matching executable with Nix:
+SDK as `v0.0.0-20261113115855-bfc19070915b`. Build the matching executable with Nix:
 
 ```sh
 nix build --no-update-lock-file \
-  github:strio-dev/coopr/ec705285b1c74115676917f8d3b323273586c5c0#coopr \
+  github:strio-dev/coopr/bfc19070915b33e98b7b0f0250b1ac282f75de84#coopr \
   --out-link result-coopr-source
 stoke run --coopr-binary "$PWD/result-coopr-source/bin/coopr" test
 ```

@@ -243,6 +243,9 @@ func prepareCI(ctx context.Context, w *workflow.Workflow, request CIRequest, opt
 			projection.Groups = append(projection.Groups, group)
 		}
 	}
+	if err := admitFileExports(projection, options.ContextDir); err != nil {
+		return nil, options, err
+	}
 	options.ciImports = usedImports
 	return projection, options, nil
 }

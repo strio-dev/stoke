@@ -136,6 +136,17 @@ Keep the local cache outside the checkout and under the runner account's control
 
 Use a fresh `--output` path outside the checkout when your CI artifact collector needs a known location. Retain `run.json` and the desired task filesystem or OCI output. Do not upload credentials or entire native stores unintentionally. A failed workflow returns a nonzero exit status and blocks dependent task groups. Matrix fail-fast policy controls when a failed matrix stops workflow admission; active work is cancelled and drained when the workflow stops. Never-started selected jobs remain in the report as `skipped`. Configure your CI's failure/evidence retention policy separately.
 
+For selected workspace files, run `stoke run -f examples/ci/exports.yaml --context . package`
+from the repository root. Its ordered export steps produce `artifacts/stoke`,
+`reports/test` and `reports/package`; the test stays fresh while eligible build
+and package instructions can reuse Coopr's cache. The optional input
+`--input test-outcome=fail` deliberately fails after the real Go tests and leaves
+the declared test reports available while blocking packaging. Each invocation
+needs fresh destinations. A native CI step can execute the binary or collect
+those paths after Stoke returns; use the provider's failure-retention condition
+for reports without masking Stoke's nonzero status. Stoke does not upload them
+automatically, and generated reusable jobs do not accept caller poststeps.
+
 See [caching](caching.md) for test-result policy and [runtime and security](security.md) for trust boundaries.
 
 Stoke automatically schedules independent ready tasks under an internal bound of four active jobs across the selected workflow, including matrix variants and native/publication requests. Matrix `strategy.max-parallel` adds a per-task cap. This schedules work inside the existing runner; it does not allocate another machine or reserve CPU/memory. See [parallel tasks](parallel-tasks.md).

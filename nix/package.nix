@@ -25,7 +25,7 @@
       ../LICENSE
     ];
   };
-  vendorHash = "sha256-BRzBkDXSnjO3I/3tIRiZ2/MCldGWORxSZm+xVr4bhy8=";
+  vendorHash = "sha256-GUcBkbmj4m9+jhtnYn1gw2ADbQe9/eAIEi3lDS2dLQc=";
   subPackages = [ "cmd/stoke" ];
   env.CGO_ENABLED = "0";
   nativeBuildInputs = [ makeWrapper ];

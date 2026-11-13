@@ -1,0 +1,93 @@
+# Run from the repository root. All exported paths are caller-workspace paths.
+version: 1
+inputs:
+  test-outcome:
+    default: pass
+tasks:
+  build:
+    coopr:
+      files: [examples/ci/build.coopr]
+      target: binary
+    outputs: {filesystem: false}
+  test:
+    needs: [build]
+    cache: false
+    environment:
+      files: [examples/environments/environment.coopr]
+      target: checks
+    env:
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: 768MiB
+      GOFLAGS: -p=1
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+      STOKE_TEST_OUTCOME: {input: test-outcome}
+    mounts:
+      - {type: context, source: ., target: /workspace}
+      - {type: stage, from: build, target: /built}
+      - {type: cache, id: stoke-ci-go-build, sharing: locked, target: /cache/build}
+      - {type: cache, id: stoke-ci-go-modules, sharing: locked, target: /cache/modules}
+    steps:
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            mkdir -p /reports
+            sha256sum /built/stoke | cut -d ' ' -f 1 > /reports/tested-binary.sha256
+            printf 'STOKE_TESTED_BINARY_SHA256=%s\n' "$(cat /reports/tested-binary.sha256)"
+            /built/stoke version
+            status=0
+            go test -count=1 -mod=readonly -short -json ./... > /reports/go-test.json 2>&1 || status=$?
+            cat /reports/go-test.json
+            printf 'STOKE_FRESH_TEST_EXECUTED\n'
+            if [ "$status" -ne 0 ]; then exit "$status"; fi
+            case "$STOKE_TEST_OUTCOME" in
+              pass) printf 'pass\n' > /reports/qualification.txt ;;
+              fail) printf 'intentional qualification failure\n' > /reports/qualification.txt; status=23 ;;
+              *) exit 2 ;;
+            esac
+            exit "$status"
+      - export: {source: /reports, destination: reports/test}
+  vet:
+    needs: [build]
+    cache: false
+    environment:
+      files: [examples/environments/environment.coopr]
+      target: checks
+    env:
+      GOMAXPROCS: "1"
+      GOMEMLIMIT: 768MiB
+      GOFLAGS: -p=1
+      GOCACHE: /cache/build
+      GOMODCACHE: /cache/modules
+    mounts:
+      - {type: context, source: ., target: /workspace}
+      - {type: stage, from: build, target: /built}
+      - {type: cache, id: stoke-ci-go-build, sharing: locked, target: /cache/build}
+      - {type: cache, id: stoke-ci-go-modules, sharing: locked, target: /cache/modules}
+    steps:
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            printf 'STOKE_TESTED_BINARY_SHA256=%s\n' "$(sha256sum /built/stoke | cut -d ' ' -f 1)"
+            go vet -mod=readonly ./...
+            printf 'STOKE_FRESH_VET_EXECUTED\n'
+  package:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    needs: [test, vet]
+    steps:
+      - copy: {from: build, sources: [/stoke], destination: /dist/stoke}
+      - run:
+          - sh
+          - -eu
+          - -c
+          - |
+            mkdir -p /reports
+            sha256sum /dist/stoke | cut -d ' ' -f 1 > /reports/binary.sha256
+            /dist/stoke version > /reports/version.txt
+            printf 'STOKE_PACKAGE_EXECUTED\n'
+      - export: {source: /dist/stoke, destination: artifacts/stoke}
+      - export: {source: /reports, destination: reports/package}

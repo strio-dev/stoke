@@ -102,7 +102,7 @@ func importedCIImage(t *testing.T, input CIImport, opts coopr.Options) coopr.Res
 func TestCIExactImportNeverRunsFreshProducerOrExternalGate(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
-  producer: {image: scratch, cache: false, steps: [{run: [random-output]}]}
+  producer: {image: scratch, cache: false, steps: [{run: [random-output]}, {export: {source: /report, destination: producer-report}}]}
   gate: {image: scratch, cache: false, needs: [producer]}
   test: {from: producer, cache: false, needs: [gate], steps: [{run: [test]}]}
 `)
@@ -111,6 +111,10 @@ tasks:
 			input := ciImageFixture(t, true, "EXACT=one")
 			opts := testOptions(t)
 			opts.NoCache = forced
+			destination := filepath.Join(opts.ContextDir, "producer-report")
+			if err := os.WriteFile(destination, []byte("existing producer report"), 0600); err != nil {
+				t.Fatal(err)
+			}
 			imports, calls := 0, 0
 			report, err := runCI(t.Context(), w, CIRequest{Execute: []string{"test"}, Imports: map[string]CIImport{"producer": input}}, opts, fakeEngine{execute: func(_ context.Context, p coopr.Program, o coopr.Options) (coopr.Result, error) {
 				if strings.HasPrefix(string(p.Output), "stoke-ci-import-") {
@@ -128,6 +132,9 @@ tasks:
 			}})
 			if err != nil || imports != 1 || calls != 1 || len(report.Tasks) != 1 || report.Tasks[0].Name != "test" || report.Status != "passed" {
 				t.Fatalf("imports=%d calls=%d report=%#v error=%v", imports, calls, report, err)
+			}
+			if data, err := os.ReadFile(destination); err != nil || string(data) != "existing producer report" || len(report.Tasks[0].Exports) != 0 {
+				t.Fatalf("imported producer exports were replayed: data=%q err=%v exports=%+v", data, err, report.Tasks[0].Exports)
 			}
 			if !slices.Equal(w.Tasks["test"].Needs, []string{"gate"}) || w.Tasks["test"].From != "producer" {
 				t.Fatal("ordinary workflow mutated")

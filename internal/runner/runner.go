@@ -198,11 +198,18 @@ func prepare(ctx context.Context, w *workflow.Workflow, targets []string, option
 	if err != nil {
 		return nil, options, err
 	}
-	return preparePlan(ctx, plan, options)
+	plan, options, err = preparePlan(ctx, plan, options)
+	if err != nil {
+		return nil, options, err
+	}
+	if err := admitFileExports(plan, options.ContextDir); err != nil {
+		return nil, options, err
+	}
+	return plan, options, nil
 }
 
 // Prepare already-expanded execution copies without adding another dependency
-// planner. CI projection happens before paths and inline environments resolve.
+// planner. Callers admit exports after selecting the jobs that will execute.
 func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Options) (*workflow.ExecutionPlan, Options, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, options, err
@@ -256,9 +263,6 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 	}
 	plan, err = lowerEnvironments(plan)
 	if err != nil {
-		return nil, options, err
-	}
-	if err := admitFileExports(plan, options.ContextDir); err != nil {
 		return nil, options, err
 	}
 	// Native stores and generated exports must never become COPY inputs.

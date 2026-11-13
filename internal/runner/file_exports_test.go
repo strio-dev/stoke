@@ -26,7 +26,7 @@ func writeFileExportReceipts(options coopr.Options) ([]cooprwire.ExportResult, e
 }
 
 func TestFileExportAdmissionPrecedesSelectedTaskEffects(t *testing.T) {
-	for _, selection := range []string{"separate-jobs", "matrix", "live-input", "other-live-input", "read-only-parent", "unselected"} {
+	for _, selection := range []string{"separate-jobs", "matrix", "live-input", "other-live-input", "read-only-parent", "unselected", "ci-selected"} {
 		t.Run(selection, func(t *testing.T) {
 			w := fixture(t, `version: 1
 tasks:
@@ -60,8 +60,13 @@ tasks:
 				targets = []string{"live"}
 			case "other-live-input":
 				targets = []string{"a", "observer"}
-			case "unselected", "read-only-parent":
+			case "unselected", "read-only-parent", "ci-selected":
 				targets = []string{"a"}
+			}
+			if selection == "ci-selected" {
+				if err := os.MkdirAll(filepath.Join(options.ContextDir, "dist", "out"), 0755); err != nil {
+					t.Fatal(err)
+				}
 			}
 			if selection == "read-only-parent" {
 				if os.Geteuid() == 0 {
@@ -74,11 +79,18 @@ tasks:
 				t.Cleanup(func() { _ = os.Chmod(parent, 0755) })
 			}
 			calls := 0
-			report, err := runLiteral(t.Context(), w, targets, options, func(_ context.Context, _ coopr.Program, options coopr.Options) (coopr.Result, error) {
+			execute := func(_ context.Context, _ coopr.Program, options coopr.Options) (coopr.Result, error) {
 				calls++
 				receipts, err := writeFileExportReceipts(options)
 				return coopr.Result{Exports: receipts}, err
-			})
+			}
+			var report *Report
+			var err error
+			if selection == "ci-selected" {
+				report, err = runCI(t.Context(), w, CIRequest{Targets: targets, Execute: targets}, options, fakeEngine{execute: execute})
+			} else {
+				report, err = runLiteral(t.Context(), w, targets, options, execute)
+			}
 			if selection == "unselected" {
 				if err != nil || calls != 1 || report.Tasks[0].Exports[0].Status != "passed" {
 					t.Fatalf("unselected collision blocked valid task: calls=%d report=%+v err=%v", calls, report, err)
