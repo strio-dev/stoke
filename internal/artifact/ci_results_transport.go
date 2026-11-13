@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
@@ -807,6 +808,10 @@ func (c Client) ResolveCIInput(ctx context.Context, repository, reference string
 }
 
 func (c Client) prepareCIInput(ctx context.Context, repository, reference string, expect CIResultExpectation, directory string, imageReference bool) (payload CIPayload, retErr error) {
+	traceStarted := time.Now()
+	defer func() {
+		fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=fetch_payload seconds=%.6f success=%t\n", time.Since(traceStarted).Seconds(), retErr == nil)
+	}()
 	session, err := c.ciSession(repository, expect.Scope)
 	if err != nil {
 		return payload, err
@@ -828,6 +833,15 @@ func (c Client) prepareCIInput(ctx context.Context, repository, reference string
 		if err != nil {
 			return payload, err
 		}
+	}
+	if result.Kind == "image" {
+		traceCopyStarted := time.Now()
+		defer func() {
+			bounded.budget.mu.Lock()
+			copied := MaxCITransferBytes - int64(bounded.metadataBytes) - bounded.budget.remaining
+			bounded.budget.mu.Unlock()
+			fmt.Fprintf(os.Stderr, "STOKE_IMPORT_TRACE phase=image_payload_copy seconds=%.6f success=%t copied_leaf_bytes=%d verified_metadata_bytes=%d\n", time.Since(traceCopyStarted).Seconds(), retErr == nil, copied, bounded.metadataBytes)
+		}()
 	}
 	if imageReference && result.Kind == "image" {
 		return CIPayload{Result: result, CanonicalReference: repository + "@" + result.Output.Digest.String()}, nil
