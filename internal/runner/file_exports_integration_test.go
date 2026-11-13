@@ -3,9 +3,11 @@ package runner
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +69,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 			defer cancel()
 			var digest string
+			var exportedImage ciImage
 			for _, phase := range []string{"cold", "warm"} {
 				var stdout bytes.Buffer
 				report, err := Run(ctx, w, []string{"build"}, options(phase, &stdout))
@@ -85,6 +88,10 @@ func TestStageExportsWithCoopr(t *testing.T) {
 				}
 				if phase == "cold" {
 					digest = result.Digest
+					exportedImage, err = readCIImage(ctx, result.OCI, result.Digest, result.Platform)
+					if err != nil {
+						t.Fatal(err)
+					}
 					if !strings.Contains(stdout.String(), "STOKE_PREFIX_EXECUTED") || !strings.Contains(stdout.String(), "STOKE_LATER_EXECUTED") {
 						t.Fatal("cold run did not execute both image mutations")
 					}
@@ -94,6 +101,51 @@ func TestStageExportsWithCoopr(t *testing.T) {
 				} else if result.Digest != digest || strings.Contains(stdout.String(), "_EXECUTED") {
 					t.Fatalf("warm export changed image identity or reran commands: %+v %s", result, &stdout)
 				}
+			}
+			if err := os.Rename(filepath.Join(caller, "exported"), filepath.Join(root, "warm-files")); err != nil {
+				t.Fatal(err)
+			}
+			withoutExports := *w
+			withoutExports.Tasks = maps.Clone(w.Tasks)
+			task := w.Tasks["build"].Clone()
+			steps := task.Steps[:0]
+			for _, step := range task.Steps {
+				if step.Export == nil {
+					steps = append(steps, step)
+				}
+			}
+			task.Steps = steps
+			withoutExports.Tasks["build"] = task
+			var plainLog bytes.Buffer
+			plainOptions := options("without-exports", &plainLog)
+			plainOptions.CacheDir = filepath.Join(root, "plain-cache")
+			plain, err := Run(ctx, &withoutExports, []string{"build"}, plainOptions)
+			if err != nil || plain == nil || plain.Status != "passed" {
+				t.Fatalf("build without export checkpoints: %+v %v", plain, err)
+			}
+			plainResult := plain.Tasks[len(plain.Tasks)-1]
+			if plainResult.Filesystem == "" || len(plainResult.Exports) != 0 || !strings.Contains(plainLog.String(), "STOKE_PREFIX_EXECUTED") || !strings.Contains(plainLog.String(), "STOKE_LATER_EXECUTED") {
+				t.Fatalf("ordinary output default or fresh execution changed: %+v %s", plainResult, &plainLog)
+			}
+			plainImage, err := readCIImage(ctx, plainResult.OCI, plainResult.Digest, plainResult.Platform)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Fresh RUNs have different creation/history and filesystem timestamps.
+			// Compare runtime config and authored history; warm identity above is exact.
+			exportedImage.config.Created, plainImage.config.Created = nil, nil
+			exportedImage.config.RootFS.DiffIDs, plainImage.config.RootFS.DiffIDs = nil, nil
+			for i := range exportedImage.config.History {
+				exportedImage.config.History[i].Created = nil
+			}
+			for i := range plainImage.config.History {
+				plainImage.config.History[i].Created = nil
+			}
+			if !reflect.DeepEqual(exportedImage.config, plainImage.config) || len(exportedImage.manifest.Layers) != len(plainImage.manifest.Layers) {
+				t.Fatal("export checkpoints changed final config, authored history or layer count")
+			}
+			if got, err := os.ReadFile(filepath.Join(plainResult.Filesystem, "report")); err != nil || string(got) != "v2" {
+				t.Fatalf("ordinary final filesystem differs from selected output: %q %v", got, err)
 			}
 			failed := fixture(t, "version: 1\ntasks:\n  check:\n    cache: false\n"+base+`      - run: [/bin/busybox, sh, -c, 'printf diagnostic > /report; exit 23']
       - export: {source: /report, destination: failed-report}
