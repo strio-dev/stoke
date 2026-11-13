@@ -55,5 +55,13 @@ identical cold/warm OCI outputs within each engine. Coopr uses two public CLI
 commands for build and archive export; both are included in its core timer.
 Use the core timings for comparison. The outer timer includes different output
 proof work; it is a complete qualification wall time, not a pure engine measure.
-Coopr's shared cache keys do not prove exclusive ancestry from this run's cold
-publication. The result must pass all output checks before reporting speed.
+Coopr's cold run also writes a local OCI cache witness. Both cache destinations
+receive the same graph snapshot. Before fresh-store reuse and afterward, the
+harness verifies that the remote graph bindings match this cold-produced witness
+and that a selected root result binds the cold image. Run without competing
+writers for those keys; shared tags alone do not prove exclusive ancestry.
+
+The extra local writer changes Coopr's cold export cost. Treat its cold timing as
+diagnostic, not a fair cold performance comparison. Both warm paths retain only
+their normal registry writer. All seed and output checks must pass before
+reporting speed.
