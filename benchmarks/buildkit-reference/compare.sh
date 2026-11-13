@@ -26,7 +26,8 @@ def verified(descriptor):
     assert len(data)==descriptor['size'] and hashlib.sha256(data).hexdigest()==encoded
     return json.loads(data)
 image=json.loads((cold/'metadata.json').read_text())['containerimage.digest']
-roots=json.loads((layout/'index.json').read_text())['manifests']
+roots=[d for d in json.loads((layout/'index.json').read_text())['manifests']
+       if d.get('annotations',{}).get('org.opencontainers.image.ref.name','').startswith('graph-v3-')]
 assert roots, 'cold build did not publish an OCI cache seed'
 matched=False; descriptors=[]
 for root in roots:
