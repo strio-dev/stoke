@@ -48,10 +48,10 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	workflow := filepath.Join(caller, "stoke.json")
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"build":   map[string]any{"image": "scratch", "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("", "payload", "/value")}},
-		"test":    map[string]any{"from": "build", "cache": false, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_TEST_RAN")}},
+		"test":    map[string]any{"from": "build", "cache": false, "outputs": map[string]any{"filesystem": false}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_TEST_RAN")}},
 		"package": map[string]any{"from": "build", "needs": []string{"test"}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_PACKAGE_RAN")}},
 	}}), 0600)
-	plan := f.generateRegistryPlan("retry", caller, f.registry+"/cache/retry")
+	plan := f.generateExactPlan("retry", caller, "stoke.json", f.registry+"/cache/retry", f.registry+"/results/exact", nil, []string{"package"})
 	build, test, pack := plan.job(t, "build"), plan.job(t, "test"), plan.job(t, "package")
 	scope := f.exactScope("retry", caller, plan)
 	records := map[string]*exactNativeMetadata{}
@@ -59,6 +59,16 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	records[build.ID] = first.CI
 	checked, _ := f.runExactJob("retry-test-a1", caller, "retry.plan.json", plan, test, scope, 1, plan.needs(t, test, records), nil, true)
 	records[test.ID] = checked.CI
+	if checked.CI.Inputs != first.CI.Inputs {
+		t.Fatal("pure gate did not forward the exact producer input binding")
+	}
+	retained, retainedLog := f.runExactJob("retry-package-only-a2", caller, "retry.plan.json", plan, pack, scope, 2, plan.needs(t, pack, records), nil, true)
+	if retained.CI.Inputs != first.CI.Inputs || len(retained.Tasks) != 1 || retained.Tasks[0].Name != "package" {
+		t.Fatal("package-only retry replaced prior bindings or replayed an upstream task")
+	}
+	f.requireFile(retained.ciRegistryReport, "package", "result", "identical-payload\n")
+	f.requireMarkerCount(retainedLog, "RETRY_TEST_RAN", 0)
+	f.requireMarkerCount(retainedLog, "RETRY_PACKAGE_RAN", 1)
 	second, _ := f.runExactJob("retry-build-a2", caller, "retry.plan.json", plan, build, scope, 2, nil, nil, true)
 	client := Client{PlainHTTP: true}
 	one, err := client.ReadCIInputSet(f.ctx, plan.Config.ResultsRepository, first.CI.Inputs, scope)
@@ -88,6 +98,15 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	f.requireMarkerCount(log, "RETRY_TEST_RAN", 0)
 	f.requireMarkerCount(log, "RETRY_PACKAGE_RAN", 0)
 	current, _ := f.runExactJob("retry-test-a2", caller, "retry.plan.json", plan, test, scope, 2, plan.needs(t, test, records), nil, true)
+	for _, gate := range []exactCIReport{checked, current} {
+		value := f.task(gate.ciRegistryReport, "test")
+		if value.OCI != "" || value.Digest != "" || value.Filesystem != "" {
+			t.Fatal("fresh pure gate exported an unrequested image or filesystem")
+		}
+	}
+	if current.CI.Inputs != second.CI.Inputs {
+		t.Fatal("fresh gate did not forward the replacement producer binding")
+	}
 	records[test.ID] = current.CI
 	packaged, _ := f.runExactJob("retry-package-a2", caller, "retry.plan.json", plan, pack, scope, 2, plan.needs(t, pack, records), nil, true)
 	f.requireFile(packaged.ciRegistryReport, "package", "result", "identical-payload\n")
@@ -153,7 +172,7 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 		t.Fatal("co-located execution accessed exact-result registry")
 	}
 	f.requireFile(local.ciRegistryReport, "package", "result", "identical-payload\n")
-	f.checks = append(f.checks, "equal-payload-producer-attempt2-conflicts-with-old-successful-test-attempt1", "explicit-prior-inputs-and-rerun-dependent-gates-restore-consistent-lineage", "concurrent-invocation-scopes-remain-isolated", "selected-result-404-fails-before-runner-without-producer-replay", "missing-repository-errors-and-explicit-co-location-runs-with-no-registry-access")
+	f.checks = append(f.checks, "package-only-retry-retains-exact-prior-build-binding-without-gate-image-exports", "equal-payload-producer-attempt2-conflicts-with-old-successful-test-attempt1", "explicit-prior-inputs-and-rerun-dependent-gates-restore-consistent-lineage", "concurrent-invocation-scopes-remain-isolated", "selected-result-404-fails-before-runner-without-producer-replay", "missing-repository-errors-and-explicit-co-location-runs-with-no-registry-access")
 }
 
 func TestCIExactNativeAndEnvironmentResultsWithCoopr(t *testing.T) {

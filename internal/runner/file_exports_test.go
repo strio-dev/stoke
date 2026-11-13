@@ -108,8 +108,12 @@ tasks:
 }
 
 func TestFileExportsPreserveFailedTaskAndNativePayload(t *testing.T) {
-	for _, failed := range []bool{false, true} {
-		t.Run(map[bool]string{false: "passed", true: "failed"}[failed], func(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		failed, ci bool
+	}{{"passed", false, false}, {"failed", true, false}, {"ci-failed", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			failed := tc.failed
 			w := fixture(t, `version: 1
 tasks:
   check:
@@ -121,12 +125,22 @@ tasks:
     steps: [{export: {source: /gate, destination: gate/report}}]
 `)
 			options := testOptions(t)
+			if tc.ci {
+				check := w.Tasks["check"]
+				fresh := false
+				check.Cache = &fresh
+				w.Tasks["check"] = check
+				options.CacheTo = []string{"registry.example.test/cache"}
+			}
 			original := errors.New("ordinary test exited 23")
 			var before os.FileInfo
 			var staging string
 			calls := 0
-			report, err := runLiteral(t.Context(), w, []string{"gate"}, options, func(_ context.Context, _ coopr.Program, native coopr.Options) (coopr.Result, error) {
+			execute := func(_ context.Context, _ coopr.Program, native coopr.Options) (coopr.Result, error) {
 				calls++
+				if tc.ci && (native.Output.OCI != "" || native.Cache.LocalDir != "" || len(native.Cache.RegistryTo) != 0 || !native.Cache.NoCache) {
+					t.Error("failed CI report requested unused OCI or portable writes")
+				}
 				if len(native.Output.Exports) == 1 {
 					receipts, err := writeFileExportReceipts(native)
 					return coopr.Result{ImageID: "gate", Exports: receipts}, err
@@ -164,7 +178,14 @@ tasks:
 					return result, original
 				}
 				return result, nil
-			})
+			}
+			var report *Report
+			var err error
+			if tc.ci {
+				report, err = runCI(t.Context(), w, CIRequest{Targets: []string{"gate"}, Execute: []string{"check"}}, options, fakeEngine{execute: execute})
+			} else {
+				report, err = runLiteral(t.Context(), w, []string{"gate"}, options, execute)
+			}
 			if errors.Is(err, original) != failed || !failed && err != nil || report == nil {
 				t.Fatalf("task failure changed: %+v %v", report, err)
 			}
@@ -179,8 +200,11 @@ tasks:
 			if target, err := os.Readlink(filepath.Join(options.ContextDir, "reports/latest")); err != nil || target != "result" {
 				t.Fatalf("admitted relative symlink changed: %q %v", target, err)
 			}
-			if failed && (calls != 1 || report.Tasks[1].Status != "skipped" || report.Tasks[1].Exports[0].Status != "skipped") {
+			if failed && (calls != 1 || !tc.ci && (report.Tasks[1].Status != "skipped" || report.Tasks[1].Exports[0].Status != "skipped")) {
 				t.Fatalf("diagnostic publication opened success gate: calls=%d tasks=%+v", calls, report.Tasks)
+			}
+			if tc.ci && (item.OCI != "" || item.Digest != "") {
+				t.Fatal("failed CI report advertised an unrequested OCI output")
 			}
 			if _, err := os.Stat(staging); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("completed task retained private staging: %v", err)

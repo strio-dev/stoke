@@ -87,7 +87,7 @@ jobs:
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            cooprBase = builtins.getFlake "github:strio-dev/coopr/bfc19070915b33e98b7b0f0250b1ac282f75de84";
+            cooprBase = builtins.getFlake "github:strio-dev/coopr/7daf44e90a64a7297f896c10e8342266ca5300bf";
             system = builtins.getEnv "TOOLS_SYSTEM";
             tracePath = builtins.getEnv "COOPR_TRACE_PATCH";
             tracePatch = builtins.toFile "coopr-perf-trace.patch" (builtins.readFile (builtins.getEnv "COOPR_TRACE_PATCH"));
@@ -170,7 +170,7 @@ jobs:
               output.write(f"digest={digest}\ntag={tag}\n")
           receipt = {
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
-              "cooprSource": "bfc19070915b33e98b7b0f0250b1ac282f75de84",
+              "cooprSource": "7daf44e90a64a7297f896c10e8342266ca5300bf",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
               "benchmarkReference": os.environ["BUILD_BENCHMARK_REFERENCE"] == "true",
           }

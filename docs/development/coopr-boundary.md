@@ -37,10 +37,10 @@ The socket provides same-account access to the service's authority. It is not an
 
 Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks retain OCI/native images. Explicit export steps use negotiated `selected-file-exports`; those stages omit the redundant full filesystem unless explicitly requested, while existing tasks keep their prior output default. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
 
-Coopr `0.6.0` provides the base service. Export steps require the
-`selected-file-exports` capability from the matching candidate source selected
-by the public SDK. The [runtime guide](../guides/coopr-api.md)
-records the immutable revision and startup capability checks.
+Coopr `0.6.0` provides the base service. Export steps require ordered-state
+capture and `selected-file-exports`; fresh CI gates without unused image output
+also require `optional-oci-output`. The [runtime guide](../guides/coopr-api.md)
+records the matching SDK/engine revision and startup capability checks.
 
 Workflow artifacts have one YAML layer and optional declared file layers. YAML-only packages remain valid. Imported templates retain their own file snapshots, including across `uses` and matrix expansion. Loader-owned temporary trees are removed on load failure or after confirmed engine cleanup. Unconfirmed cleanup retains borrowed inputs and staging for investigation. No shared persistent content store is introduced.
 

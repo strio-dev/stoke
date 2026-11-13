@@ -411,7 +411,7 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 			return nil, err
 		}
 	}
-	request := runner.CIRequest{Targets: p.Config.Targets, Execute: selected.Execute, Environments: p.Environments, Imports: map[string]runner.CIImport{}}
+	request := runner.CIRequest{Targets: p.Config.Targets, Execute: selected.Execute, RequiredOutputs: append(slices.Clone(selected.Exports), selected.Data...), Environments: p.Environments, Imports: map[string]runner.CIImport{}}
 	if len(selected.Imports) != 0 {
 		directory, err := ciInputDirectory(options)
 		if err != nil {

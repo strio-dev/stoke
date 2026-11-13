@@ -33,6 +33,7 @@ type Options struct {
 	Stdout, Stderr                                    io.Writer
 	runMounts                                         bool
 	ciImports                                         map[string]CIImport
+	ciRequiredOutputs                                 map[string]bool
 	AllowHost                                         bool
 	HostCapabilities                                  []string
 	HostCachePlainHTTP                                bool
@@ -148,6 +149,9 @@ func validateCapabilities(ctx context.Context, plan *workflow.ExecutionPlan, cli
 			}
 			capability := cooprwire.CapabilityExecute
 			var required []string
+			if omitCIImageOutput(job, options) {
+				required = append(required, cooprwire.CapabilityOptionalOCIOutput)
+			}
 			if len(job.Definition.AllMounts()) != 0 {
 				required = append(required, cooprwire.CapabilityRunMounts)
 			}
@@ -450,6 +454,12 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 	if !job.Definition.FilesystemEnabled() {
 		opts.Output.Filesystem = ""
 	}
+	omitOCI := omitCIImageOutput(job, options)
+	if omitOCI {
+		opts.Output.OCI = ""
+		opts.Cache.LocalDir = ""
+		opts.Cache.RegistryTo = nil
+	}
 	staging, exports, err := stageJobFileExports(job, options.ContextDir)
 	if err != nil {
 		return coopr.Result{}, err
@@ -534,6 +544,9 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 	}
 	var exportErr error
 	result.Exports, exportErr = publishJobFileExports(ctx, job, options.ContextDir, staging, exports, result.Exports, err)
+	if omitOCI {
+		result.OCI, result.ManifestDigest = "", ""
+	}
 	return result, errors.Join(err, exportErr)
 }
 

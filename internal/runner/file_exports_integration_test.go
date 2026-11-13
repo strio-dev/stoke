@@ -5,7 +5,6 @@ import (
 	"context"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -25,9 +24,9 @@ func TestStageExportsWithCoopr(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	busybox, err := exec.LookPath("busybox")
-	if err != nil {
-		t.Fatal("required static BusyBox fixture:", err)
+	busybox := os.Getenv("STOKE_SMOKE_BUSYBOX")
+	if busybox == "" {
+		t.Fatal("STOKE_SMOKE_BUSYBOX must select the static BusyBox fixture")
 	}
 	data, err := os.ReadFile(busybox)
 	if err != nil {
@@ -64,7 +63,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
       - export: {source: /report, destination: exported/final}
 `)
 			options := func(phase string, stdout *bytes.Buffer) Options {
-				return Options{ContextDir: caller, StateDir: filepath.Join(root, phase, "state"), CacheDir: filepath.Join(root, "cache"), CooprBinary: engine, Runtime: runtime, Network: "none", StorageDriver: "vfs", SignaturePolicy: policy, Stdout: stdout}
+				return Options{ContextDir: caller, StateDir: filepath.Join(root, phase, "state"), CacheDir: filepath.Join(root, "cache"), CooprBinary: engine, Runtime: runtime, Network: "none", StorageDriver: "vfs", SignaturePolicy: policy, Stdout: stdout, Stderr: os.Stderr}
 			}
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 			defer cancel()
@@ -154,9 +153,17 @@ func TestStageExportsWithCoopr(t *testing.T) {
     needs: [check]
 `)
 			var stdout bytes.Buffer
-			report, err := Run(ctx, failed, []string{"gate"}, options("failed", &stdout))
+			var report *Report
+			if native {
+				report, err = Run(ctx, failed, []string{"gate"}, options("failed", &stdout))
+			} else {
+				report, err = RunCI(ctx, failed, CIRequest{Targets: []string{"gate"}, Execute: []string{"check", "gate"}}, options("failed", &stdout))
+			}
 			if err == nil || !strings.Contains(err.Error(), "23") || report == nil || report.Status != "failed" || report.Tasks[len(report.Tasks)-1].Status != "skipped" {
 				t.Fatalf("failed export opened a success gate: %+v %v", report, err)
+			}
+			if !native && (report.Tasks[0].OCI != "" || report.Tasks[0].Digest != "") {
+				t.Fatal("failed pure CI gate exported an unused image")
 			}
 			got, err := os.ReadFile(filepath.Join(caller, "failed-report"))
 			if err != nil || string(got) != "diagnostic" {

@@ -28,7 +28,7 @@ func TestNetworkDefaultRequiresCapabilityAndReachesWire(t *testing.T) {
 			}
 			_ = json.NewEncoder(w).Encode(cooprwire.Event{Type: "result", Result: &cooprwire.Result{ImageID: "image"}})
 		}))
-		_, err := c.Execute(t.Context(), Program{}, Options{Network: "none"})
+		_, err := c.Execute(t.Context(), Program{}, Options{Network: "none", Output: Output{OCI: "/output"}})
 		if !supported {
 			if err == nil || !strings.Contains(err.Error(), "run-network") || posts != 0 {
 				t.Fatal("unsupported network reached execution", err, posts)

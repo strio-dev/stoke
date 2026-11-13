@@ -29,6 +29,7 @@ func socketClient(t *testing.T, handler http.Handler) *Client {
 				cooprwire.CapabilityBuildPlatform, cooprwire.CapabilityRegistryCache,
 				cooprwire.CapabilityOperationProgress, cooprwire.CapabilityNamedContexts,
 				cooprwire.CapabilityRunMounts, cooprwire.CapabilityRunNetwork,
+				cooprwire.CapabilityOptionalOCIOutput,
 			}})
 			return
 		}

@@ -162,6 +162,12 @@ cannot satisfy forced execution. It may store newly executed results in the
 local cache and explicitly selected `--cache-to` repositories; `Stored` can be
 nonzero while `Hits` is zero.
 
+Generated CI jobs omit image export and portable-cache writes for fresh
+`cache: false` gates when no task consumes their image and no full filesystem
+output is requested. Selected file exports still run, including failed-test
+reports. Data-producing tasks retain their outputs and cache-refresh behavior.
+This optimization requires the engine's `optional-oci-output` capability.
+
 A cached successful test is evidence of an earlier execution, not evidence that an external service is healthy now. Set `cache: false` for tests that depend on network state, time, mutable remote data or other conditions outside tracked build inputs. Pin dependencies and make relevant inputs explicit before relying on reusable test results.
 
 ## Mount inputs and side effects

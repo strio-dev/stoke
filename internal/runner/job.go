@@ -7,6 +7,7 @@ import (
 	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/strio-dev/stoke/internal/workflow"
@@ -17,10 +18,11 @@ import (
 // Environments maps portable synthetic producer names to representative consumers
 // so the existing environment lowering remains the only producer definition.
 type CIRequest struct {
-	Targets      []string
-	Execute      []string
-	Environments map[string]string
-	Imports      map[string]CIImport
+	Targets         []string
+	Execute         []string
+	RequiredOutputs []string // Producer values required by the validated CI plan.
+	Environments    map[string]string
+	Imports         map[string]CIImport
 }
 
 // CIImport identifies a verified canonical OCI output fetched by the caller.
@@ -246,8 +248,36 @@ func prepareCI(ctx context.Context, w *workflow.Workflow, request CIRequest, opt
 	if err := admitFileExports(projection, options.ContextDir); err != nil {
 		return nil, options, err
 	}
+	// Without explicit terminal targets, retain the ordinary all-target output
+	// contract. Otherwise preserve planned values and every local data edge.
+	if len(request.Targets) != 0 {
+		options.ciRequiredOutputs = map[string]bool{}
+		for _, name := range request.RequiredOutputs {
+			if _, exists := jobs[name]; !exists {
+				return nil, options, fmt.Errorf("required CI output %q is absent from the selected plan", name)
+			}
+			options.ciRequiredOutputs[name] = true
+		}
+		for _, group := range projection.Groups {
+			for _, job := range group.Jobs {
+				if slices.Contains(request.Targets, job.Name) || slices.Contains(request.Targets, job.Task) {
+					options.ciRequiredOutputs[job.Name] = true
+				}
+				for name := range artifactResults(job.Definition, nil) {
+					options.ciRequiredOutputs[name] = true
+				}
+			}
+		}
+	}
 	options.ciImports = usedImports
 	return projection, options, nil
+}
+
+func omitCIImageOutput(job workflow.Job, options Options) bool {
+	task := job.Definition
+	return options.ciRequiredOutputs != nil && !options.ciRequiredOutputs[job.Name] &&
+		task.Cache != nil && !*task.Cache && !task.FilesystemEnabled() &&
+		task.Coopr == nil && task.Host == nil && task.Publish == nil
 }
 
 func indexCIJobs(plan *workflow.ExecutionPlan) (map[string]workflow.Job, map[string][]workflow.Job) {

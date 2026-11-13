@@ -199,6 +199,74 @@ func TestCIProjectionRejectsExternalDataAndInvalidSelectionsBeforeExecution(t *t
 	}
 }
 
+func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
+	for _, mode := range []string{"gate", "required-value", "colocated-value", "terminal", "all-targets", "global-no-cache", "filesystem"} {
+		t.Run(mode, func(t *testing.T) {
+			w := fixture(t, "version: 1\ntasks:\n  check: {image: scratch, cache: false, outputs: {filesystem: false}, mounts: [{type: cache, id: checks, target: /cache}], steps: [{run: [check]}]}\n  finish: {image: scratch, needs: [check], outputs: {filesystem: false}}\n")
+			options := testOptions(t)
+			options.CacheFrom = []string{"registry.example.test/cache"}
+			options.CacheTo = []string{"registry.example.test/cache"}
+			request := CIRequest{Targets: []string{"finish"}, Execute: []string{"check"}}
+			check := w.Tasks["check"]
+			switch mode {
+			case "required-value":
+				request.RequiredOutputs = []string{"check"}
+			case "colocated-value":
+				finish := w.Tasks["finish"]
+				finish.Image = ""
+				finish.From = "check"
+				w.Tasks["finish"] = finish
+				request.Execute = append(request.Execute, "finish")
+			case "terminal":
+				request.Targets = []string{"check"}
+			case "all-targets":
+				request.Targets = nil
+			case "global-no-cache":
+				check.Cache, options.NoCache = nil, true
+			case "filesystem":
+				check.Outputs = nil
+			}
+			w.Tasks["check"] = check
+			if mode == "gate" {
+				plan, resolved, err := prepareCI(t.Context(), w, request, options)
+				if err != nil {
+					t.Fatal(err)
+				}
+				info := cooprwire.Info{Capabilities: []string{"execute", "run-mounts", "registry-cache"}}
+				if err := testCapabilities(t, plan, info, resolved); err == nil || !strings.Contains(err.Error(), "optional-oci-output") {
+					t.Fatalf("older engine admitted output pruning: %v", err)
+				}
+				info.Capabilities = append(info.Capabilities, "optional-oci-output")
+				if err := testCapabilities(t, plan, info, resolved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report, err := runCI(t.Context(), w, request, options, fakeEngine{execute: func(_ context.Context, p coopr.Program, native coopr.Options) (coopr.Result, error) {
+				pruned := mode == "gate" && p.Output == "check"
+				if (native.Output.OCI == "") != pruned || (native.Cache.LocalDir == "") != pruned || (len(native.Cache.RegistryTo) == 0) != pruned {
+					t.Errorf("%s output/cache demand changed: output=%+v cache=%+v", p.Output, native.Output, native.Cache)
+				}
+				if p.Output == "check" && !native.Cache.NoCache {
+					t.Error("fresh gate lost its execution bypass")
+				}
+				if !reflect.DeepEqual(native.Cache.RegistryFrom, options.CacheFrom) || p.Output == "check" && native.Cache.MountDir == "" {
+					t.Error("output pruning removed cache reads or mount acceleration")
+				}
+				if p.Output == "finish" && p.States[0].From.Image != "containers-storage:check-image" {
+					t.Error("colocated consumer lost its native producer")
+				}
+				return coopr.Result{Platform: "linux/amd64", ImageID: string(p.Output) + "-image", ManifestDigest: "sha256:native", OCI: native.Output.OCI, Filesystem: native.Output.Filesystem}, nil
+			}})
+			if err != nil || report == nil || report.Status != "passed" || (report.Tasks[0].OCI == "") != (mode == "gate") {
+				t.Fatalf("CI output report: %+v %v", report, err)
+			}
+			if mode == "gate" && report.Tasks[0].Digest != "" {
+				t.Fatal("native identity advertised as an exported OCI digest")
+			}
+		})
+	}
+}
+
 func TestCIProjectionClosedUnitsPreserveFreshAndEffectPolicies(t *testing.T) {
 	for _, policy := range []string{"cacheable", "fresh", "writable-context", "forced-fresh"} {
 		t.Run(policy, func(t *testing.T) {
