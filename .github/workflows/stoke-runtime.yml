@@ -59,7 +59,7 @@ jobs:
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:ca7ba59621d845c6192810246dfb4de08f4d6e70e5c6f4df02d8b98401b4106e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:22e3b902505753780e7f98adfeea91048d8fdcdcf811d1adab3c1548c7e73230
-            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:34a2fea3e0109fd1d4ea505fbe1b4b10e9104a8920289084e91a86e55aa9e956
+            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:a37c2c716702ec223c28a756ff9fb9ad8fc0cbed3941dee536df401a3b6ff149
             plan: .stoke/hosted-warm.json
             plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
             cold_plan: .stoke/hosted-cold.json
@@ -69,7 +69,7 @@ jobs:
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:6c1a7fa3f5b974d1aee84fa81baf0b41ee52a06a2e3a01341ba9b872ef792b9e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:593c25e9cf20d7e4fa454ee18f79da09c75014b848e3e38534034df6d6e6e985
-            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:13061e156d40c51ceacfef4d7802fa4c5081ea085099cf59ecc57b6e9a74f8ea
+            benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:c65d34a71a451706782841533a5fe7f7c6319465b6d177c1e507a14bca1e0fba
             plan: .stoke/hosted-arm-warm.json
             plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
             cold_plan: .stoke/hosted-arm-cold.json

@@ -13,11 +13,54 @@ repo=ghcr.io/strio-dev/stoke-qualification-tools
 work="$RUNNER_TEMP/engine-comparison-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${APPLICATION_PLATFORM#linux/}"
 mkdir "$work"
 tag="buildkit-benchmark-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-${APPLICATION_PLATFORM#linux/}"
+# Both cold writers receive the same snapshot. Keep its immutable descriptors as
+# direct seeding evidence; the additional local export perturbs COLD timing only.
+verify_coopr_seed() {
+  python3 - "$work/coopr-cold" "$auth" "$repo" "$1" <<'PY'
+import hashlib,json,pathlib,subprocess,sys
+cold=pathlib.Path(sys.argv[1]); layout=cold/'cold-seed'
+def verified(descriptor):
+    algorithm,encoded=descriptor['digest'].split(':')
+    assert algorithm=='sha256'
+    data=(layout/'blobs'/algorithm/encoded).read_bytes()
+    assert len(data)==descriptor['size'] and hashlib.sha256(data).hexdigest()==encoded
+    return json.loads(data)
+image=json.loads((cold/'metadata.json').read_text())['containerimage.digest']
+roots=json.loads((layout/'index.json').read_text())['manifests']
+assert roots, 'cold build did not publish an OCI cache seed'
+matched=False; descriptors=[]
+for root in roots:
+    tag=root['annotations']['org.opencontainers.image.ref.name']
+    assert tag.startswith('graph-v3-'), tag
+    index=verified(root)
+    assert index['mediaType']=='application/vnd.oci.image.index.v1+json'
+    metadata=[m for m in (verified(d) for d in index['manifests']) if m.get('artifactType')=='application/vnd.coopr.strio.dev.graph-cache.v3+json']
+    assert len(metadata)==1
+    manifest=metadata[0]; assert manifest['layers']==[]
+    assert manifest['config']['mediaType']=='application/vnd.coopr.strio.dev.graph-cache.config.v3+json'
+    record=verified(manifest['config'])
+    assert record['version']=='coopr.strio.dev/graph-cache-record/v3'
+    assert tag=='graph-v3-'+record['root'].split(':')[1]
+    selected={r['ID'] for node in record['metadata']['nodes'] if node['id'] in record['metadata']['roots'] for r in node.get('results',[])}
+    matched=matched or any(r['id'] in selected and r['image']['digest']==image for r in record['results'])
+    remote=cold/('remote-'+tag+'.json')
+    subprocess.run(['benchmark-rootless','bash','-c',
+        'exec coopr --root "$1/root" --runroot "$1/run" --storage-driver vfs manifest inspect --authfile "$2" "$3" > "$4"',
+        'seed-check',str(cold/'seed-inspection'),sys.argv[2],sys.argv[3]+':'+tag,str(remote)],check=True,stdout=subprocess.DEVNULL)
+    # Inspect preserves the remote index fields, including the exact immutable
+    # metadata/config binding, while formatting JSON for CLI output.
+    assert json.loads(remote.read_text())==index, 'remote seed changed: '+tag
+    descriptors.append(root['digest'])
+assert matched, 'cold cache seed does not bind the built image'
+print(json.dumps({'phase':'cold-seed-proof','checkpoint':sys.argv[4],'graphDescriptors':sorted(descriptors),'coldImage':image,'passed':True}))
+PY
+}
 for engine in buildkit coopr; do
   for phase in cold local-warm registry-warm; do
     dir="$work/$engine-$phase"; mkdir "$dir"
     state="$work/$engine-local-state"
     [[ "$phase" != registry-warm ]] || state="$work/$engine-registry-state"
+    if [[ "$engine:$phase" = coopr:registry-warm ]]; then verify_coopr_seed before-fresh-store; fi
     printf 'BENCHMARK_CASE engine=%s phase=%s platform=%s\n' "$engine" "$phase" "$APPLICATION_PLATFORM"
     if [[ "$engine" = buildkit ]]; then
       args=(--context "$context" --state "$state" --output "$dir/fs" --platform "$APPLICATION_PLATFORM" --authfile "$auth" --runtime /bin/crun)
@@ -32,6 +75,7 @@ for engine in buildkit coopr; do
         dir=$1; state=$2; context=$3; platform=$4; auth=$5; repo=$6; phase=$7
         base=(coopr --root "$state/root" --runroot "$state/run" --storage-driver vfs)
         args=(--cache-to "$repo")
+        [[ "$phase" != cold ]] || args+=(--cache-to "type=local,dest=$dir/cold-seed")
         [[ "$phase" != registry-warm ]] || args+=(--cache-from "$repo")
         start=$(python3 -c "import time; print(time.monotonic_ns())")
         build_started=$EPOCHREALTIME
@@ -45,7 +89,7 @@ for engine in buildkit coopr; do
           --digestfile "$dir/digest" "$(cat "$dir/id")" "oci-archive:$dir/output.oci.tar:binary"
         python3 - "$start" <<PY
 import json,sys,time
-print(json.dumps({"phase":"engine-core-total","seconds":(time.monotonic_ns()-int(sys.argv[1]))/1e9,"engine":"coopr","includes":"build+cache-export+push+both-CLI-bootstrap"}))
+print(json.dumps({"phase":"engine-core-total","seconds":(time.monotonic_ns()-int(sys.argv[1]))/1e9,"engine":"coopr","includes":"build+cache-export+push+both-CLI-bootstrap","coldIncludesAdditionalLocalSeedWriter":"$phase"=="cold"}))
 PY
         python3 - "$dir/metadata.json" "$build_started" "$build_completed" <<PY
 import datetime,json,sys
@@ -68,6 +112,7 @@ PY
         "${proof[@]}" build --file "$dir/proof.coopr" "$dir/proof-input" --platform "$platform" \
           --runtime /bin/crun --network none --authfile "$auth" --output "type=local,dest=$dir/archive-fs" 2>&1 | tee "$dir/proof.log"
       ' coopr "$dir" "$state" "$context" "$APPLICATION_PLATFORM" "$auth" "$repo" "$phase" 2>&1 | tee "$dir/run.log"
+      if [[ "$phase" = cold || "$phase" = registry-warm ]]; then verify_coopr_seed "after-$phase"; fi
     fi
   done
 done
@@ -104,6 +149,6 @@ for engine in ('coopr','buildkit'):
     own=[r for r in rows if r['engine']==engine]; assert len({r['imageDigest'] for r in own})==1,(engine,'own cold/warm OCI identity')
 assert len({r['binarySHA256'] for r in rows})==1
 assert all(r['functionalConfig']==rows[0]['functionalConfig'] for r in rows)
-print(json.dumps({'phase':'comparison-proof','passed':True,'cacheSeedBoundary':'Coopr shared mutable input-keyed graph tags; exclusive own-cold ancestry unproven. BuildKit unique own-cold tag.','timerBoundary':'Engine core excludes output proof; RootlessKit outer includes setup and engine-specific proof.'},sort_keys=True))
+print(json.dumps({'phase':'comparison-proof','passed':True,'cacheSeedBoundary':'Coopr cold local/registry writers share the same immutable graph snapshot; remote descriptors verified before/after fresh-store reuse. Requires no concurrent writer for these keys. BuildKit unique own-cold tag.','timerBoundary':'Engine core excludes output proof; Coopr cold includes an additional local cache seed writer and is diagnostic, not a fair cold performance comparison. Warm paths have only their normal registry writer. RootlessKit outer includes setup and engine-specific proof.'},sort_keys=True))
 PY
 [[ -z $(git status --porcelain --untracked-files=all --ignored=matching) ]]
