@@ -9,15 +9,16 @@ tasks:
     needs: [build]
     cache: false
     outputs: {filesystem: false}
-    environment:
-      files: [examples/environments/environment.coopr]
-      target: checks
+    image: docker.io/library/golang:1.27@sha256:e519d3b0a5b285e5aa53ab9eef02bc6bbb9cb04608389b743a136a9ce75f0d1e
+    workdir: /workspace
     strategy:
       max-parallel: 2
       fail-fast: false
       matrix:
         check: [test, vet]
     env:
+      CGO_ENABLED: "0"
+      GOTOOLCHAIN: local
       GOMAXPROCS: "1"
       GOMEMLIMIT: 768MiB
       GOFLAGS: -p=1

@@ -1,7 +1,7 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "6e8c4f736dedb8817e4094878f9e4b0e87a23575d73847668f81467a2d324881",
+  "id": "f813ba9e71c7810ba72aed3ad7aeba8a5168611ee5c219f86211fa4a5e1dbb4a",
   "config": {
     "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:c0983926a014d0e4231f1b1c6c7ea677f0b98676c29848b213a49c9dc55e8f60",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
@@ -23,7 +23,7 @@
     ],
     "resultsRepository": "ghcr.io/strio-dev/stoke-qualification-tools"
   },
-  "workflowDigest": "878a328f919e09c4e7e71fdbdaba0d9aa0ebeae771f8a342eb96f28bc61fbcd4",
+  "workflowDigest": "b710d4f05a4981321fed0981bf1f8ca6d2e65b8c5ced14622413c6ef1c05d20e",
   "engine": {
     "apiVersion": 1,
     "capabilities": [
@@ -60,39 +60,12 @@
       ]
     },
     {
-      "id": "stoke_07023f7e377c6e28",
-      "name": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
-      "members": [
-        "stoke-environment-dbb8cb6dd8acde94bac6afb8"
-      ],
-      "needs": [
-        "stoke_44575cf5b28512d7"
-      ],
-      "maxParallel": 1,
-      "failFast": true,
-      "matrix": false,
-      "jobs": [
-        {
-          "id": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
-          "task": "stoke-environment-dbb8cb6dd8acde94bac6afb8",
-          "execute": [
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
-          ],
-          "exports": [
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
-          ],
-          "outputKey": "result_07023f7e377c6e28ac96606f29f563d33c110b63c7e4a608381deeb54abcfb85"
-        }
-      ]
-    },
-    {
       "id": "stoke_961f787b0cd3443f",
       "name": "checks",
       "members": [
         "checks"
       ],
       "needs": [
-        "stoke_07023f7e377c6e28",
         "stoke_44575cf5b28512d7"
       ],
       "maxParallel": 2,
@@ -106,15 +79,13 @@
             "check": "test"
           },
           "data": [
-            "build",
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+            "build"
           ],
           "execute": [
             "checks--matrix-4469f0f617a4dc89"
           ],
           "imports": [
-            "build",
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+            "build"
           ],
           "outputKey": "result_e699141d2be82d0897d0197dbcca7cd26da122c1e8327b12e175cb16dbe947af"
         },
@@ -125,15 +96,13 @@
             "check": "vet"
           },
           "data": [
-            "build",
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+            "build"
           ],
           "execute": [
             "checks--matrix-ab15af8b1932820b"
           ],
           "imports": [
-            "build",
-            "stoke-environment-dbb8cb6dd8acde94bac6afb8"
+            "build"
           ],
           "outputKey": "result_1680f2d5891188f61fd5a1cf0295139eaf8f2da005924c9f8478ea483d37c8f0"
         }
@@ -181,8 +150,5 @@
     "The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
     "Host tasks execute inside the job container, not on the outer runner. Caller opt-in and capability attestations still apply. Image pull credentials must be available before job steps; workflow registry credentials remain separate."
   ],
-  "environments": {
-    "stoke-environment-dbb8cb6dd8acde94bac6afb8": "checks--matrix-4469f0f617a4dc89"
-  },
   "requiresResults": true
 }
