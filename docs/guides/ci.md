@@ -136,7 +136,8 @@ Keep the local cache outside the checkout and under the runner account's control
 
 Use a fresh `--output` path outside the checkout when your CI artifact collector needs a known location. Retain `run.json` and the desired task filesystem or OCI output. Do not upload credentials or entire native stores unintentionally. A failed workflow returns a nonzero exit status and blocks dependent task groups. Matrix fail-fast policy controls when a failed matrix stops workflow admission; active work is cancelled and drained when the workflow stops. Never-started selected jobs remain in the report as `skipped`. Configure your CI's failure/evidence retention policy separately.
 
-For selected workspace files, run `stoke run -f examples/ci/exports.yaml --context . package`
+Selected exports require a Coopr engine advertising `selected-file-exports`.
+Run `stoke run -f examples/ci/exports.yaml --context . package`
 from the repository root. Its ordered export steps produce `artifacts/stoke`,
 `reports/test` and `reports/package`; the test stays fresh while eligible build
 and package instructions can reuse Coopr's cache. The optional input

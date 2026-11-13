@@ -53,6 +53,7 @@ tasks:
   vet:
     needs: [build]
     cache: false
+    outputs: {filesystem: false}
     environment:
       files: [examples/environments/environment.coopr]
       target: checks
