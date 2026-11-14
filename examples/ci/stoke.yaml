@@ -16,7 +16,6 @@ tasks:
       fail-fast: false
       matrix:
         check: [test, vet]
-        workers: ["1", "2"]
     env:
       CGO_ENABLED: "0"
       GOTOOLCHAIN: local
@@ -47,19 +46,12 @@ tasks:
           - -c
           - |
             printf 'STOKE_TESTED_BINARY_SHA256=%s\n' "$(sha256sum /built/stoke | cut -d ' ' -f 1)"
-            export GOMAXPROCS="$STOKE_MATRIX_WORKERS" GOFLAGS="-p=$STOKE_MATRIX_WORKERS"
-            build_cache_entries=$(ls -A "$GOCACHE")
-            module_cache_entries=$(ls -A "$GOMODCACHE")
-            test -z "$build_cache_entries$module_cache_entries"
-            printf 'CPU_CACHES_EMPTY worker=%s check=%s\n' "$STOKE_MATRIX_WORKERS" "$STOKE_MATRIX_CHECK"
             /built/stoke version
-            printf 'CPU_GO_BEGIN worker=%s check=%s ns=%s gomax=%s flags=%s mem=%s\n' "$STOKE_MATRIX_WORKERS" "$STOKE_MATRIX_CHECK" "$(date +%s%N)" "$GOMAXPROCS" "$GOFLAGS" "$GOMEMLIMIT"
             case "$STOKE_MATRIX_CHECK" in
               test) go test -count=1 -mod=readonly -short ./... ;;
               vet) go vet -mod=readonly ./... ;;
               *) exit 2 ;;
             esac
-            printf 'CPU_GO_END worker=%s check=%s ns=%s\n' "$STOKE_MATRIX_WORKERS" "$STOKE_MATRIX_CHECK" "$(date +%s%N)"
   package:
     image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
     needs: [checks]

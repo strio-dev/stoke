@@ -1,7 +1,7 @@
 {
   "version": 2,
   "generatedBy": "stoke-ci",
-  "id": "21f1ad684fb2f7fc94ea69d3b2cad2b3037246a3e7865aecbb0be7fc5b44676a",
+  "id": "ecb915610d2ed3d980aaa4f0eb3dcc36da3363893b5b612f99eabe95ef7902e9",
   "config": {
     "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:9531fb504e13f9e87a2f26a81672f2d416c219bb303f42bdfd281501e169f30a",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
@@ -23,7 +23,7 @@
     ],
     "resultsRepository": "ghcr.io/strio-dev/stoke-qualification-tools"
   },
-  "workflowDigest": "3c34636b867af95254578d63b3eae52d19c7b2e5610d714f381b0d39667d444d",
+  "workflowDigest": "b710d4f05a4981321fed0981bf1f8ca6d2e65b8c5ced14622413c6ef1c05d20e",
   "engine": {
     "apiVersion": 1,
     "capabilities": [
@@ -73,76 +73,38 @@
       "matrix": true,
       "jobs": [
         {
-          "id": "checks--matrix-7608409a83c07d24",
+          "id": "checks--matrix-4469f0f617a4dc89",
           "task": "checks",
           "matrix": {
-            "check": "test",
-            "workers": "1"
+            "check": "test"
           },
           "data": [
             "build"
           ],
           "execute": [
-            "checks--matrix-7608409a83c07d24"
+            "checks--matrix-4469f0f617a4dc89"
           ],
           "imports": [
             "build"
           ],
-          "outputKey": "result_4bf3f855b9d135ad06bdc112039f6481aab842f3fcc6603dcfe536949e885ef9"
+          "outputKey": "result_e699141d2be82d0897d0197dbcca7cd26da122c1e8327b12e175cb16dbe947af"
         },
         {
-          "id": "checks--matrix-9c449444136d80ba",
+          "id": "checks--matrix-ab15af8b1932820b",
           "task": "checks",
           "matrix": {
-            "check": "test",
-            "workers": "2"
+            "check": "vet"
           },
           "data": [
             "build"
           ],
           "execute": [
-            "checks--matrix-9c449444136d80ba"
+            "checks--matrix-ab15af8b1932820b"
           ],
           "imports": [
             "build"
           ],
-          "outputKey": "result_79c66b25eb1bcbd58975293eec762ca50503ac703b6bc044d6cf13b2287054b1"
-        },
-        {
-          "id": "checks--matrix-93a609c83a23b0ed",
-          "task": "checks",
-          "matrix": {
-            "check": "vet",
-            "workers": "1"
-          },
-          "data": [
-            "build"
-          ],
-          "execute": [
-            "checks--matrix-93a609c83a23b0ed"
-          ],
-          "imports": [
-            "build"
-          ],
-          "outputKey": "result_ccb77de7dd22a6acbfe1efb9ff6a3c460346a7ca8bbd45b2edef7957e153785d"
-        },
-        {
-          "id": "checks--matrix-a2325f12d0f26242",
-          "task": "checks",
-          "matrix": {
-            "check": "vet",
-            "workers": "2"
-          },
-          "data": [
-            "build"
-          ],
-          "execute": [
-            "checks--matrix-a2325f12d0f26242"
-          ],
-          "imports": [
-            "build"
-          ],
-          "outputKey": "result_7093794f6b1bbfebdc37cff9e709c34e25c15244416d0b2b0bc35a94642c1c25"
+          "outputKey": "result_1680f2d5891188f61fd5a1cf0295139eaf8f2da005924c9f8478ea483d37c8f0"
         }
       ]
     },
