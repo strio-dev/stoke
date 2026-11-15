@@ -87,7 +87,7 @@ jobs:
           cat > "$tools_dir/tools.nix" <<'NIX'
           let
             stoke = builtins.getFlake ("path:" + builtins.getEnv "GITHUB_WORKSPACE");
-            cooprBase = builtins.getFlake "github:strio-dev/coopr/7daf44e90a64a7297f896c10e8342266ca5300bf";
+            cooprBase = builtins.getFlake "github:strio-dev/coopr/c7e0cfb0b0db66fcbe4cfe1f8aa29063f7d08a7d";
             system = builtins.getEnv "TOOLS_SYSTEM";
             tracePath = builtins.getEnv "COOPR_TRACE_PATCH";
             tracePatch = builtins.toFile "coopr-perf-trace.patch" (builtins.readFile (builtins.getEnv "COOPR_TRACE_PATCH"));
@@ -129,6 +129,10 @@ jobs:
           GHCR_USER: ${{ github.actor }}
         shell: bash
         run: |
+          # This run may write only to the existing private qualification package.
+          GH_TOKEN="$GHCR_TOKEN" gh api --method GET \
+            orgs/strio-dev/packages/container/stoke-qualification-tools \
+            --jq '.id == 16790989 and .name == "stoke-qualification-tools" and .visibility == "private"' | grep -qx true
           umask 077
           auth_dir=$(mktemp -d "$RUNNER_TEMP/stoke-ghcr-${TOOLS_ARCH}.XXXXXXXX")
           printf 'directory=%s\n' "$auth_dir" >> "$GITHUB_OUTPUT"
@@ -148,6 +152,10 @@ jobs:
             "docker://$repository:$tag" > "$TOOLS_DIR/manifest.json"
           "$skopeo" inspect --authfile "$auth_file" --config \
             "docker://$repository@$digest" > "$TOOLS_DIR/config.json"
+          # This run may write only to the existing private qualification package.
+          GH_TOKEN="$GHCR_TOKEN" gh api --method GET \
+            orgs/strio-dev/packages/container/stoke-qualification-tools \
+            --jq '.id == 16790989 and .name == "stoke-qualification-tools" and .visibility == "private"' | grep -qx true
           python3 - "$TOOLS_DIR" "$digest" "$tag" <<'PYTHON'
           import hashlib
           import json
@@ -170,7 +178,7 @@ jobs:
               output.write(f"digest={digest}\ntag={tag}\n")
           receipt = {
               "source": os.environ["GITHUB_SHA"], "system": os.environ["TOOLS_SYSTEM"],
-              "cooprSource": "7daf44e90a64a7297f896c10e8342266ca5300bf",
+              "cooprSource": "c7e0cfb0b0db66fcbe4cfe1f8aa29063f7d08a7d",
               "uid": 1001, "gid": 1001, "digest": digest, "tag": tag,
               "benchmarkReference": os.environ["BUILD_BENCHMARK_REFERENCE"] == "true",
           }
