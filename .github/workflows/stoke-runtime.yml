@@ -440,6 +440,7 @@ jobs:
           sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
           version = subprocess.check_output(['coopr', '--version'], env=env, text=True).strip()
           assert '0.6.0' in version
+          print('STOKE_INSTALLER_RECEIPT=' + json.dumps({'source': os.environ['TOOLS_SOURCE'], 'caller': os.environ['GITHUB_SHA'], 'arch': os.environ['NATIVE_ARCH'], 'image': os.environ['TOOLS_IMAGE'], 'stokeELFSHA256': sha(elf), 'stokeWrapperSHA256': sha(cli), 'installerSHA256': sha(root / 'install.sh'), 'cooprVersion': version, 'cooprBinarySHA256': sha(prefix / 'bin/coopr'), 'cooprHelperSHA256': sha(prefix / 'libexec/coopr/coopr-run-sequence'), 'archiveSHA256': os.environ['COOPR_ARCHIVE_SHA']}, sort_keys=True), flush=True)
 
           def invoke(label, args, expected):
               assert '--network' not in args and not any(a.startswith('--network=') for a in args)
@@ -493,6 +494,7 @@ jobs:
               assert text in failed.stderr
               assert text in html.unescape(pathlib.Path(env['GITHUB_STEP_SUMMARY']).read_text())
 
+          print('STOKE_FIRST_RUN_PROOF=' + json.dumps({'arch': os.environ['NATIVE_ARCH'], 'network': 'default; no overrides', 'happy': 'passed', 'failedGate': 'test failed; artifact skipped', 'jsonStdout': True, 'summary': True, 'noOverwrite': True}, sort_keys=True), flush=True)
           parallel = root / 'parallel-source'
           parallel.mkdir()
           (parallel / 'stoke.yaml').write_text('''version: 1
@@ -511,7 +513,7 @@ jobs:
           for task in variants['tasks']:
               assert task['status'] == 'passed'
               for line in ['fragmented', 'multi', 'last', 'errtail']:
-                  assert result.stderr.splitlines().count('[' + task['name'] + '] ' + line) == 1
+                  assert result.stderr.splitlines().count('[' + task['name'] + '] ' + line) == 1, (task['name'], line, result.stderr[-8000:])
           starts, finishes = {}, {}
           for line in parallel_events.read_text().splitlines():
               event = json.loads(line)
