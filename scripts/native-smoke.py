@@ -28,6 +28,12 @@ def require(condition, message):
         raise AssertionError(message)
 
 
+def task_log_lines(text):
+    # Human output has one task/variant prefix; command text is not a marker.
+    return [line.split("] ", 1)[-1] if line.startswith("[") else line
+            for line in text.splitlines()]
+
+
 def descendants(pid):
     """Go can fork native children from any OS thread, not only its main one."""
     pending = [pid]
@@ -210,7 +216,7 @@ def main():
             require("cache" not in jobs[name], f"{label}: {name} fabricated unavailable cache counters")
         for name in ("literal", "test", "verify", "artifact"):
             require(isinstance(jobs[name].get("cache", {}).get("Hits"), int), f"{label}: {name} lost available cache counters")
-        require("STOKE_NATIVE_TEST_EXECUTED" in completed.stderr.splitlines(), f"{label}: test was reused")
+        require("STOKE_NATIVE_TEST_EXECUTED" in task_log_lines(completed.stderr), f"{label}: test was reused")
         image_index = json.loads((destinations[0] / "index.json").read_text())
         original_index = json.loads((Path(jobs["derived"]["oci"]) / "index.json").read_text())
         require(image_index["manifests"] == original_index["manifests"], f"{label}: publication changed image identity")
@@ -228,16 +234,16 @@ def main():
         return report, completed
 
     cold_report, cold = execute("cold")
-    require("STOKE_NATIVE_RUN_EXECUTED" in cold.stderr.splitlines(), "cold native RUN did not execute")
-    require("STOKE_LITERAL_RUN_EXECUTED" in cold.stderr.splitlines(), "cold literal RUN did not execute")
+    require("STOKE_NATIVE_RUN_EXECUTED" in task_log_lines(cold.stderr), "cold native RUN did not execute")
+    require("STOKE_LITERAL_RUN_EXECUTED" in task_log_lines(cold.stderr), "cold literal RUN did not execute")
     checks.extend(["native-component-image-bindings", "literal-native-image-consumers", "optional-rootfs", "gated-local-publication"])
     warm_report, warm = execute("warm")
-    require("STOKE_NATIVE_RUN_EXECUTED" not in warm.stderr.splitlines(),
+    require("STOKE_NATIVE_RUN_EXECUTED" not in task_log_lines(warm.stderr),
             "warm native RUN executed instead of reusing its controlled fixture result")
     require(cold_report["directory"] != warm_report["directory"], "warm run did not use fresh native stores")
     literal_cold = next(job for job in cold_report["tasks"] if job["name"] == "literal")
     literal_warm = next(job for job in warm_report["tasks"] if job["name"] == "literal")
-    require("STOKE_LITERAL_RUN_EXECUTED" not in warm.stderr.splitlines() and literal_warm["cache"]["Hits"] > 0, "warm literal RUN did not reuse the local cache")
+    require("STOKE_LITERAL_RUN_EXECUTED" not in task_log_lines(warm.stderr) and literal_warm["cache"]["Hits"] > 0, "warm literal RUN did not reuse the local cache")
     require(literal_cold["digest"] == literal_warm["digest"], "warm literal output identity changed")
     (root / "context-identity.json").write_text(json.dumps({
         "workflowOutsideContext": not workflow.is_relative_to(context),
@@ -265,8 +271,8 @@ def main():
     checks.append("native-warm-cache")
     checks.append("cache-statistics-availability")
     uncached_report, uncached = execute("no-cache", ["--no-cache"])
-    require("STOKE_NATIVE_RUN_EXECUTED" in uncached.stderr.splitlines(), "--no-cache reused native RUN")
-    require("STOKE_LITERAL_RUN_EXECUTED" in uncached.stderr.splitlines() and all(job.get("cache", {}).get("Hits", 0) == 0 for job in uncached_report["tasks"]), "--no-cache reused literal results")
+    require("STOKE_NATIVE_RUN_EXECUTED" in task_log_lines(uncached.stderr), "--no-cache reused native RUN")
+    require("STOKE_LITERAL_RUN_EXECUTED" in task_log_lines(uncached.stderr) and all(job.get("cache", {}).get("Hits", 0) == 0 for job in uncached_report["tasks"]), "--no-cache reused literal results")
     checks.append("native-no-cache")
     execute("failed-test", success=False)
     checks.append("failed-test-blocks-publication")
@@ -342,7 +348,7 @@ def main():
         selector = selectors.DefaultSelector()
         selector.register(process.stderr, selectors.EVENT_READ)
         deadline = time.monotonic() + TIMEOUT
-        while b"STOKE_NATIVE_CANCEL_READY" not in captured.splitlines():
+        while "STOKE_NATIVE_CANCEL_READY" not in task_log_lines(captured.decode(errors="replace")):
             require(time.monotonic() < deadline, "native cancellation readiness timed out")
             require(process.poll() is None, f"native cancellation exited before readiness: {captured.decode(errors='replace')}")
             if selector.select(timeout=1):
@@ -384,11 +390,11 @@ def main():
     changed = save("changed-literal", completed, True)
     require(context_identity() == expected_changed, "source-change build modified caller inputs")
     jobs = {job["name"]: job for job in changed["tasks"]}
-    require("STOKE_LITERAL_RUN_EXECUTED" in completed.stderr.splitlines() and jobs["literal"]["cache"]["Misses"] > 0, "same-size/restored-mtime source mutation reused the old RUN")
+    require("STOKE_LITERAL_RUN_EXECUTED" in task_log_lines(completed.stderr) and jobs["literal"]["cache"]["Misses"] > 0, "same-size/restored-mtime source mutation reused the old RUN")
     require(jobs["literal"]["digest"] != literal_warm["digest"], "changed source did not change literal output identity")
     for name in ("literal", "artifact"):
         require((Path(jobs[name]["filesystem"]) / "literal-result.txt").read_text() == "fresh literal payload\n", "source-change result was not propagated")
-    require("STOKE_NATIVE_TEST_EXECUTED" in completed.stderr.splitlines() and jobs["test"]["cache"]["Hits"] == 0, "source-change run reused fresh-only tests")
+    require("STOKE_NATIVE_TEST_EXECUTED" in task_log_lines(completed.stderr) and jobs["test"]["cache"]["Hits"] == 0, "source-change run reused fresh-only tests")
     checks.append("literal-local-cache-forced-execution-and-source-invalidation")
 
     summary = {"passed": True, "evidence": str(root), "checks": checks,

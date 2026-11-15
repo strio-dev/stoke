@@ -473,6 +473,8 @@ func synchronize(out io.Writer, mu *sync.Mutex) io.Writer {
 }
 
 func executeJob(ctx context.Context, job workflow.Job, options Options, dir, output string, previous map[string]coopr.Result, engine backend) (result coopr.Result, retErr error) {
+	flushLogs := labelTaskLogs(&options, job.Name)
+	defer func() { retErr = errors.Join(retErr, flushLogs()) }()
 	var observedBuild *CDEvents
 	defer func() { observedBuild.BuildFinished(job, result, retErr) }()
 	defer func() {
@@ -624,6 +626,7 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 			}
 		}
 	}
+	logErr := flushLogs()
 	if options.Stderr != nil && err == nil && result.CacheAvailable {
 		_, _ = fmt.Fprintf(options.Stderr, "    %s: cache hits=%d misses=%d stored=%d skipped=%d errors=%d\n", job.Name, result.Cache.Hits, result.Cache.Misses, result.Cache.Stored, result.Cache.Skipped, result.Cache.Errors)
 	}
@@ -632,7 +635,7 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 	if omitOCI {
 		result.OCI, result.ManifestDigest = "", ""
 	}
-	return result, errors.Join(err, exportErr)
+	return result, errors.Join(err, exportErr, logErr)
 }
 
 func imageSource(result coopr.Result) string {

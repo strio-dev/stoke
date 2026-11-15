@@ -4,7 +4,7 @@
 Stoke puts reusable container build and test workflows behind one command. Run the same YAML definition on your machine or inside a GitHub Actions, Jenkins, GitLab CI or Tekton job, with Coopr supplying execution and build caching.
 </div>
 
-[Set up development](contributing.md){ .md-button .md-button--primary }
+[Get started](getting-started.md){ .md-button .md-button--primary }
 [CLI reference](reference/cli.md){ .md-button .strio-container-link }
 { .strio-actions }
 

@@ -13,6 +13,10 @@ stoke plan [-f FILE] [--input NAME=VALUE ...] [TASK ...]
 
 `check`, `plan` and `run` accept repeated `--input NAME=VALUE` flags for the root workflow's declared string inputs. Flags precede positional targets. The first `=` separates the name from the value; later `=` characters belong to the literal value. Quote shell-sensitive values, for example `--input 'message=a=b'`. Explicit empty values use `--input note=`. Duplicate CLI input names are rejected. Unknown input names and missing required inputs fail before execution. Optional inputs use their declared defaults, or empty strings when no default exists. Input values are ordinary build configuration, not a secret channel. See [reusable inputs](../guides/reusable-inputs.md).
 
+In the human plan, `needs` lists explicit success gates and `data-from` lists
+consumed task outputs. Data dependencies must succeed too. A task can copy from
+`build` while separately waiting for `test`, as in [the first workflow](../tutorials/first-workflow.md).
+
 Local workflow paths must resolve to regular files, including through symlinks,
 and contain at most 1 MiB. Directories, FIFOs and devices are rejected before
 parsing.
@@ -81,10 +85,10 @@ A run owns its Coopr Unix-socket service. Signals cancel requests through Coopr'
 
 Inline environments lower to native image producers followed by ordinary consumers. Their generated `stoke-environment-` producer names appear in the report; equivalent resolved inputs, policies and prerequisite gates share a producer within that run. See [task environments](../guides/environments.md).
 
-Task logs and available cache counters go to stderr. When a run directory has been established, stdout contains one JSON report on success or execution failure, and the same report is saved as `run.json` in that directory. Fields include `status`, `directory`, `output` and a `tasks` array in stable plan order, independent of completion order. Every selected job is included; never-started jobs have status `skipped` and a reason. Logs from overlapping jobs can interleave. Jobs record their name/status, logical task, kind (`image`, `component` or `publish`), matrix values, actual result `platform` and applicable identities/paths/metadata. The actual platform can differ from a native build's requested default when a native FROM stage selects a different target; a `from` consumer inherits and validates the actual result. Literal jobs include available portable `cache` counters; native definition/component jobs omit unavailable counters. Publication jobs retain `destinations`, including partial successes and errors on a failed task. A nonzero `progressDropped` records engine-reported omitted progress observations, including on failed tasks; it does not change task success or imply a complete timing trace. Failures include an error. A non-matrix failure or fail-fast variant failure stops admission and cancels active workflow jobs. A matrix with `strategy.fail-fast: false` finishes its active and queued siblings before its failed group stops the workflow; another failed group or external cancellation can interrupt them. All prerequisite variants must succeed before dependent tasks can start. Cleanup uncertainty remains a failure rather than an ordinary successful cancellation. Configuration errors before a run directory is established only produce an error on stderr.
+Task logs and available cache counters go to stderr. When a run directory has been established, stdout contains one JSON report on success or execution failure, and the same report is saved as `run.json` in that directory. Fields include `status`, `directory`, `output` and a `tasks` array in stable plan order, independent of completion order. Every selected job is included; never-started jobs have status `skipped` and a reason. Overlapping jobs can interleave complete lines, each prefixed with its concrete task/variant name. Incomplete lines flush when the task finishes; long lines are split into bounded chunks. Raw host log files and captured outputs are unchanged. Jobs record their name/status, logical task, kind (`image`, `component` or `publish`), matrix values, actual result `platform` and applicable identities/paths/metadata. The actual platform can differ from a native build's requested default when a native FROM stage selects a different target; a `from` consumer inherits and validates the actual result. Literal jobs include available portable `cache` counters; native definition/component jobs omit unavailable counters. Publication jobs retain `destinations`, including partial successes and errors on a failed task. A nonzero `progressDropped` records engine-reported omitted progress observations, including on failed tasks; it does not change task success or imply a complete timing trace. Failures include an error. A non-matrix failure or fail-fast variant failure stops admission and cancels active workflow jobs. A matrix with `strategy.fail-fast: false` finishes its active and queued siblings before its failed group stops the workflow; another failed group or external cancellation can interrupt them. All prerequisite variants must succeed before dependent tasks can start. Cleanup uncertainty remains a failure rather than an ordinary successful cancellation. Configuration errors before a run directory is established only produce an error on stderr.
 
-Export steps require the [pinned Coopr PR25 candidate](../guides/coopr-api.md#select-a-compatible-executable)
-and its `selected-file-exports` capability. Jobs retain `exports` receipts in step
+Export steps require a [compatible Coopr executable](../guides/coopr-api.md#select-a-compatible-executable)
+advertising `selected-file-exports`. Jobs retain `exports` receipts in step
 order, including reports captured on failed tasks; task status still controls
 success gates.
 
@@ -199,3 +203,20 @@ This command publishes workflow definitions only. Built image/component delivery
 `stoke`, `stoke help`, `stoke -h` and `stoke --help` print help. `stoke version` and `stoke --version` print the build version, which is `dev` in a development checkout. Errors are reported on stderr with a nonzero exit status; task failures do not become successful runs.
 
 Exit status 0 indicates success or help, 1 indicates validation/resolution/execution/I/O failure, and 2 indicates an unknown command, invalid flags or missing required arguments.
+
+## Diagnose a failed run
+
+Human failure summaries name failed tasks and the retained `run.json` path on
+stderr. In GitHub Actions the same text is appended to the native step summary
+when its file is available. Stdout remains the single JSON result. GitLab and
+other CI jobs receive the same terminal diagnostics and nonzero exit status.
+
+After fixing the cause, rerun the original terminal targets with the same inputs
+and execution options; retrying only the failed prerequisite can omit its gates
+or downstream work. Fresh tasks and side effects can execute again. Explicit
+`--output` and `--events` destinations must be fresh. Selected exports require
+absent caller-workspace destinations too: preserve existing files elsewhere or
+use a fresh workspace. A new `--output` does not relocate selected exports.
+
+For generated CI, use provider-native retries preserving the original invocation
+scope and inherited inputs. See [exact selection and retry behavior](../guides/ci-generation.md#exact-selection-and-retry-behavior).

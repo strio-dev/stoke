@@ -316,6 +316,9 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		executionErr = err
 		err = persistCIRun(report, err)
+		if err != nil && report != nil {
+			printFailureSummary(errOut, report.Report, nil, options, true)
+		}
 		if report != nil && report.Report != nil {
 			err = errors.Join(err, json.NewEncoder(out).Encode(report))
 		}

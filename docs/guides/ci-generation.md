@@ -242,6 +242,11 @@ combined with old tests that consumed build A. Rerun the producer and its
 dependent gates deliberately. There is no automatic producer replay, cache
 reconstruction or mutable `latest` lookup at the consumer.
 
+Use GitHub's native **Re-run job** for a generated job. Preserve its invocation
+scope and inherited producer inputs; do not substitute an ad hoc `stoke ci run`
+command that bypasses native `needs`. Failure diagnostics and the native step
+summary identify the failed unit and retained report.
+
 A consumer-only retry may reuse an older producer when its exact reference is
 explicitly supplied through native metadata, belongs to the same invocation,
 source and plan, and has no future attempt. Missing, masked or conflicting output
