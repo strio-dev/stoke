@@ -52,9 +52,27 @@ does not identify the full host pipeline. The CI attempt remains a project
 attribute until the standard defines one. TraceId/SpanId belong only to genuine
 enabled tracing context, as described by the
 [OTel log model](https://opentelemetry.io/docs/specs/otel/logs/data-model/#trace-context-fields).
-CDEvents occurrence IDs are not trace IDs. This is a correlation proposal, with
-no OTel runtime dependency or exporter. Per-task writers would attach identity
-before concurrent streams meet the shared writer, without parsing log text.
+CDEvents occurrence IDs are not trace IDs. `RunID` and `TaskRunID(job.Name)` on
+the same observer supply invocation and concrete task identities; CI scope,
+unit and actual attempt remain separately configured before admission. Future
+task-log writers can reuse these values before concurrent streams meet the
+shared writer, without parsing logs or maintaining another lifecycle. With
+`--events` disabled, no observer or correlated log output is created today.
+
+Lifecycle identities and CDEvents emission must remain independent of tracing
+and its sampling decision. Future tracing would carry task-local context through
+the existing execution call and writer boundary, rather than a shared mutable
+current span. Neither disabled tracing nor an unsampled span suppresses events.
+This is a correlation contract, with no OTel runtime dependency or exporter.
+
+For a future CloudEvents transport, the official SDK's
+[`AsCloudEvent`](https://github.com/cdevents/sdk-go/blob/v0.5.1/pkg/api/bindings.go)
+converts the existing occurrence without creating another lifecycle event.
+The [distributed tracing extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md)
+places real `traceparent` and optional `tracestate` on that CloudEvent envelope.
+Use the CloudEvents SDK's existing extension support when context is available;
+do not place these transport attributes into CDEvents custom data or derive them
+from workflow IDs. Current JSONL contains bare CDEvents and is unchanged.
 
 ## Product surface and release gate
 

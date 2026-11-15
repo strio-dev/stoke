@@ -118,7 +118,7 @@ func (o *CDEvents) TaskStarted(job workflow.Job) {
 			event.SetSubjectPipelineRun(&cdevents.Reference{Id: o.RunID})
 		}
 	}
-	o.emit(event, err, o.subjectID("task", job.Name), cdeventsTaskFacts(TaskResult{Task: job.Task, Matrix: job.Matrix}))
+	o.emit(event, err, o.TaskRunID(job.Name), cdeventsTaskFacts(TaskResult{Task: job.Task, Matrix: job.Matrix}))
 }
 
 func (o *CDEvents) TaskFinished(item TaskResult, taskErr error) {
@@ -141,7 +141,7 @@ func (o *CDEvents) TaskFinished(item TaskResult, taskErr error) {
 			event.SetSubjectPipelineRun(&cdevents.Reference{Id: o.RunID})
 		}
 	}
-	o.emit(event, err, o.subjectID("task", item.Name), cdeventsTaskFacts(item))
+	o.emit(event, err, o.TaskRunID(item.Name), cdeventsTaskFacts(item))
 	// Publication is observed per returned destination, including a successful
 	// destination when another destination made the overall task fail.
 	for _, destination := range item.Destinations {
@@ -180,6 +180,15 @@ func (o *CDEvents) BuildFinished(job workflow.Job, result coopr.Result, runErr e
 		event.SetSubjectArtifactId(artifact)
 	}
 	o.emit(event, err, o.subjectID("build", job.Name), cdeventsTaskFacts(TaskResult{Task: job.Task, Matrix: job.Matrix}))
+}
+
+// TaskRunID is the shared event/log correlation identity of a concrete task or
+// matrix variant. It does not depend on occurrence IDs or trace sampling.
+func (o *CDEvents) TaskRunID(name string) string {
+	if o == nil {
+		return ""
+	}
+	return o.subjectID("task", name)
 }
 
 func (o *CDEvents) subjectID(kind, name string) string {

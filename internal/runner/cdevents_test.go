@@ -86,7 +86,7 @@ func TestCDEventsLifecycleAndExistingOutputFacts(t *testing.T) {
 	if events[0].GetSubjectId() != observer.RunID || events[5].GetSubjectId() != observer.RunID || events[1].GetSubjectId() != events[4].GetSubjectId() || !strings.HasSuffix(events[1].GetSubjectId(), url.PathEscape(job.Name)) || events[2].GetSubjectId() != events[3].GetSubjectId() || events[1].GetSubjectId() == events[2].GetSubjectId() {
 		t.Fatal("pipeline/task/build subject identity was not preserved")
 	}
-	if !strings.HasPrefix(events[1].GetSubjectId(), "urn:stoke:task:") || !strings.HasPrefix(events[2].GetSubjectId(), "urn:stoke:build:") {
+	if events[1].GetSubjectId() != observer.TaskRunID(job.Name) || observer.TaskRunID(job.Name) == observer.TaskRunID("test[os=linux/amd64]") || !strings.HasPrefix(events[2].GetSubjectId(), "urn:stoke:build:") {
 		t.Fatal("task/build subjects are not in the Stoke URN namespace")
 	}
 	finished := events[4].(*cdeventsv05.TaskRunFinishedEvent)
@@ -124,7 +124,7 @@ func TestCDEventsCIUsesActualAttemptAndFreshInvocation(t *testing.T) {
 			t.Fatal(err)
 		}
 		events := readCDEvents(t, &output)
-		if len(events) != 2 || events[0].GetSubjectId() != events[1].GetSubjectId() || !strings.HasPrefix(events[0].GetSubjectId(), "urn:stoke:task:") || observer.RunID == previous || !strings.HasPrefix(observer.RunID, "urn:uuid:") {
+		if len(events) != 2 || events[0].GetSubjectId() != events[1].GetSubjectId() || events[0].GetSubjectId() != observer.TaskRunID("check") || observer.RunID == previous || !strings.HasPrefix(observer.RunID, "urn:uuid:") {
 			t.Fatalf("CI invocation events = %+v", events)
 		}
 		previous = observer.RunID
@@ -342,6 +342,9 @@ func TestCDEventsWriterFailureAndConcurrentEmission(t *testing.T) {
 		t.Fatal("nil writer accepted")
 	}
 	var disabled *CDEvents
+	if disabled.TaskRunID("check") != "" {
+		t.Fatal("disabled observer fabricated a task identity")
+	}
 	disabled.PipelineStarted("")
 	disabled.PipelineFinished(nil, nil)
 	disabled.TaskStarted(workflow.Job{})

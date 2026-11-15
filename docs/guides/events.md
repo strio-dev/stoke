@@ -58,3 +58,9 @@ transfers without confirmed receipts are outside this boundary. There are no
 inferred download, signing, deletion, test or deployment events. No collector,
 backend, network exporter or tracing setup is required. The file contains
 workflow/task identities and export paths; review it before sharing it.
+
+Event emission does not depend on trace sampling. The same invocation and task
+identities are reserved for future optional log/trace correlation; logs are not
+correlated or exported today. Current JSONL has no CloudEvents `traceparent`
+extension. See the [correlation contract](../development/coopr-boundary.md#event-and-log-correlation)
+for that future transport boundary.
