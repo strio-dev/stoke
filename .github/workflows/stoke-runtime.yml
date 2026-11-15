@@ -405,8 +405,14 @@ jobs:
           printf '%s  %s\n' "$COOPR_ARCHIVE_SHA" "$archive" | sha256sum -c -
           mkdir "$proof/expected"
           tar --no-same-owner -xzf "$archive" -C "$proof/expected" coopr libexec
-          cmp "$prefix/bin/coopr" "$proof/expected/coopr"
-          cmp "$prefix/libexec/coopr/coopr-run-sequence" "$proof/expected/libexec/coopr/coopr-run-sequence"
+          python3 - "$prefix" "$proof/expected" <<'PYTHON'
+          from pathlib import Path
+          import sys
+          installed, expected = map(Path, sys.argv[1:])
+          assert (installed / "bin/coopr").read_bytes() == (expected / "coopr").read_bytes()
+          helper = "libexec/coopr/coopr-run-sequence"
+          assert (installed / helper).read_bytes() == (expected / helper).read_bytes()
+          PYTHON
           test -f "$prefix/share/licenses/coopr/LICENSE"
           printf 'directory=%s\nprefix=%s\n' "$proof" "$prefix" >> "$GITHUB_OUTPUT"
       - name: Qualify default-network first run and human diagnostics
