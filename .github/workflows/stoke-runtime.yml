@@ -7,7 +7,7 @@ on:
       scenario:
         description: Approved bounded qualification case
         type: choice
-        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, engine-compare, candidate, candidate-amd, candidate-arm]
+        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, engine-compare, candidate, candidate-amd, candidate-arm, usability]
         default: roundtrip
       benchmark_reference:
         description: Include the standalone BuildKit reference in prepared images
@@ -30,7 +30,7 @@ permissions:
   contents: read
 jobs:
   prepare-images:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && inputs.scenario == 'prepare-images' }}
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && (github.ref == 'refs/heads/initial' || github.ref == 'refs/heads/qualification/usability-20261115') && inputs.scenario == 'prepare-images' }}
     permissions:
       contents: read
       packages: write
@@ -338,3 +338,190 @@ jobs:
               for path in sorted((Path(os.environ["RUNNER_TEMP"]) / name).glob("*/summary.json")):
                   print(path.read_text())
           PY
+
+  usability:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/qualification/usability-20261115' && inputs.scenario == 'usability' }}
+    name: First run / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - arch: amd64
+            machine: x86_64
+            runner: ubuntu-24.04
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:860d31dba71b62c435061b5728d94c261b730c892905e53e878e2c8eb5571750
+            archive_sha: d8db82fe51ef2ba3b2c7deaeb68a42d2daaa44f23cc22b666582e9d8aa082558
+          - arch: arm64
+            machine: aarch64
+            runner: ubuntu-24.04-arm
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:0629003d77c744ed08d6e2d11e576e59fcfdc00ac313d19c3c3e8953548452e8
+            archive_sha: 2f45e43a21320cb4f35093a60a12319ef2004f80c2d7e0c461a77e7525337dee
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    container:
+      image: ${{ matrix.image }}
+      options: --security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    env:
+      TOOLS_SOURCE: AWAITING_IMAGE_PREPARATION
+      TOOLS_IMAGE: ${{ matrix.image }}
+      NATIVE_ARCH: ${{ matrix.arch }}
+      NATIVE_MACHINE: ${{ matrix.machine }}
+      COOPR_ARCHIVE_SHA: ${{ matrix.archive_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ env.TOOLS_SOURCE }}
+          persist-credentials: false
+      - name: Require the exact source and native non-root identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u):$(id -g)" = 1001:1001
+          test "$(uname -m)" = "$NATIVE_MACHINE"
+          test "$(git rev-parse HEAD)" = "$TOOLS_SOURCE"
+      - id: installer
+        name: Exercise the public latest installer without sudo
+        shell: bash
+        run: |
+          set -euo pipefail
+          proof=$(mktemp -d "$RUNNER_TEMP/stoke-first-run.XXXXXXXX")
+          prefix="$proof/installed"
+          curl -fsSL --proto '=https' --proto-redir '=https' \
+            https://coopr.strio.dev/install.sh -o "$proof/install.sh"
+          printf '%s  %s\n' 94f85093a63b4ad338fadff162144c230049d668ffcc5922d0de07a4917f2cfc "$proof/install.sh" | sha256sum -c -
+          latest=$(curl -fsSLI --proto '=https' --proto-redir '=https' -o /dev/null -w '%{url_effective}' https://github.com/strio-dev/coopr/releases/latest)
+          test "$latest" = https://github.com/strio-dev/coopr/releases/tag/0.6.0
+          COOPR_INSTALL_PREFIX="$prefix" sh "$proof/install.sh"
+          archive="$proof/coopr-linux-$NATIVE_ARCH.tar.gz"
+          curl -fsSL --proto '=https' --proto-redir '=https' \
+            "https://github.com/strio-dev/coopr/releases/download/0.6.0/coopr-linux-$NATIVE_ARCH.tar.gz" -o "$archive"
+          printf '%s  %s\n' "$COOPR_ARCHIVE_SHA" "$archive" | sha256sum -c -
+          mkdir "$proof/expected"
+          tar --no-same-owner -xzf "$archive" -C "$proof/expected" coopr libexec
+          cmp "$prefix/bin/coopr" "$proof/expected/coopr"
+          cmp "$prefix/libexec/coopr/coopr-run-sequence" "$proof/expected/libexec/coopr/coopr-run-sequence"
+          test -f "$prefix/share/licenses/coopr/LICENSE"
+          printf 'directory=%s\nprefix=%s\n' "$proof" "$prefix" >> "$GITHUB_OUTPUT"
+      - name: Qualify default-network first run and human diagnostics
+        env:
+          PROOF_DIR: ${{ steps.installer.outputs.directory }}
+          INSTALLED_PREFIX: ${{ steps.installer.outputs.prefix }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYTHON'
+          from datetime import datetime
+          import hashlib, html, json, os, pathlib, shutil, subprocess
+
+          root = pathlib.Path(os.environ['PROOF_DIR'])
+          prefix = pathlib.Path(os.environ['INSTALLED_PREFIX'])
+          env = os.environ.copy()
+          env.pop('STOKE_COOPR_BINARY', None)
+          env['PATH'] = str(prefix / 'bin') + os.pathsep + env['PATH']
+          env['XDG_STATE_HOME'] = str(root / 'state')
+          env['XDG_CACHE_HOME'] = str(root / 'cache')
+          assert shutil.which('coopr', path=env['PATH']) == str(prefix / 'bin/coopr')
+          cli = pathlib.Path(shutil.which('stoke', path=env['PATH'])).resolve()
+          elf = cli.with_name('.stoke-wrapped')
+          assert elf.is_file()
+          sha = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          version = subprocess.check_output(['coopr', '--version'], env=env, text=True).strip()
+          assert '0.6.0' in version
+
+          def invoke(label, args, expected):
+              assert '--network' not in args and not any(a.startswith('--network=') for a in args)
+              result = subprocess.run(['stoke'] + args, env=env, capture_output=True, text=True, timeout=120)
+              (root / (label + '.stdout')).write_text(result.stdout)
+              (root / (label + '.stderr')).write_text(result.stderr)
+              if result.returncode != expected:
+                  print('\n'.join(result.stderr.splitlines()[-25:]))
+              assert result.returncode == expected, (label, result.returncode)
+              return result
+
+          fixture = 'examples/first-workflow/stoke.yaml'
+          invoke('check', ['check', '-f', fixture], 0)
+          plan = invoke('plan', ['plan', '-f', fixture, 'artifact'], 0).stdout
+          assert 'artifact\tcache=true\tneeds=test\tdata-from=build' in plan
+          assert 'test\tcache=false\tneeds=\tdata-from=build' in plan
+          output, events = root / 'happy-output', root / 'happy-events.jsonl'
+          happy_args = ['run', '-f', fixture, '--output', str(output), '--events', str(events), 'artifact']
+          happy = json.loads(invoke('happy', happy_args, 0).stdout)
+          assert happy['status'] == 'passed'
+          assert [(t['name'], t['status']) for t in happy['tasks']] == [('build', 'passed'), ('test', 'passed'), ('artifact', 'passed')]
+          artifact = happy['tasks'][-1]
+          assert (pathlib.Path(artifact['filesystem']) / 'message.txt').read_text() == 'HELLO FROM STOKE\n'
+          assert pathlib.Path(artifact['oci']).is_dir()
+          assert (pathlib.Path(happy['directory']) / 'run.json').is_file()
+          saved_events = events.read_bytes()
+          rejected = invoke('existing-events', happy_args, 1)
+          assert not rejected.stdout and 'exist' in rejected.stderr
+          assert events.read_bytes() == saved_events
+          output_args = happy_args.copy()
+          output_args[output_args.index('--events') + 1] = str(root / 'fresh-retry-events.jsonl')
+          rejected = invoke('existing-output', output_args, 1)
+          assert not rejected.stdout and 'output directory already exists' in rejected.stderr
+          assert (output / 'artifact/rootfs/message.txt').read_text() == 'HELLO FROM STOKE\n'
+
+          failed_source = root / 'failed-source'
+          failed_source.mkdir()
+          shutil.copyfile(fixture, failed_source / 'stoke.yaml')
+          (failed_source / 'message.txt').write_text('unexpected\n')
+          failed_output, failed_events = root / 'failed-output', root / 'failed-events.jsonl'
+          failed = invoke('failed-gate', ['run', '-f', str(failed_source / 'stoke.yaml'), '--output', str(failed_output), '--events', str(failed_events), 'artifact'], 1)
+          report = json.loads(failed.stdout)
+          assert report['status'] == 'failed'
+          assert [(t['name'], t['status']) for t in report['tasks']] == [('build', 'passed'), ('test', 'failed'), ('artifact', 'skipped')]
+          report_path = str(pathlib.Path(report['directory']) / 'run.json')
+          assert pathlib.Path(report_path).is_file()
+          for text in ['Failed tasks: test', report_path, 'original gated targets: artifact', 'fresh --output', 'fresh --events']:
+              assert text in failed.stderr
+              assert text in html.unescape(pathlib.Path(env['GITHUB_STEP_SUMMARY']).read_text())
+
+          parallel = root / 'parallel-source'
+          parallel.mkdir()
+          (parallel / 'stoke.yaml').write_text('''version: 1
+          tasks:
+            check:
+              image: docker.io/library/busybox:1.37
+              cache: false
+              strategy: {max-parallel: 2, matrix: {mode: [one, two]}}
+              steps:
+                - run: [sh, -eu, -c, "printf frag; sleep 2; printf 'mented\\nmulti\\nlast'; printf errtail >&2"]
+          ''')
+          parallel_events = root / 'parallel-events.jsonl'
+          result = invoke('parallel', ['run', '-f', str(parallel / 'stoke.yaml'), '--events', str(parallel_events), 'check'], 0)
+          variants = json.loads(result.stdout)
+          assert variants['status'] == 'passed' and len(variants['tasks']) == 2
+          for task in variants['tasks']:
+              assert task['status'] == 'passed'
+              for line in ['fragmented', 'multi', 'last', 'errtail']:
+                  assert result.stderr.splitlines().count('[' + task['name'] + '] ' + line) == 1
+          starts, finishes = {}, {}
+          for line in parallel_events.read_text().splitlines():
+              event = json.loads(line)
+              kind = event['context']['type']
+              if kind.startswith('dev.cdevents.taskrun.'):
+                  times = starts if '.started.' in kind else finishes
+                  times[event['subject']['id']] = datetime.fromisoformat(event['context']['timestamp'])
+          assert len(starts) == len(finishes) == 2 and starts.keys() == finishes.keys()
+          assert max(starts.values()) < min(finishes.values())
+          print('STOKE_USABILITY_RECEIPT=' + json.dumps({
+              'source': os.environ['TOOLS_SOURCE'], 'caller': os.environ['GITHUB_SHA'],
+              'image': os.environ['TOOLS_IMAGE'], 'arch': os.environ['NATIVE_ARCH'],
+              'stokeELFSHA256': sha(elf), 'stokeWrapperSHA256': sha(cli),
+              'installerSHA256': sha(root / 'install.sh'), 'installerMode': 'real public no-argument latest; writable prefix; no sudo',
+              'cooprVersion': version, 'cooprSource': '35871e4b01e60657b45fd17e04ac1db119f839e6',
+              'cooprBinarySHA256': sha(prefix / 'bin/coopr'),
+              'cooprHelperSHA256': sha(prefix / 'libexec/coopr/coopr-run-sequence'),
+              'cooprArchiveSHA256': os.environ['COOPR_ARCHIVE_SHA'],
+              'network': 'default; no CLI or workflow overrides',
+              'passed': ['installer-native-archive-parity', 'plan-gates-data', 'first-artifact', 'failed-gate', 'json-stdout', 'provider-summary', 'no-overwrite', 'overlapping-variant-logs']
+          }, sort_keys=True))
+          PYTHON
