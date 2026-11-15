@@ -8,7 +8,7 @@ From the repository root:
 
 ```sh
 nix develop path:.
-go build -o /tmp/stoke ./cmd/stoke
+go build -mod=readonly -o /tmp/stoke ./cmd/stoke
 /tmp/stoke version
 ```
 
@@ -20,12 +20,14 @@ Stoke uses Coopr for container execution. Install the latest stable release:
 
 ```sh
 curl -fsSL https://coopr.strio.dev/install.sh | sh
+export PATH="/usr/local/bin:$PATH"
 coopr --version
 ```
 
 The installer installs the executable and its build helpers under `/usr/local`,
-using `sudo` when needed. See [Coopr installation](https://coopr.strio.dev/getting-started/)
-for prerequisites and other installation locations.
+using `sudo` when needed. It also supports `COOPR_INSTALL_PREFIX` for another
+location; add that prefix's `bin` directory to PATH. See
+[Coopr installation](https://coopr.strio.dev/getting-started/) for prerequisites.
 
 Set `STOKE_COOPR_BINARY` if your Coopr executable is outside PATH.
 
@@ -58,6 +60,12 @@ The last command prints `HELLO FROM STOKE`. The run also retains an OCI image
 layout at `$stoke_output/artifact/image` and reports its run directory. Registry
 access is needed to fetch the BusyBox image. Follow [the tutorial](tutorials/first-workflow.md)
 to see how the build, test and artifact tasks fit together.
+
+For another run, choose a fresh output directory or omit `--output` for a unique
+retained directory; keep the `artifact` target. If you add `--events`, choose a
+fresh file outside the input context too. Selected file exports also require
+unused workspace destinations; use a fresh workspace or distinct destinations
+before retrying. See [output paths](reference/cli.md) for these rules.
 
 `check` validates definitions and resolves imports without running task commands. OCI imports require registry access. `plan` prints the selected dependency closure in stable order. `run` automatically schedules ready tasks concurrently and retains outputs and a run report. The current scheduler admits at most four jobs at once across the workflow; each matrix's `strategy.max-parallel` also applies. See [parallel tasks](guides/parallel-tasks.md) and [the CLI reference](reference/cli.md) for paths and flags.
 

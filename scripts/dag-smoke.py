@@ -177,7 +177,7 @@ def main():
         require(report == persisted, f"{label}: persisted report differs")
         planned = subprocess.run([str(binary), "plan", "-f", str(workflow), "complete"], env=env, capture_output=True, text=True, timeout=30)
         require(planned.returncode == 0, f"{label}: plan failed: {planned.stderr}")
-        expected = [line.split("\t", 1)[0] for line in planned.stdout.splitlines()]
+        expected = [line.split("\t", 1)[0] for line in planned.stdout.splitlines() if "\tcache=" in line]
         require([item["name"] for item in report["tasks"]] == expected, f"{label}: report order differs from deterministic plan")
         require(not current["lane"].errors, f"{label}: fixture errors: {current['lane'].errors}")
         reports[label] = report

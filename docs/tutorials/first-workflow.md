@@ -4,7 +4,7 @@ Run the checked-in example at `examples/first-workflow/stoke.yaml`. It turns a t
 
 ## Before you start
 
-Complete [getting started](../getting-started.md). Run commands from the repository root with `stoke` on your PATH, or substitute `/tmp/stoke`. You need registry access for `docker.io/library/busybox:1.37` and a working rootless execution environment.
+Complete [getting started](../getting-started.md), which builds `/tmp/stoke`. Run commands from the repository root; if Stoke is already installed, substitute `stoke` for `/tmp/stoke`. You need registry access for `docker.io/library/busybox:1.37` and a working rootless execution environment.
 
 ## Read the workflow
 
@@ -35,13 +35,13 @@ tasks:
           destination: /message.txt
 ```
 
-`from: build` starts the test from the build's completed image. The artifact copies from the build but also declares `needs: [test]`, so a failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result. The artifact task explicitly requests filesystem output so its file can be read from the host.
+`from: build` starts the test from the build's completed image. The artifact's `needs: [test]` waits for test success; it does not copy files. Its `copy.from: build` supplies the artifact bytes. A failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result. The artifact task explicitly requests filesystem output so its file can be read from the host.
 
 ## Inspect the plan
 
 ```sh
-stoke check -f examples/first-workflow/stoke.yaml
-stoke plan -f examples/first-workflow/stoke.yaml artifact
+/tmp/stoke check -f examples/first-workflow/stoke.yaml
+/tmp/stoke plan -f examples/first-workflow/stoke.yaml artifact
 ```
 
 The selected order is `build`, `test`, `artifact`. Tasks outside this closure are not executed. Without targets, Stoke selects every root workflow task.
@@ -50,7 +50,7 @@ The selected order is `build`, `test`, `artifact`. Tasks outside this closure ar
 
 ```sh
 stoke_output="$(mktemp -d)/outputs"
-stoke run -f examples/first-workflow/stoke.yaml \
+/tmp/stoke run -f examples/first-workflow/stoke.yaml \
   --context examples/first-workflow --output "$stoke_output" artifact
 cat "$stoke_output/artifact/rootfs/message.txt"
 ```
@@ -61,4 +61,13 @@ The output directory must be fresh and outside the input context. Keep execution
 
 ## Run again
 
-Choose another fresh output directory, or omit `--output` to use a unique retained run directory. Existing outputs are never overwritten. Coopr can reuse cached build instructions; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.
+Choose another fresh output directory, or omit `--output` to use a unique retained run directory:
+
+```sh
+/tmp/stoke run -f examples/first-workflow/stoke.yaml \
+  --context examples/first-workflow artifact
+```
+
+Existing output directories are not replaced. If you use `--events`, choose a fresh event file outside the input context for each invocation. Workflows with selected file exports also need unused destination paths in the caller workspace; a new `--output` alone does not make those paths reusable.
+
+Coopr can reuse cached build instructions; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.

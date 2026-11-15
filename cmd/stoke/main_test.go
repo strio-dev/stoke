@@ -125,7 +125,7 @@ func TestCheckRejectsPackageStagingInsideContextOverride(t *testing.T) {
 func TestLocalWorkflowCLI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stoke.yaml")
-	data := "version: 1\ntasks:\n  build:\n    image: scratch\n  test:\n    from: build\n    cache: false\n  artifact:\n    image: scratch\n    needs: [test]\n"
+	data := "version: 1\ntasks:\n  build:\n    image: scratch\n  test:\n    from: build\n    cache: false\n  artifact:\n    image: scratch\n    needs: [test]\n    steps: [{copy: {from: build, sources: [/message.txt], destination: /message.txt}}]\n"
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +138,7 @@ func TestLocalWorkflowCLI(t *testing.T) {
 	if code := run([]string{"plan", "-f", path, "artifact"}, &out, &errOut); code != 0 {
 		t.Fatalf("plan code %d: %s", code, &errOut)
 	}
-	if got := out.String(); got != "build\tcache=true\tneeds=\ntest\tcache=false\tneeds=build\nartifact\tcache=true\tneeds=test\n" {
+	if got := out.String(); got != "needs: explicit success gates; data-from: consumed outputs (must also succeed)\nbuild\tcache=true\tneeds=\tdata-from=\ntest\tcache=false\tneeds=\tdata-from=build\nartifact\tcache=true\tneeds=test\tdata-from=build\n" {
 		t.Fatalf("wrong task order/cache policy: %q", got)
 	}
 	out.Reset()
@@ -164,7 +164,7 @@ func TestMatrixPlanShowsConcreteJobs(t *testing.T) {
 		t.Fatalf("plan code=%d err=%q", code, &errOut)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[0], `matrix={"mode":"debug"}`) || !strings.Contains(lines[1], `matrix={"mode":"release"}`) || !strings.HasPrefix(lines[2], "complete\t") {
+	if len(lines) != 4 || !strings.Contains(lines[1], `matrix={"mode":"debug"}`) || !strings.Contains(lines[2], `matrix={"mode":"release"}`) || !strings.HasPrefix(lines[3], "complete\t") {
 		t.Fatalf("wrong matrix plan: %s", &out)
 	}
 }

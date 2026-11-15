@@ -150,6 +150,7 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 	var loaded *source.Result
 	var runReport *runner.Report
 	var eventFile *cdeventsFile
+	var runTargets []string
 	switch command {
 	case "pull":
 		if fs.NArg() != 1 {
@@ -245,9 +246,14 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 				_, err = fmt.Fprintf(out, "Valid workflow: %s (%d selected jobs)\n", loaded.Reference, jobCount(plan))
 			}
 		case "plan":
+			if _, err = fmt.Fprintln(out, "needs: explicit success gates; data-from: consumed outputs (must also succeed)"); err != nil {
+				break
+			}
 			for _, group := range plan.Groups {
 				for _, job := range group.Jobs {
-					line := fmt.Sprintf("%s\tcache=%t\tneeds=%s", job.Name, job.Definition.CacheEnabled(), strings.Join(job.Definition.Dependencies(), ","))
+					data := job.Definition
+					data.Needs = nil
+					line := fmt.Sprintf("%s\tcache=%t\tneeds=%s\tdata-from=%s", job.Name, job.Definition.CacheEnabled(), strings.Join(job.Definition.Needs, ","), strings.Join(data.Dependencies(), ","))
 					platform, platformErr := job.Definition.ResolvedPlatform()
 					if platformErr != nil {
 						err = platformErr
@@ -286,6 +292,7 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			}
 
 		case "run":
+			runTargets = targets
 			options.AuthFile = client.AuthFile
 			options.Stdout, options.Stderr = errOut, errOut
 			options.EventName = location
@@ -315,6 +322,9 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 	}
 	if err != nil {
+		if command == "run" {
+			printFailureSummary(errOut, runReport, runTargets, options, false)
+		}
 		_, _ = fmt.Fprintln(errOut, "stoke:", err)
 		return 1
 	}
