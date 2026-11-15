@@ -350,12 +350,12 @@ jobs:
           - arch: amd64
             machine: x86_64
             runner: ubuntu-24.04
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:860d31dba71b62c435061b5728d94c261b730c892905e53e878e2c8eb5571750
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:40880acda8f3741984ca5ee82d7465e880b9010f09669b3ba1b5c4ca029f0195
             archive_sha: d8db82fe51ef2ba3b2c7deaeb68a42d2daaa44f23cc22b666582e9d8aa082558
           - arch: arm64
             machine: aarch64
             runner: ubuntu-24.04-arm
-            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:0629003d77c744ed08d6e2d11e576e59fcfdc00ac313d19c3c3e8953548452e8
+            image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:6dc0b43ebf6bf84232dde2395ddeec5e5f9decf56020aed088d6d915b88a55e5
             archive_sha: 2f45e43a21320cb4f35093a60a12319ef2004f80c2d7e0c461a77e7525337dee
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
@@ -369,7 +369,7 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     env:
-      TOOLS_SOURCE: AWAITING_IMAGE_PREPARATION
+      TOOLS_SOURCE: 8d15fc000fe2eaf66173f73544922eba338385be
       TOOLS_IMAGE: ${{ matrix.image }}
       NATIVE_ARCH: ${{ matrix.arch }}
       NATIVE_MACHINE: ${{ matrix.machine }}
@@ -460,9 +460,12 @@ jobs:
           assert pathlib.Path(artifact['oci']).is_dir()
           assert (pathlib.Path(happy['directory']) / 'run.json').is_file()
           saved_events = events.read_bytes()
-          rejected = invoke('existing-events', happy_args, 1)
+          event_args = happy_args.copy()
+          event_output = root / 'events-collision-output'
+          event_args[event_args.index('--output') + 1] = str(event_output)
+          rejected = invoke('existing-events', event_args, 1)
           assert not rejected.stdout and 'exist' in rejected.stderr
-          assert events.read_bytes() == saved_events
+          assert events.read_bytes() == saved_events and not event_output.exists()
           output_args = happy_args.copy()
           output_args[output_args.index('--events') + 1] = str(root / 'fresh-retry-events.jsonl')
           rejected = invoke('existing-output', output_args, 1)
