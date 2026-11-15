@@ -100,6 +100,7 @@ func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.
 		active--
 		finished++
 		items[state.offset+done.job] = jobResult(job, done.result, done.err)
+		options.Events.TaskFinished(items[state.offset+done.job], done.err)
 		if done.err != nil {
 			state.failed = true
 			jobErrors[state.offset+done.job] = fmt.Errorf("task %s: %w", job.Name, done.err)
@@ -177,6 +178,7 @@ func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.
 			state.next++
 			state.active++
 			active++
+			options.Events.TaskStarted(job)
 			go func() {
 				result, err := executeJob(runCtx, job, options, dir, output, previous, engine)
 				if err != nil && failFast {

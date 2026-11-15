@@ -24,6 +24,7 @@ nav = [
     { "Package component files" = "guides/packaged-components.md" },
     { "Run in CI" = "guides/ci.md" },
     { "Generate GitHub Actions jobs" = "guides/ci-generation.md" },
+    { "Record CDEvents" = "guides/events.md" },
     { "Runtime and security" = "guides/security.md" },
     { "Select the Coopr engine" = "guides/coopr-api.md" },
   ] },

@@ -59,6 +59,7 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 	var exchange ciExchangeOptions
 	var cleanupReference string
 	var job, expectedPlan, needs string
+	var eventsPath string
 	planPath, output := ".stoke/ci-plan.json", ".github/workflows/stoke.generated.yml"
 	check := false
 	if command == "plan" || command == "generate" {
@@ -132,6 +133,7 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&cleanupReference, "result", "", "immutable scoped metadata reference to delete; never deletes payloads")
 	}
 	if command == "run" {
+		fs.StringVar(&eventsPath, "events", "", "write CDEvents JSONL to a fresh private file outside the input context")
 		hostExecutionFlags(fs, &options)
 		fs.StringVar(&planPath, "plan", planPath, "generated plan path")
 		fs.StringVar(&expectedPlan, "plan-id", "", "expected fingerprint embedded in the generated CI job")
@@ -300,7 +302,18 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 			break
 		}
 		var report *ciRunReport
+		var eventFile *cdeventsFile
+		options.Events, eventFile, err = openCDEvents(eventsPath, options.ContextDir)
+		if err != nil {
+			break
+		}
+		if eventFile != nil {
+			options.EventPath = eventFile.name
+		}
 		report, err = runCIExchange(ctx, loaded.Workflow, plan, selected, options, client, exchange)
+		if eventFile != nil {
+			err = errors.Join(err, eventFile.Close())
+		}
 		executionErr = err
 		err = persistCIRun(report, err)
 		if report != nil && report.Report != nil {

@@ -82,6 +82,7 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&location, "f", location, "workflow YAML path or oci://reference")
 	}
 	var options runner.Options
+	var eventsPath string
 	inputs := map[string]string{}
 	if command == "check" || command == "plan" || command == "run" {
 		fs.Func("input", "workflow input NAME=VALUE (repeat for multiple inputs)", func(argument string) error {
@@ -107,6 +108,7 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&directory, "directory", "", "write YAML and packaged files to a fresh directory")
 	}
 	if command == "run" {
+		fs.StringVar(&eventsPath, "events", "", "write CDEvents JSONL to a fresh private file outside the input context")
 		hostExecutionFlags(fs, &options)
 		for _, cache := range []struct {
 			name         string
@@ -146,6 +148,8 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 	var err error
 	var executionErr error
 	var loaded *source.Result
+	var runReport *runner.Report
+	var eventFile *cdeventsFile
 	switch command {
 	case "pull":
 		if fs.NArg() != 1 {
@@ -284,16 +288,31 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		case "run":
 			options.AuthFile = client.AuthFile
 			options.Stdout, options.Stderr = errOut, errOut
-			var report *runner.Report
-			report, err = runner.Run(ctx, loaded.Workflow, targets, options)
-			executionErr = err
-			if report != nil {
-				err = errors.Join(err, json.NewEncoder(out).Encode(report))
+			options.EventName = location
+			options.Events, eventFile, err = openCDEvents(eventsPath, options.ContextDir)
+			if err != nil {
+				break
 			}
+			if eventFile != nil {
+				options.EventPath = eventFile.name
+			}
+			runReport, err = runner.Run(ctx, loaded.Workflow, targets, options)
+			executionErr = err
 		}
 	}
 	if loaded != nil {
 		err = errors.Join(err, cleanupExecutionInputs(executionErr, loaded.Close))
+	}
+	if command == "run" {
+		if eventFile != nil {
+			if eventFile.file != nil {
+				err = options.Events.Finish(runReport, err)
+			}
+			err = errors.Join(err, eventFile.Close())
+		}
+		if runReport != nil {
+			err = errors.Join(err, json.NewEncoder(out).Encode(runReport))
+		}
 	}
 	if err != nil {
 		_, _ = fmt.Fprintln(errOut, "stoke:", err)

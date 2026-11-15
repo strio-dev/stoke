@@ -30,6 +30,9 @@ type Options struct {
 	NoCache                                           bool
 	TLSVerify                                         *bool
 	Stdout, Stderr                                    io.Writer
+	Events                                            *CDEvents
+	EventName                                         string
+	EventPath                                         string
 	runMounts                                         bool
 	ciImports                                         map[string]CIImport
 	ciRequiredOutputs                                 map[string]bool
@@ -81,7 +84,17 @@ func Run(ctx context.Context, w *workflow.Workflow, targets []string, options Op
 	if err != nil {
 		return nil, err
 	}
-	return runOwned(ctx, w, plan, options)
+	name := options.EventName
+	if name == "" && options.Events != nil {
+		name = options.Events.RunID
+	}
+	options.Events.PipelineStarted(name)
+	if err := options.Events.Err(); err != nil {
+		return nil, err
+	}
+	report, runErr := runOwned(ctx, w, plan, options)
+	// The invocation owner finishes the pipeline after releasing its inputs.
+	return report, cdeventsResult(report, runErr, options.Events)
 }
 
 // The ordinary and CI-projected paths share service ownership, capability
@@ -309,6 +322,36 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 	if err != nil {
 		return nil, options, err
 	}
+	if options.EventPath != "" {
+		roots := []string{options.ContextDir, options.StateDir, options.CacheDir, options.OutputDir}
+		for _, group := range plan.Groups {
+			for _, job := range group.Jobs {
+				roots = append(roots, job.Definition.ComponentDir)
+				if job.Definition.Host != nil {
+					for _, path := range job.Definition.Host.Toolchain {
+						resolved, err := filepath.EvalSymlinks(path)
+						if err != nil {
+							return nil, options, err
+						}
+						roots = append(roots, resolved)
+					}
+				}
+				for _, directory := range job.Definition.Contexts {
+					roots = append(roots, directory)
+				}
+				for _, mount := range job.Definition.AllMounts() {
+					if mount.Type == "host" {
+						roots = append(roots, mount.Source)
+					}
+				}
+			}
+		}
+		for _, root := range roots {
+			if root != "" && overlap(root, options.EventPath) {
+				return nil, options, errors.New("CDEvents file overlaps an execution input or runtime directory")
+			}
+		}
+	}
 	// Native stores and generated exports must never become COPY inputs.
 	for _, p := range []string{options.StateDir, options.CacheDir, options.OutputDir} {
 		if p != "" && overlap(options.ContextDir, p) {
@@ -430,6 +473,8 @@ func synchronize(out io.Writer, mu *sync.Mutex) io.Writer {
 }
 
 func executeJob(ctx context.Context, job workflow.Job, options Options, dir, output string, previous map[string]coopr.Result, engine backend) (result coopr.Result, retErr error) {
+	var observedBuild *CDEvents
+	defer func() { observedBuild.BuildFinished(job, result, retErr) }()
 	defer func() {
 		if len(job.Definition.FileExports()) != 0 && len(result.Exports) == 0 {
 			result.Exports = skippedJobFileExports(job, options.ContextDir, "task did not produce selected files")
@@ -532,6 +577,10 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 		if component {
 			opts.Output.OCI = filepath.Join(taskDir, "component.oci.tar")
 		}
+		if opts.Output.OCI != "" {
+			observedBuild = options.Events
+			observedBuild.BuildStarted(job)
+		}
 		result, err = engine.Build(ctx, cooprwire.Build{Files: build.Files, Platform: platform, Target: build.Target, Args: args, ComponentStoreDir: filepath.Join(dir, "components")}, component, opts)
 	case job.Definition.Publish != nil:
 		publication := job.Definition.Publish
@@ -558,6 +607,10 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 		program, compileErr := compile(job.Name, job.Definition, previous)
 		if compileErr != nil {
 			return coopr.Result{}, compileErr
+		}
+		if opts.Output.OCI != "" {
+			observedBuild = options.Events
+			observedBuild.BuildStarted(job)
 		}
 		result, err = engine.Execute(ctx, program, opts)
 		if err == nil && program.Platform != "" {
@@ -709,7 +762,7 @@ func defaults(options Options) (Options, error) {
 		}
 		options.CacheDir = filepath.Join(root, "stoke")
 	}
-	for _, p := range []*string{&options.StateDir, &options.CacheDir, &options.OutputDir} {
+	for _, p := range []*string{&options.StateDir, &options.CacheDir, &options.OutputDir, &options.EventPath} {
 		if *p == "" {
 			continue
 		}

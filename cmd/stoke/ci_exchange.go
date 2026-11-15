@@ -457,6 +457,9 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 		}
 	}
 	metadata := &ciNativeMetadata{Version: 1, Scope: scopeHash, Unit: selected.ID, Attempt: exchange.Attempt, Inputs: inputRef}
+	if err := options.Events.ConfigureCI(scopeHash, selected.ID, exchange.Attempt); err != nil {
+		return nil, err
+	}
 	emit := func() error {
 		data, err := json.Marshal(metadata)
 		if err != nil {

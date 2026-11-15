@@ -96,7 +96,7 @@ func validateHostExecution(task workflow.Task, options Options) error {
 			return err
 		}
 		base := filepath.Join(parent, fmt.Sprintf("stoke-host-%d", os.Getuid()))
-		for _, path := range []string{options.ContextDir, options.StateDir, options.CacheDir, options.OutputDir} {
+		for _, path := range []string{options.ContextDir, options.StateDir, options.CacheDir, options.OutputDir, options.EventPath} {
 			if path != "" && overlap(base, path) {
 				return errors.New("reusable host workspace namespace overlaps context or runtime storage; choose a caller TMPDIR outside them")
 			}

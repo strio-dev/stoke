@@ -37,11 +37,15 @@ type CIImport struct {
 // RunCI executes selected jobs using exact imported data. Missing or invalid
 // inputs fail; cache misses never authorize replay of an external producer.
 func RunCI(ctx context.Context, w *workflow.Workflow, request CIRequest, options Options) (*Report, error) {
+	if options.Events != nil && options.Events.ci == nil {
+		return nil, errors.New("CDEvents CI observation requires its actual scope, unit and attempt")
+	}
 	plan, options, err := prepareCI(ctx, w, request, options)
 	if err != nil {
 		return nil, err
 	}
-	return runOwned(ctx, w, plan, options)
+	report, runErr := runOwned(ctx, w, plan, options)
+	return report, cdeventsResult(report, runErr, options.Events)
 }
 
 func runCI(ctx context.Context, w *workflow.Workflow, request CIRequest, options Options, engine backend) (*Report, error) {

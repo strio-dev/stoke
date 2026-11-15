@@ -36,6 +36,7 @@ stoke run [-f FILE] [OPTIONS] [TASK ...]
 | `--cache-to REGISTRY/REPOSITORY` | Write Coopr execution results to an OCI registry repository; repeatable and an explicit registry write. |
 | `--no-cache` | Bypass execution-result reads for all selected tasks; newly executed results can still be stored locally or in selected cache destinations. |
 | `--coopr-binary PATH` | Compatible Coopr executable; defaults to `STOKE_COOPR_BINARY`, then `coopr` on PATH. Requires local API v1 and the [capabilities needed by selected tasks](../guides/coopr-api.md#select-a-compatible-executable). |
+| `--events FILE` | Optional validated [CDEvents JSONL](../guides/events.md) in a fresh private file outside execution inputs and runtime storage. Also supported by direct `ci run`. |
 | `--runtime PATH` | OCI runtime; defaults to `crun`. |
 | `--network MODE` | Explicit container RUN network default, requiring `run-network`; native RUN choices still apply. Does not change host-step networking or registry access. |
 | `--storage-driver NAME` | Native storage driver; defaults to `vfs`. |

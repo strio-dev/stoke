@@ -33,6 +33,29 @@ Caller-owned store roots, cache, inputs and successful outputs remain caller-own
 
 The socket provides same-account access to the service's authority. It is not an authorization broker, sandbox against the account itself or proof that all rootless workloads are safe. Do not expose the service through setuid, file capabilities, a restricted privileged launcher or a network proxy relying on application checks to constrain native helper authority.
 
+## Event and log correlation
+
+The Coopr SDK owns stream framing, operation progress and raw stdout/stderr.
+Stoke observes lifecycle facts at scheduler admission/completion and final report
+ownership, writing optional [CDEvents](../guides/events.md) without another
+scheduler or report model. The SDK progress callback supplies operation timing,
+but is not a task lifecycle or a correlated log record. Raw concurrent logs
+remain raw; no existing OTel logging backend is being replaced.
+
+A future opt-in log observer can reuse those execution boundaries and the
+[published CI/CD attributes](https://opentelemetry.io/docs/specs/semconv/registry/attributes/cicd/)
+(currently release candidate):
+`cicd.pipeline.run.id`, `cicd.pipeline.name`, `cicd.pipeline.task.run.id` and
+`cicd.pipeline.task.name`. Use the actual pipeline identity when observed and
+the concrete task subject for task-run identity; an isolated CI unit's chain ID
+does not identify the full host pipeline. The CI attempt remains a project
+attribute until the standard defines one. TraceId/SpanId belong only to genuine
+enabled tracing context, as described by the
+[OTel log model](https://opentelemetry.io/docs/specs/otel/logs/data-model/#trace-context-fields).
+CDEvents occurrence IDs are not trace IDs. This is a correlation proposal, with
+no OTel runtime dependency or exporter. Per-task writers would attach identity
+before concurrent streams meet the shared writer, without parsing log text.
+
 ## Product surface and release gate
 
 Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks retain OCI/native images. Full filesystem output is opt-in with `outputs.filesystem: true`; explicit export steps independently use negotiated `selected-file-exports`. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
