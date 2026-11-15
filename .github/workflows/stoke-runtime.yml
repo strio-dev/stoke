@@ -512,8 +512,12 @@ jobs:
           assert variants['status'] == 'passed' and len(variants['tasks']) == 2
           for task in variants['tasks']:
               assert task['status'] == 'passed'
-              for line in ['fragmented', 'multi', 'last', 'errtail']:
+              for line in ['fragmented', 'multi', 'last']:
                   assert result.stderr.splitlines().count('[' + task['name'] + '] ' + line) == 1, (task['name'], line, result.stderr[-8000:])
+              # Unterminated stderr can be followed by upstream progress on the same stream.
+              tails = [line for line in result.stderr.splitlines() if line.startswith('[' + task['name'] + '] errtail')]
+              assert len(tails) == 1, (task['name'], 'errtail', result.stderr[-8000:])
+              assert all('[' + other['name'] + '] ' not in tails[0] for other in variants['tasks'] if other['name'] != task['name'])
           starts, finishes = {}, {}
           for line in parallel_events.read_text().splitlines():
               event = json.loads(line)
