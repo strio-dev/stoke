@@ -19,6 +19,7 @@ tasks:
   artifact:
     image: scratch
     needs: [test]
+    outputs: {filesystem: true}
     steps:
       - copy:
           from: build

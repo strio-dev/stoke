@@ -2,8 +2,8 @@
 
 Use a `coopr` task when a build already lives in Coopr definition files or produces a reusable Coopr component. Stoke orders the workflow, supplies explicit arguments and retains results; Coopr parses its native definitions and owns their component/build graph, execution and cache behavior. This does not make Coopr's native grammar a second Stoke workflow language.
 
-Examples with export steps require the [pinned Coopr candidate](coopr-api.md#select-a-compatible-executable).
-Coopr `0.6.0` remains usable for existing native tasks without export steps.
+Select a [compatible Coopr executable](coopr-api.md#select-a-compatible-executable)
+with the capabilities required by your tasks.
 If the executable is outside PATH, select it through `STOKE_COOPR_BINARY`.
 
 ```sh
@@ -89,8 +89,8 @@ Native `coopr` tasks cannot set `env`, `workdir` or `steps`. Use native argument
 
 ## Choose exported outputs
 
-Every successful image build exports an OCI image layout. Export steps require
-the candidate's `selected-file-exports` capability and ordered state capture.
+Ordinary image builds retain an OCI image layout. Export steps require
+the `selected-file-exports` capability and ordered state capture.
 To export a file from a native build, use an ordinary consuming task and place
 `export` in its ordered steps:
 
@@ -107,13 +107,13 @@ The source is inside that task's filesystem at the export operation; the destina
 
 On a cache hit, Coopr restores the selected native image before copying those paths; its image layers may still need to be downloaded.
 
-A task with export steps omits the full flattened filesystem by default. Other image tasks retain their default rootfs export. `outputs: {filesystem: true}` explicitly includes the full filesystem; `filesystem: false` omits it in either case. Native `coopr` tasks still cannot mix `steps` into their definitions: use `from` or an inline native environment for ordinary export steps. A component exports an OCI archive file and cannot export a flattened filesystem.
+Image tasks omit the full flattened filesystem by default. `outputs: {filesystem: true}` includes it alongside any selected exports; `filesystem: false` keeps it disabled. Native `coopr` tasks still cannot mix `steps` into their definitions: use `from` or an inline native environment for ordinary export steps. A component exports an OCI archive file and cannot export a flattened filesystem.
 
 | Task output | Recorded path/identity |
 | --- | --- |
 | Image OCI layout | `outputs/JOB/image`, plus `imageID` and exported `digest`. |
 | Exported files/directories | Each export step's `destination` in the caller workspace. |
-| Flattened image filesystem | `outputs/JOB/rootfs`, enabled by default without export steps or explicitly with `filesystem: true`. |
+| Flattened image filesystem | `outputs/JOB/rootfs`, requested with `outputs: {filesystem: true}`. |
 | Component OCI archive | `outputs/JOB/component.oci.tar`, plus native `reference` and exported `digest`. |
 
 With `--output`, its fresh directory replaces the `outputs` prefix. Use the paths in the JSON run report rather than inferring matrix job names. OCI and filesystem exports are separate promotions, so a failure can leave partial evidence. A component archive is a file, not an image-layout directory.

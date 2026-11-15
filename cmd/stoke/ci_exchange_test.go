@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/strio-dev/stoke/internal/artifact"
 	"github.com/strio-dev/stoke/internal/ci"
 	"github.com/strio-dev/stoke/internal/runner"
@@ -178,5 +181,78 @@ func TestCIInputStagingRejectsPhysicalContextOverlap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(contextDir, "not-created")); !os.IsNotExist(err) {
 		t.Fatal("rejected cache alias created workflow inputs")
+	}
+}
+
+func TestCIUnitOutputsRetainExactIncomingLineage(t *testing.T) {
+	server := executionCleanupRegistry(t)
+	repository := strings.TrimPrefix(server.URL, "http://") + "/results"
+	client := artifact.Client{PlainHTTP: true}
+	scope := testCIScope(strings.Repeat("b", 64))
+	layout, identity := executionCleanupImage(t)
+	execution, err := artifact.NewCIExecutionID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	producer := artifact.CIResult{Version: artifact.CIVersion, Scope: scope, Producer: "build", Attempt: 1, Execution: execution, Kind: "image", Platform: "linux/amd64"}
+	build, err := client.PublishCIResult(t.Context(), repository, producer, layout, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs := artifact.CIInputSet{Version: artifact.CIVersion, Scope: scope, Bindings: map[string]string{"build": build}}
+	incoming, err := client.PublishCIInputSet(t.Context(), repository, inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err = client.WithCIReadSession(repository, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := &ciNativeMetadata{Inputs: incoming}
+	tasks := []runner.TaskResult{
+		{Name: "left", Status: "passed", Kind: "image", Platform: "linux/amd64", OCI: layout, Digest: identity},
+		{Name: "right", Status: "passed", Kind: "image", Platform: "linux/amd64", OCI: layout, Digest: identity},
+	}
+	if err := publishCIOutputs(t.Context(), client, ciExchangeOptions{Repository: repository, Attempt: 1}, scope, metadata, []string{"left", "right"}, tasks); err != nil {
+		t.Fatal(err)
+	}
+	closed, err := client.ReadCIInputSet(t.Context(), repository, metadata.Inputs, scope)
+	if err != nil || len(closed.Bindings) != 3 || closed.Bindings["build"] != build {
+		t.Fatalf("unit outputs lost incoming lineage: %+v %v", closed, err)
+	}
+	var unitExecution string
+	for _, name := range []string{"left", "right"} {
+		result, err := client.ReadCIResult(t.Context(), repository, closed.Bindings[name], artifact.CIResultExpectation{Scope: scope, Producer: name, MaxAttempt: 1, Kind: "image", Platform: "linux/amd64"})
+		if err != nil || result.Inputs != incoming || unitExecution != "" && result.Execution != unitExecution {
+			t.Fatalf("unit result formed an output-order lineage ladder: %+v %v", result, err)
+		}
+		unitExecution = result.Execution
+	}
+	_, selected, _ := strings.Cut(metadata.Inputs, "@")
+	response, err := http.Get(server.URL + "/v2/results/manifests/" + selected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	var index v1.Index
+	if err := json.NewDecoder(io.LimitReader(response.Body, ci.MaxPlanBytes)).Decode(&index); err != nil || len(index.Manifests) != 3 {
+		t.Fatalf("unit output set redundantly published ancestor bindings: %+v %v", index, err)
+	}
+	specs := map[string]ciProducerSpec{
+		"build": {Kind: "image", Platform: "linux/amd64", Unit: "build"},
+		"left":  {Kind: "image", Platform: "linux/amd64", Unit: "unit"},
+		"right": {Kind: "image", Platform: "linux/amd64", Unit: "unit"},
+	}
+	if results, err := validateCIBindings(t.Context(), client, repository, scope, 2, closed, specs); err != nil || len(results) != 3 {
+		t.Fatalf("consumer-only retry rejected exact prior unit outputs: %+v %v", results, err)
+	}
+	producer.Producer, producer.Attempt, producer.Inputs = "right", 2, incoming
+	replacement, err := client.PublishCIResult(t.Context(), repository, producer, layout, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Bindings["right"] = replacement
+	if _, err := validateCIBindings(t.Context(), client, repository, scope, 2, closed, specs); err == nil || !strings.Contains(err.Error(), "inconsistent executions") {
+		t.Fatalf("consumer-only retry mixed producer unit executions: %v", err)
 	}
 }

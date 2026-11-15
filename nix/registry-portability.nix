@@ -36,13 +36,16 @@ let
       build:
         cache: false
         coopr: {files: [build.coopr]}
+        outputs: {filesystem: true}
       derive:
         from: build
+        outputs: {filesystem: true}
         steps:
           - run: [/bin/bash, -euc, '/bin/cp /value /derived; echo DERIVE_RAN']
       tests:
         from: derive
         cache: false
+        outputs: {filesystem: true}
         strategy:
           max-parallel: 2
           fail-fast: false

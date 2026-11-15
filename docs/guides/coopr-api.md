@@ -4,9 +4,25 @@ Stoke delegates container execution to a Coopr executable through HTTP over a pr
 
 ## Select a compatible executable
 
-Export steps require ordered-state capture and the `selected-file-exports`
-capability. Fresh CI gates that omit unused image output also require
-`optional-oci-output`. Stoke selects the public SDK from immutable source
+Stoke requires Coopr API version `1`. Generation and runtime use the same
+capability calculation for selected tasks, imported values and execution options;
+an unsupported capability fails before execution.
+
+| Selected behavior | Required capability |
+| --- | --- |
+| Literal image tasks | `execute` |
+| Native image definitions / component definitions | `build` / `component`, respectively |
+| Publication | `publish`, plus `publish-oci-layout` for exact imported images |
+| Named contexts or captured host inputs | `named-contexts` |
+| Task or step mounts | `run-mounts` |
+| Explicit native build platform | `build-platform` |
+| Selected-file exports | `selected-file-exports` with ordered-state capture |
+| Fresh CI gates without unused image output | `optional-oci-output` |
+| Registry cache reads or writes | `registry-cache` |
+
+Component imports also require `component-load` and `component-load-name`.
+Requested network modes require the corresponding Coopr networking capabilities.
+Stoke selects the public SDK from immutable source
 `7daf44e90a64a7297f896c10e8342266ca5300bf` as
 `v0.0.0-20261113160645-7daf44e90a64`. Build the matching executable with Nix:
 
@@ -20,11 +36,9 @@ stoke run --coopr-binary "$PWD/result-coopr-source/bin/coopr" test
 The source build uses the flake's development version label. Stoke checks API
 version and required capabilities at startup.
 
-Workflows using the previously available features can still use Coopr `0.6.0`
-from the published Linux archives for AMD64 or ARM64.
-Check the archive against `SHA256SUMS` and keep `coopr` with its packaged
-`libexec` directory. Put `coopr` on PATH or select it explicitly as shown below.
-See the [Coopr release](https://github.com/strio-dev/coopr/releases/tag/0.6.0).
+For packaged installations, keep `coopr` with its `libexec` directory and verify
+the archive against its published `SHA256SUMS`. Select an executable that
+provides the capabilities above; a version label alone does not establish them.
 
 Select an executable for local workflows.
 
@@ -39,7 +53,7 @@ Or override the selection for one run:
 stoke run --coopr-binary /absolute/path/to/compatible/coopr test
 ```
 
-The flag takes precedence over `STOKE_COOPR_BINARY`; otherwise Stoke looks for `coopr` on PATH. It checks API version `1`, literal execution support and the `build`, `component` or `publish` capabilities required by selected native tasks. A missing binary, unsupported service command or incompatible API fails the run. Stoke does not fall back to an embedded backend or reinterpret normal Coopr CLI output.
+The flag takes precedence over `STOKE_COOPR_BINARY`; otherwise Stoke looks for `coopr` on PATH. It checks API version `1` and the capabilities required by the selected execution path. Literal tasks and image imports require `execute`; native builds, components and publication require their respective capabilities above. A missing binary, unsupported service command or incompatible API fails the run. Stoke does not fall back to an embedded backend or reinterpret normal Coopr CLI output.
 
 Selected `steps[].export` operations additionally require
 `selected-file-exports`. Stoke checks this before executing tasks. It sends the

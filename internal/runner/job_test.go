@@ -202,7 +202,7 @@ func TestCIProjectionRejectsExternalDataAndInvalidSelectionsBeforeExecution(t *t
 func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 	for _, mode := range []string{"gate", "required-value", "colocated-value", "terminal", "all-targets", "global-no-cache", "filesystem"} {
 		t.Run(mode, func(t *testing.T) {
-			w := fixture(t, "version: 1\ntasks:\n  check: {image: scratch, cache: false, outputs: {filesystem: false}, mounts: [{type: cache, id: checks, target: /cache}], steps: [{run: [check]}]}\n  finish: {image: scratch, needs: [check], outputs: {filesystem: false}}\n")
+			w := fixture(t, "version: 1\ntasks:\n  check: {image: scratch, cache: false, mounts: [{type: cache, id: checks, target: /cache}], steps: [{run: [check]}]}\n  finish: {image: scratch, needs: [check]}\n")
 			options := testOptions(t)
 			options.CacheFrom = []string{"registry.example.test/cache"}
 			options.CacheTo = []string{"registry.example.test/cache"}
@@ -224,7 +224,8 @@ func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 			case "global-no-cache":
 				check.Cache, options.NoCache = nil, true
 			case "filesystem":
-				check.Outputs = nil
+				enabled := true
+				check.Outputs = &workflow.Outputs{Filesystem: &enabled}
 			}
 			w.Tasks["check"] = check
 			if mode == "gate" {
@@ -479,5 +480,22 @@ tasks:
 				t.Fatalf("external gates: calls=%v", calls)
 			}
 		})
+	}
+}
+
+func TestCIProjectionDoesNotPrepareRetainedSourceInputs(t *testing.T) {
+	w := fixture(t, "version: 1\ntasks:\n  build: {coopr: {files: [unavailable.coopr]}}\n  gate: {from: build, cache: false, steps: [{run: [check]}]}\n")
+	input := ciImageFixture(t, false, "EXACT=retained")
+	input.OCI = "" // The verified immutable registry identity remains lazy.
+	calls := 0
+	report, err := runCI(t.Context(), w, CIRequest{Targets: []string{"gate"}, Execute: []string{"gate"}, Imports: map[string]CIImport{"build": input}}, testOptions(t), fakeEngine{execute: func(_ context.Context, p coopr.Program, _ coopr.Options) (coopr.Result, error) {
+		calls++
+		if p.States[0].From.Image != input.CanonicalReference {
+			t.Fatal("selected execution lost its exact producer")
+		}
+		return coopr.Result{ImageID: "gate", Platform: input.Platform}, nil
+	}})
+	if err != nil || calls != 1 || report.Status != "passed" {
+		t.Fatalf("retained producer still requires checkout inputs: calls=%d report=%v error=%v", calls, report, err)
 	}
 }

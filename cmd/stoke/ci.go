@@ -257,26 +257,33 @@ func runCI(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		var loaded *source.Result
 		var executionErr error
-		if err = validateCICheckout(plan.Config, nil); err != nil {
-			break
-		}
-		loaded, err = (source.Loader{Client: client, Inputs: plan.Config.Inputs}).Load(ctx, plan.Config.Workflow)
+		var artifactOnly bool
+		loaded, artifactOnly, err = loadCIExecution(ctx, plan, selected, client)
 		if err != nil {
 			break
 		}
 		defer func() { _ = cleanupExecutionInputs(executionErr, loaded.Close) }()
-		if err = validateCICheckout(plan.Config, loaded); err != nil {
-			break
-		}
-		var current *ci.Plan
-		current, err = ci.Build(loaded.Workflow, plan.Config)
-		if err == nil && current.ID != plan.ID {
-			err = errors.New("workflow differs from the generated CI plan; regenerate and review it")
-		}
-		if err != nil {
-			break
+		if !artifactOnly {
+			if err = validateCICheckout(plan.Config, loaded); err != nil {
+				break
+			}
+			var current *ci.Plan
+			if plan.Execution == nil {
+				current, err = ci.Build(loaded.Workflow, plan.Config)
+			} else {
+				current, err = buildCIPlan(loaded, plan.Config)
+			}
+			if err == nil && current.ID != plan.ID {
+				err = errors.New("workflow differs from the generated CI plan; regenerate and review it")
+			}
+			if err != nil {
+				break
+			}
 		}
 		options.ContextDir, options.AuthFile = plan.Config.Context, client.AuthFile
+		if artifactOnly {
+			options.ContextDir = loaded.ContextDir
+		}
 		if options.Network != "" && options.Network != plan.Config.Network {
 			err = errors.New("network setting differs from the generated plan; regenerate and review it")
 			break
@@ -322,7 +329,7 @@ func loadCIPlan(ctx context.Context, config ci.Config, client artifact.Client) (
 	if err := validateCICheckout(config, loaded); err != nil {
 		return nil, err
 	}
-	return ci.Build(loaded.Workflow, config)
+	return buildCIPlan(loaded, config)
 }
 
 // Check the physical locations as well as the portable selectors. Symlinked

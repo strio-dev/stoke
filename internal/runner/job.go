@@ -89,7 +89,7 @@ func prepareCI(ctx context.Context, w *workflow.Workflow, request CIRequest, opt
 	for _, name := range request.Execute {
 		options.hostSelections[name] = true
 	}
-	prepared, options, err := preparePlan(ctx, expanded, options)
+	prepared, options, err := prepareCIExecution(ctx, expanded, request.Execute, options)
 	if err != nil {
 		return nil, options, err
 	}
@@ -311,4 +311,44 @@ func portableJobPaths(task workflow.Task) error {
 		}
 	}
 	return nil
+}
+
+// Retained producer definitions supply type/provenance metadata, not local file
+// inputs. Inline environments keep their canonical path resolution and lowering.
+func prepareCIExecution(ctx context.Context, plan *workflow.ExecutionPlan, execute []string, options Options) (*workflow.ExecutionPlan, Options, error) {
+	for _, group := range plan.Groups {
+		for _, job := range group.Jobs {
+			if job.Definition.Environment != nil {
+				return preparePlan(ctx, plan, options)
+			}
+		}
+	}
+	selected := &workflow.ExecutionPlan{}
+	for _, group := range plan.Groups {
+		copy := group
+		copy.Jobs = nil
+		for _, job := range group.Jobs {
+			if slices.Contains(execute, job.Name) {
+				copy.Jobs = append(copy.Jobs, job)
+			}
+		}
+		if len(copy.Jobs) != 0 {
+			selected.Groups = append(selected.Groups, copy)
+		}
+	}
+	prepared, options, err := preparePlan(ctx, selected, options)
+	if err != nil {
+		return nil, options, err
+	}
+	resolved, _ := indexCIJobs(prepared)
+	result := &workflow.ExecutionPlan{Groups: slices.Clone(plan.Groups)}
+	for gi := range result.Groups {
+		result.Groups[gi].Jobs = slices.Clone(plan.Groups[gi].Jobs)
+		for ji, job := range result.Groups[gi].Jobs {
+			if replacement, exists := resolved[job.Name]; exists {
+				result.Groups[gi].Jobs[ji] = replacement
+			}
+		}
+	}
+	return result, options, nil
 }

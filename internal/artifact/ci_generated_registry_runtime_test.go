@@ -70,13 +70,13 @@ func TestCIGeneratedRegistryExecutionWithCoopr(t *testing.T) {
 	workflow := filepath.Join(caller, "stoke.json")
 	destination := f.registry + "/published/exact:tested"
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-		"build":   map[string]any{"image": "scratch", "cache": false, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryRun("/bin/busybox od -An -N16 -tx1 /dev/urandom >/value; echo EXACT_BUILD_RAN")}},
+		"build":   map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "cache": false, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryRun("/bin/busybox od -An -N16 -tx1 /dev/urandom >/value; echo EXACT_BUILD_RAN")}},
 		"gate":    map[string]any{"image": "scratch", "needs": []string{"build"}, "cache": false, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryRun("echo EXACT_GATE_RAN")}},
-		"tests":   map[string]any{"from": "build", "needs": []string{"gate"}, "cache": false, "strategy": map[string]any{"matrix": map[string]any{"mode": []string{"a", "b"}}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_TEST_RAN")}},
+		"tests":   map[string]any{"outputs": map[string]bool{"filesystem": true}, "from": "build", "needs": []string{"gate"}, "cache": false, "strategy": map[string]any{"matrix": map[string]any{"mode": []string{"a", "b"}}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_TEST_RAN")}},
 		"publish": map[string]any{"needs": []string{"tests", "gate"}, "publish": map[string]any{"from": "build", "destinations": []string{destination}}},
 	}}), 0600)
 	plan := f.generateRegistryPlan("visible", caller, f.registry+"/cache/visible")
-	if plan.Version != 2 || !plan.RequiresResults || len(plan.Groups) != 4 {
+	if plan.Version != 3 || !plan.RequiresResults || len(plan.Groups) != 4 {
 		t.Fatalf("authored jobs were not visible: %+v", plan)
 	}
 	build, gate, publish := plan.job(t, "build"), plan.job(t, "gate"), plan.job(t, "publish")
@@ -199,6 +199,84 @@ func TestCIGeneratedRegistryExecutionWithCoopr(t *testing.T) {
 	}
 	f.requireMarkerCount(rejectLog, "EXACT_TEST_RAN", 0)
 	f.checks = append(f.checks, "binding-only-metadata-can-exist-before-failed-gate-native-status-still-blocks-consumers")
+}
+
+// Artifact consumers use only reviewed plan bytes and exact OCI bindings. This
+// synthetic fixture needs no external network or source checkout in consumers.
+func TestCIArtifactOnlyWithCoopr(t *testing.T) {
+	f := newCIRegistryFixture(t)
+	caller := filepath.Join(f.work, "source")
+	f.write(filepath.Join(caller, "value"), []byte("exact-input\n"), 0600)
+	f.write(filepath.Join(caller, "build.coopr"), []byte("from \"scratch\" { copy \"value\" \"/value\" }\n"), 0600)
+	base := f.pushBaseImage("artifact-base", map[string][]byte{"bin/busybox": f.read(os.Getenv("STOKE_SMOKE_BUSYBOX"))}, true)
+	f.write(filepath.Join(caller, "stoke.json"), f.encode(map[string]any{"version": 1, "tasks": map[string]any{
+		"build": map[string]any{"coopr": map[string]any{"files": []string{"build.coopr"}}},
+		"checks": map[string]any{"image": base, "cache": false, "steps": []any{
+			ciRegistryCopy("build", "/value", "/value"),
+			ciRegistryRun("test \"$(/bin/busybox cat /value)\" = exact-input; echo SOURCE_FREE_GATE"),
+		}},
+		"package": map[string]any{"image": base, "needs": []string{"checks"}, "outputs": map[string]bool{"filesystem": true}, "steps": []any{
+			ciRegistryCopy("build", "/value", "/result"),
+			map[string]any{"export": map[string]string{"source": "/result", "destination": "artifacts/value"}},
+		}},
+	}}), 0600)
+	plan := f.generateExactPlan("artifact-only", caller, "stoke.json", f.registry+"/cache/artifact-only", f.registry+"/results/artifact-only", []string{"--network", "none"}, []string{"package"})
+	generated := string(f.read(filepath.Join(caller, "artifact-only.generated.yml")))
+	if strings.Count(generated, "Check out source") != 1 {
+		t.Fatal("artifact consumers still require checkout")
+	}
+	scope := f.exactScope("artifact-only", caller, plan)
+	records := map[string]*exactNativeMetadata{}
+	for _, task := range []string{"build", "checks", "package"} {
+		job := plan.job(t, task)
+		workspace := caller
+		if task != "build" {
+			workspace = filepath.Join(f.work, "empty-"+task)
+			f.write(filepath.Join(workspace, "artifact-only.plan.json"), f.read(filepath.Join(caller, "artifact-only.plan.json")), 0600)
+		}
+		report, log := f.runExactJob("artifact-only-"+task, workspace, "artifact-only.plan.json", plan, job, scope, 1, plan.needs(t, job, records), nil, true)
+		records[job.ID] = report.CI
+		if task == "checks" {
+			f.requireMarkerCount(log, "SOURCE_FREE_GATE", 1)
+			if output := f.task(report.ciRegistryReport, task); output.OCI != "" || output.Digest != "" || output.Filesystem != "" {
+				t.Fatal("fresh pure gate exported an unused image", output)
+			}
+		}
+		if task == "package" {
+			f.requireFile(report.ciRegistryReport, task, "result", "exact-input\n")
+			if string(f.read(filepath.Join(workspace, "artifacts", "value"))) != "exact-input\n" {
+				t.Fatal("selected export is unavailable in the native workspace")
+			}
+		}
+	}
+	consumer := plan.job(t, "package")
+	needs := plan.needs(t, consumer, records)
+	retryWorkspace := filepath.Join(f.work, "empty-retry")
+	f.write(filepath.Join(retryWorkspace, "artifact-only.plan.json"), f.read(filepath.Join(caller, "artifact-only.plan.json")), 0600)
+	retry, _ := f.runExactJob("artifact-only-retry", retryWorkspace, "artifact-only.plan.json", plan, consumer, scope, 2, needs, nil, true)
+	f.requireFile(retry.ciRegistryReport, "package", "result", "exact-input\n")
+	if string(f.read(filepath.Join(retryWorkspace, "artifacts", "value"))) != "exact-input\n" {
+		t.Fatal("retry did not restore its selected workspace export")
+	}
+	client := Client{PlainHTTP: true}
+	original, err := client.ReadCIInputSet(f.ctx, plan.Config.ResultsRepository, records[plan.job(t, "build").ID].Inputs, scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := client.ReadCIInputSet(f.ctx, plan.Config.ResultsRepository, retry.CI.Inputs, scope)
+	if err != nil || retried.Bindings["build"] != original.Bindings["build"] {
+		t.Fatal("consumer retry lost the exact prior producer binding", err)
+	}
+	for id, entry := range needs {
+		entry.Result = "failure"
+		needs[id] = entry
+	}
+	failedWorkspace := filepath.Join(f.work, "empty-failed-gate")
+	f.write(filepath.Join(failedWorkspace, "artifact-only.plan.json"), f.read(filepath.Join(caller, "artifact-only.plan.json")), 0600)
+	failed, failedLog := f.runExactJob("artifact-only-failed-gate", failedWorkspace, "artifact-only.plan.json", plan, consumer, scope, 2, needs, nil, false)
+	if failed.Directory != "" || !strings.Contains(string(failedLog), "native prerequisite is not successful") {
+		t.Fatal("failed gate was not rejected before execution", failed, string(failedLog))
+	}
 }
 
 type exactNeedsEntry struct {

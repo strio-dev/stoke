@@ -142,6 +142,9 @@ func TestPackagedWorkflowWithCooprBale(t *testing.T) {
 		}
 		options.Output = engine.Output{}
 		repository := sourceHost + "/" + name
+		if built.Filesystem != "" {
+			t.Fatalf("component %s returned an image filesystem: %s", name, built.Filesystem)
+		}
 		published, err := service.Client.Publish(ctx, cooprwire.Publish{Artifact: "component", Source: built.Reference, Destinations: []string{repository + ":stable"}, ComponentStoreDir: components}, options)
 		if err != nil {
 			t.Fatalf("publish %s component: %v (%+v)", name, err, published.Destinations)
@@ -186,14 +189,14 @@ from "scratch" {
 	}
 	libraryDocument := func(reference string) []byte {
 		return encode(map[string]any{"version": 1, "assets": []string{"native.coopr", "scripts/check.sh"}, "tasks": map[string]any{
-			"native": map[string]any{"coopr": map[string]any{"files": []string{"native.coopr"}, "files-from": "component", "args": map[string]any{"PARENT": map[string]string{"ref": reference}}}},
-			"cached": map[string]any{"image": "scratch", "env": map[string]string{"RUN_KIND": "CACHED"}, "steps": []any{
+			"native": map[string]any{"coopr": map[string]any{"files": []string{"native.coopr"}, "files-from": "component", "args": map[string]any{"PARENT": map[string]string{"ref": reference}}}, "outputs": map[string]any{"filesystem": true}},
+			"cached": map[string]any{"image": "scratch", "outputs": map[string]any{"filesystem": true}, "env": map[string]string{"RUN_KIND": "CACHED"}, "steps": []any{
 				map[string]any{"copy": map[string]any{"sources": []string{"busybox"}, "destination": "/bin/busybox"}},
 				map[string]any{"copy": map[string]any{"sources": []string{"project.txt"}, "destination": "/project.txt"}},
 				map[string]any{"copy": map[string]any{"scope": "component", "sources": []string{"scripts/check.sh"}, "destination": "/module-check.sh"}},
 				map[string]any{"run": []string{"/bin/busybox", "sh", "-eu", "/module-check.sh"}},
 			}},
-			"check": map[string]any{"from": "native", "needs": []string{"cached"}, "cache": false, "env": map[string]string{"RUN_KIND": "CHECK"}, "steps": []any{
+			"check": map[string]any{"from": "native", "outputs": map[string]any{"filesystem": true}, "needs": []string{"cached"}, "cache": false, "env": map[string]string{"RUN_KIND": "CHECK"}, "steps": []any{
 				map[string]any{"copy": map[string]any{"scope": "component", "sources": []string{"scripts/check.sh"}, "destination": "/module-check.sh"}},
 				map[string]any{"run": []string{"/bin/busybox", "sh", "-eu", "/module-check.sh"}},
 				map[string]any{"run": []string{"/bin/busybox", "sh", "-eu", "-c", "test \"$(/bin/busybox cat /from-child)\" = 'nested OCI component'; test \"$PARENT\" = delivered"}},
@@ -316,13 +319,14 @@ from "scratch" {
 			if task.Status != "passed" {
 				t.Fatalf("%s task %+v", label, task)
 			}
-			if task.Filesystem != "" {
-				if got := string(read(filepath.Join(task.Filesystem, "asset.txt"))); got != expected+"\n" {
-					t.Fatalf("%s/%s component asset=%q", label, task.Name, got)
-				}
-				if got := string(read(filepath.Join(task.Filesystem, "project.txt"))); got != "caller-project\n" {
-					t.Fatalf("caller context changed: %q", got)
-				}
+			if task.Filesystem == "" {
+				t.Fatalf("%s/%s omitted its requested image filesystem", label, task.Name)
+			}
+			if got := string(read(filepath.Join(task.Filesystem, "asset.txt"))); got != expected+"\n" {
+				t.Fatalf("%s/%s component asset=%q", label, task.Name, got)
+			}
+			if got := string(read(filepath.Join(task.Filesystem, "project.txt"))); got != "caller-project\n" {
+				t.Fatalf("caller context changed: %q", got)
 			}
 		}
 		return report, stderr

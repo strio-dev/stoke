@@ -220,7 +220,7 @@ from "network-input" as="network-result" {
 	if err := os.WriteFile(filepath.Join(caller, "network.coopr"), []byte(definition), 0600); err != nil {
 		t.Fatal(err)
 	}
-	workflowSource := fmt.Sprintf("version: 1\ntasks:\n  network:\n    cache: false\n    coopr: {files: [network.coopr]%s}\n", target)
+	workflowSource := fmt.Sprintf("version: 1\ntasks:\n  network:\n    outputs: {filesystem: true}\n    cache: false\n    coopr: {files: [network.coopr]%s}\n", target)
 	if err := os.WriteFile(filepath.Join(root, "workflow.yaml"), []byte(workflowSource), 0600); err != nil {
 		t.Fatal(err)
 	}

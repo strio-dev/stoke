@@ -525,15 +525,38 @@ func TestCIInputSetLineageIsClosedAndPayloadFetchIsSelective(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"package": childRef}}); err == nil {
-		t.Fatal("accepted missing ancestor binding")
-	}
-	childSet, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"build": parent, "package": childRef}})
+	childSet, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"package": childRef}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ReadCIInputSet(t.Context(), repository, childSet, scope); err != nil {
+	index, _ := ciTestMetadata(t, client, repository, childSet)
+	if len(index.Manifests) != 2 || index.Manifests[1].Digest.String() != strings.Split(childRef, "@")[1] {
+		t.Fatal("direct output set redundantly contains ancestor result descriptors")
+	}
+	closed, err := client.ReadCIInputSet(t.Context(), repository, childSet, scope)
+	if err != nil || !maps.Equal(closed.Bindings, map[string]string{"build": parent, "package": childRef}) {
+		t.Fatalf("direct output set did not recover its exact lineage: %+v %v", closed, err)
+	}
+	otherExecution := ciTestResult(t, "build", "linux/amd64")
+	otherParent, err := client.PublishCIResult(t.Context(), repository, otherExecution, parentPath, parentRoot)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"build": otherParent, "package": childRef}}); err == nil {
+		t.Fatal("direct output set replaced an ancestor with a byte-equal different execution")
+	}
+	otherInputs, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"build": otherParent}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	branch := ciTestResult(t, "branch", "linux/amd64")
+	branch.Inputs = otherInputs
+	branchRef, err := client.PublishCIResult(t.Context(), repository, branch, childPath, childRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.PublishCIInputSet(t.Context(), repository, CIInputSet{Version: CIVersion, Scope: scope, Bindings: map[string]string{"branch": branchRef, "package": childRef}}); err == nil {
+		t.Fatal("direct output set concealed conflicting ancestor executions behind separate branches")
 	}
 	scoped, err := client.WithCIReadSession(repository, scope)
 	if err != nil {

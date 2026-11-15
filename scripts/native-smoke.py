@@ -137,8 +137,8 @@ def main():
             "component": {"coopr": {"kind": "component", "files": ["component.coopr"], "target": "installed"}},
             "build": {"coopr": {"files": ["image.coopr"], "target": "image", "args": {
                 "COMPONENT": {"from": "component"}, "MODE": "standard",
-            }}},
-            "literal": {"image": "scratch", "steps": [
+            }}, "outputs": {"filesystem": True}},
+            "literal": {"image": "scratch", "outputs": {"filesystem": True}, "steps": [
                 {"copy": {"sources": ["busybox"], "destination": "/bin/busybox"}},
                 {"copy": {"sources": ["literal.txt"], "destination": "/literal.txt"}},
                 {"run": ["/bin/busybox", "sh", "-eu", "-c",
@@ -153,7 +153,7 @@ def main():
                 {"run": ["/bin/busybox", "sh", "-eu", "-c",
                          "test \"$(/bin/busybox cat /derived.txt)\" = 'native image argument'"]},
             ]},
-            "artifact": {"image": "scratch", "needs": ["test"], "steps": [
+            "artifact": {"image": "scratch", "needs": ["test"], "outputs": {"filesystem": True}, "steps": [
                 {"copy": {"from": "build", "sources": ["/installed"], "destination": "/artifact.txt"}},
                 {"copy": {"from": "literal", "sources": ["/literal-result.txt"], "destination": "/literal-result.txt"}},
             ]},
@@ -318,7 +318,7 @@ def main():
         "component": {"coopr": {"kind": "component", "files": ["component.coopr"]}},
         "matrix": {"coopr": {"files": ["image.coopr"], "args": {
             "COMPONENT": {"from": "component"}, "MODE": {"matrix": "mode"},
-        }}, "strategy": {"matrix": {"mode": ["debug", "release"]}, "max-parallel": 2}},
+        }}, "outputs": {"filesystem": True}, "strategy": {"matrix": {"mode": ["debug", "release"]}, "max-parallel": 2}},
     })
     completed = subprocess.run(invocation + ["matrix"], env=env, capture_output=True, text=True, timeout=TIMEOUT)
     matrix = save("matrix", completed, True)

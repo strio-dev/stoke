@@ -59,6 +59,7 @@ tasks:
   artifact:
     image: scratch
     needs: [test]
+    outputs: {filesystem: true}
     env: {Z_VALUE: '${literal}', A_VALUE: 'entrée "quoted"'}
     workdir: /work
     steps:
@@ -100,8 +101,11 @@ tasks:
 				} else if !reflect.DeepEqual(store, o.Store) {
 					t.Error("tasks do not share their run's store")
 				}
-				if !filepath.IsAbs(o.Output.OCI) || !filepath.IsAbs(o.Output.Filesystem) {
+				if !filepath.IsAbs(o.Output.OCI) || name == "artifact" && !filepath.IsAbs(o.Output.Filesystem) {
 					t.Error("relative exports")
+				}
+				if name != "artifact" && o.Output.Filesystem != "" {
+					t.Error("unrequested full filesystem export")
 				}
 				if _, err := os.Lstat(o.Output.OCI); !errors.Is(err, os.ErrNotExist) {
 					t.Error("OCI destination must be fresh")

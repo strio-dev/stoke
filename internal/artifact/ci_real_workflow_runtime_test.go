@@ -48,7 +48,7 @@ func TestCIRealWorkflowRegistryWithCoopr(t *testing.T) {
 	f.requireRealBuildBinary(local, checksum)
 	f.pruneRealNative("real-local-producer", local, execution)
 	plan := f.generateExactPlan("real-ci", caller, "examples/ci/stoke.yaml", repository, f.registry+"/results/real-stoke", networkFlags, []string{"package"})
-	if plan.Version != 2 || !plan.RequiresResults || len(plan.Groups) != 4 || len(plan.Environments) != 1 {
+	if plan.Version != 3 || !plan.RequiresResults || len(plan.Groups) != 4 || len(plan.Environments) != 1 {
 		t.Fatalf("real workflow did not expose build/environment/checks/package jobs: %+v", plan)
 	}
 	checks := plan.group(t, "checks")
@@ -218,9 +218,12 @@ func realBuildRestored(log []byte) bool {
 
 func (f *ciRegistryFixture) requireRealMountedBinary(log []byte, checksum string, expected int) {
 	f.t.Helper()
-	count := 0
+	count, checks := 0, 0
 	for _, line := range strings.Split(string(log), "\n") {
 		line = strings.TrimSpace(line)
+		if line == "STOKE_BUILT_CLI_CHECK_PASSED" {
+			checks++
+		}
 		if strings.HasPrefix(line, "STOKE_TESTED_BINARY_SHA256=") {
 			if strings.TrimPrefix(line, "STOKE_TESTED_BINARY_SHA256=") != checksum {
 				f.t.Fatalf("fresh check mounted different binary: %s", line)
@@ -228,8 +231,8 @@ func (f *ciRegistryFixture) requireRealMountedBinary(log []byte, checksum string
 			count++
 		}
 	}
-	if count != expected {
-		f.t.Fatalf("mounted binary checksum observations=%d want=%d", count, expected)
+	if count != expected || checks != expected {
+		f.t.Fatalf("mounted binary checksum observations=%d CLI checks=%d want=%d", count, checks, expected)
 	}
 }
 

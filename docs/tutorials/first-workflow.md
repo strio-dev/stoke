@@ -27,6 +27,7 @@ tasks:
   artifact:
     image: scratch
     needs: [test]
+    outputs: {filesystem: true}
     steps:
       - copy:
           from: build
@@ -34,7 +35,7 @@ tasks:
           destination: /message.txt
 ```
 
-`from: build` starts the test from the build's completed image. The artifact copies from the build but also declares `needs: [test]`, so a failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result.
+`from: build` starts the test from the build's completed image. The artifact copies from the build but also declares `needs: [test]`, so a failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result. The artifact task explicitly requests filesystem output so its file can be read from the host.
 
 ## Inspect the plan
 
@@ -54,7 +55,7 @@ stoke run -f examples/first-workflow/stoke.yaml \
 cat "$stoke_output/artifact/rootfs/message.txt"
 ```
 
-The last command prints `HELLO FROM STOKE` followed by a newline. Each successful task has an OCI image layout and a flattened filesystem; the artifact's layout is at `$stoke_output/artifact/image`, and its filesystem contains only `message.txt`. The run reports its retained directory, where `run.json` records execution results.
+The last command prints `HELLO FROM STOKE` followed by a newline. Each successful image task has an OCI image layout. The artifact's layout is at `$stoke_output/artifact/image`; its explicitly requested filesystem contains only `message.txt`. The run reports its retained directory, where `run.json` records execution results.
 
 The output directory must be fresh and outside the input context. Keep execution stores and cache outside the context too, so later builds do not copy generated state back into their inputs.
 

@@ -70,8 +70,11 @@ func TestExportStepsSelectFilesystemOutputs(t *testing.T) {
 		task string
 		full bool
 	}{
-		{"image: scratch", true},
-		{"image: scratch, outputs: {}", true},
+		{"image: scratch", false},
+		{"image: scratch, outputs: {}", false},
+		{"image: scratch, outputs: {filesystem: true}", true},
+		{"coopr: {files: [image.coopr]}", false},
+		{"coopr: {files: [image.coopr]}, outputs: {filesystem: true}", true},
 		{"image: scratch, outputs: {filesystem: false}", false},
 		{"image: scratch, steps: [{export: {source: /report, destination: reports/report}}]", false},
 		{"image: scratch, steps: [{export: {source: /report, destination: reports/report}}], outputs: {filesystem: true}", true},

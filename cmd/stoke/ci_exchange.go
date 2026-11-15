@@ -477,38 +477,8 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 	if runErr != nil || report == nil {
 		return result, runErr
 	}
-	execution, err := artifact.NewCIExecutionID()
-	if err != nil {
+	if err := publishCIOutputs(ctx, client, exchange, scope, metadata, selected.Exports, report.Tasks); err != nil {
 		return result, err
-	}
-	bindings := map[string]string{}
-	for name, ref := range inputs.Bindings {
-		bindings[name] = ref
-	}
-	exported := map[string]bool{}
-	for _, item := range report.Tasks {
-		if !slices.Contains(selected.Exports, item.Name) {
-			continue
-		}
-		if item.Status != "passed" || item.OCI == "" || item.Digest == "" {
-			return result, fmt.Errorf("producer %q has no complete exported OCI output", item.Name)
-		}
-		value := artifact.CIResult{Version: artifact.CIVersion, Scope: scope, Producer: item.Name, Attempt: exchange.Attempt, Execution: execution, Kind: item.Kind, Platform: item.Platform, Inputs: metadata.Inputs}
-		ref, err := client.PublishCIResult(ctx, exchange.Repository, value, item.OCI, item.Digest)
-		if err != nil {
-			return result, fmt.Errorf("publish exact result %q: %w", item.Name, err)
-		}
-		bindings[item.Name] = ref
-		exported[item.Name] = true
-		metadata.Inputs, err = client.PublishCIInputSet(ctx, exchange.Repository, artifact.CIInputSet{Version: artifact.CIVersion, Scope: scope, Bindings: bindings})
-		if err != nil {
-			return result, err
-		}
-	}
-	for _, name := range selected.Exports {
-		if !exported[name] {
-			return result, fmt.Errorf("producer %q was not present in execution results", name)
-		}
 	}
 	if len(selected.Exports) != 0 {
 		if err := emit(); err != nil {
@@ -516,6 +486,40 @@ func runCIExchange(ctx context.Context, w *workflow.Workflow, p *ci.Plan, select
 		}
 	}
 	return result, nil
+}
+
+func publishCIOutputs(ctx context.Context, client artifact.Client, exchange ciExchangeOptions, scope artifact.CIScope, metadata *ciNativeMetadata, exports []string, tasks []runner.TaskResult) error {
+	if len(exports) == 0 {
+		return nil
+	}
+	execution, err := artifact.NewCIExecutionID()
+	if err != nil {
+		return err
+	}
+	bindings := map[string]string{}
+	exported := map[string]bool{}
+	for _, item := range tasks {
+		if !slices.Contains(exports, item.Name) {
+			continue
+		}
+		if item.Status != "passed" || item.OCI == "" || item.Digest == "" {
+			return fmt.Errorf("producer %q has no complete exported OCI output", item.Name)
+		}
+		value := artifact.CIResult{Version: artifact.CIVersion, Scope: scope, Producer: item.Name, Attempt: exchange.Attempt, Execution: execution, Kind: item.Kind, Platform: item.Platform, Inputs: metadata.Inputs}
+		ref, err := client.PublishCIResult(ctx, exchange.Repository, value, item.OCI, item.Digest)
+		if err != nil {
+			return fmt.Errorf("publish exact result %q: %w", item.Name, err)
+		}
+		bindings[item.Name] = ref
+		exported[item.Name] = true
+	}
+	for _, name := range exports {
+		if !exported[name] {
+			return fmt.Errorf("producer %q was not present in execution results", name)
+		}
+	}
+	metadata.Inputs, err = client.PublishCIInputSet(ctx, exchange.Repository, artifact.CIInputSet{Version: artifact.CIVersion, Scope: scope, Bindings: bindings})
+	return err
 }
 
 func persistCIRun(report *ciRunReport, runErr error) error {

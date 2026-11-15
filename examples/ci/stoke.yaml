@@ -46,7 +46,16 @@ tasks:
           - -c
           - |
             printf 'STOKE_TESTED_BINARY_SHA256=%s\n' "$(sha256sum /built/stoke | cut -d ' ' -f 1)"
-            /built/stoke version
+            # Exercise the mounted producer; the Go suites below test source.
+            /built/stoke check -f examples/ci/stoke.yaml --context .
+            probe=$(mktemp -d)
+            trap 'rm -rf "$probe"' EXIT
+            printf 'version: 0\ntasks: {}\n' > "$probe/invalid.yaml"
+            status=0
+            /built/stoke check -f "$probe/invalid.yaml" > "$probe/rejected.log" 2>&1 || status=$?
+            test "$status" -eq 1
+            grep -F 'workflow version must be 1' "$probe/rejected.log"
+            printf 'STOKE_BUILT_CLI_CHECK_PASSED\n'
             case "$STOKE_MATRIX_CHECK" in
               test) go test -count=1 -mod=readonly -short ./... ;;
               vet) go vet -mod=readonly ./... ;;
@@ -55,6 +64,7 @@ tasks:
   package:
     image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
     needs: [checks]
+    outputs: {filesystem: true}
     steps:
       - copy:
           from: build

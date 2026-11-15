@@ -1,7 +1,7 @@
 {
-  "version": 2,
+  "version": 3,
   "generatedBy": "stoke-ci",
-  "id": "7439fc552037bb781d0c217bd0450a1fdce0a9eb141d2cd83b2c164190d83d70",
+  "id": "e017f283dba09bfca783c2b3ba9cc4098502bdd72eb52cbdd55ea7c06a4bac1c",
   "config": {
     "jobContainerImage": "ghcr.io/strio-dev/stoke-qualification-tools@sha256:5ddd0afd77b1e49649d09e3c72de29ad7febd40c67dd8ea24e9bd918082f9a34",
     "jobContainerOptions": "--security-opt seccomp=unconfined --security-opt apparmor=buildah --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw",
@@ -20,12 +20,13 @@
     ],
     "resultsRepository": "ghcr.io/strio-dev/stoke-qualification-tools"
   },
-  "workflowDigest": "b710d4f05a4981321fed0981bf1f8ca6d2e65b8c5ced14622413c6ef1c05d20e",
+  "workflowDigest": "baf43099513994b880635595a369c83b81991ddea4545c36d12b479afc56851a",
   "engine": {
     "apiVersion": 1,
     "capabilities": [
       "build",
       "execute",
+      "optional-oci-output",
       "registry-cache",
       "run-mounts"
     ],
@@ -139,7 +140,7 @@
   "limitations": [
     "GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
     "Every generated job runs in the explicitly selected tools image. The Linux Docker runner, image architecture, runner-owned file access and nested OCI security profile must be qualified separately; generation installs nothing and adds no container options implicitly.",
-    "GitHub.com reusable workflows only; GitHub Enterprise Server and native ARM/restricted-runner execution are not qualified.",
+    "GitHub.com reusable workflows only; GitHub Enterprise Server and runner profiles beyond the qualified native AMD64/ARM64 configuration remain unqualified.",
     "Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
     "Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
     "Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
@@ -147,5 +148,126 @@
     "The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
     "Host tasks execute inside the job container, not on the outer runner. Caller opt-in and capability attestations still apply. Image pull credentials must be available before job steps; workflow registry credentials remain separate."
   ],
-  "requiresResults": true
+  "requiresResults": true,
+  "execution": {
+    "Version": 1,
+    "Imports": null,
+    "Inputs": null,
+    "Assets": null,
+    "Tasks": {
+      "build": {
+        "Strategy": null,
+        "Image": "",
+        "From": "",
+        "Uses": "",
+        "Needs": null,
+        "Env": null,
+        "With": null,
+        "Workdir": "",
+        "Cache": null,
+        "Steps": null,
+        "Coopr": {
+          "Files": [
+            "retained.coopr"
+          ],
+          "FilesFrom": "",
+          "Kind": "",
+          "Target": "",
+          "Args": null
+        },
+        "Publish": null,
+        "Outputs": null,
+        "Environment": null,
+        "Contexts": null,
+        "Mounts": null,
+        "Platform": null,
+        "ComponentDir": ""
+      },
+      "checks": {
+        "Strategy": {
+          "Matrix": {
+            "Axes": {
+              "check": [
+                "test",
+                "vet"
+              ]
+            },
+            "Include": [],
+            "Exclude": []
+          },
+          "MaxParallel": 2,
+          "FailFast": false
+        },
+        "Image": "scratch",
+        "From": "",
+        "Uses": "",
+        "Needs": [
+          "build"
+        ],
+        "Env": null,
+        "With": null,
+        "Workdir": "",
+        "Cache": null,
+        "Steps": null,
+        "Coopr": null,
+        "Publish": null,
+        "Outputs": null,
+        "Environment": null,
+        "Contexts": null,
+        "Mounts": null,
+        "Platform": null,
+        "ComponentDir": ""
+      },
+      "package": {
+        "Strategy": null,
+        "Image": "docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec",
+        "From": "",
+        "Uses": "",
+        "Needs": [
+          "checks"
+        ],
+        "Env": {},
+        "With": null,
+        "Workdir": "",
+        "Cache": null,
+        "Steps": [
+          {
+            "Run": null,
+            "Copy": {
+              "From": "build",
+              "Scope": "",
+              "Sources": [
+                "/stoke"
+              ],
+              "Destination": "/dist/stoke"
+            },
+            "Mounts": null
+          },
+          {
+            "Run": [
+              "sh",
+              "-eu",
+              "-c",
+              "printf 'STOKE_PACKAGED_BINARY_SHA256=%s\\n' \"$(sha256sum /dist/stoke | cut -d ' ' -f 1)\"\n/dist/stoke version\n"
+            ],
+            "Copy": null,
+            "Mounts": null
+          }
+        ],
+        "Coopr": null,
+        "Publish": null,
+        "Outputs": {
+          "Filesystem": true
+        },
+        "Environment": null,
+        "Contexts": null,
+        "Mounts": null,
+        "Platform": null,
+        "ComponentDir": ""
+      }
+    }
+  },
+  "artifactOnly": [
+    "package"
+  ]
 }

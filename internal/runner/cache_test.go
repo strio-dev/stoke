@@ -197,6 +197,51 @@ func TestRegistryCacheCapabilityIsRequiredBeforeAnyExecution(t *testing.T) {
 	}
 }
 
+func TestOptionalCIOutputCapabilitiesBeforeExecution(t *testing.T) {
+	w := fixture(t, "version: 1\ntasks: {gate: {image: scratch, cache: false, steps: [{export: {source: /report, destination: report}}]}}\n")
+	plan, err := w.Expand(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	options := Options{ciRequiredOutputs: map[string]bool{}, CacheTo: []string{"registry.example/write"}}
+	info := cooprwire.Info{Capabilities: []string{cooprwire.CapabilityExecute, cooprwire.CapabilitySelectedFileExports}}
+	if err := testCapabilities(t, plan, info, options); err == nil || !strings.Contains(err.Error(), cooprwire.CapabilityOptionalOCIOutput) {
+		t.Fatalf("fresh gate omitted capability preflight: %v", err)
+	}
+	info.Capabilities = append(info.Capabilities, cooprwire.CapabilityOptionalOCIOutput)
+	if err := testCapabilities(t, plan, info, options); err != nil {
+		t.Fatalf("unused cache writer required a capability: %v", err)
+	}
+	options.CacheFrom = []string{"registry.example/read"}
+	if err := testCapabilities(t, plan, info, options); err == nil || !strings.Contains(err.Error(), cooprwire.CapabilityRegistryCache) {
+		t.Fatalf("fresh gate lost its registry read requirement: %v", err)
+	}
+	info.Capabilities = append(info.Capabilities, cooprwire.CapabilityRegistryCache)
+	if err := testCapabilities(t, plan, info, options); err != nil {
+		t.Fatal(err)
+	}
+	info.APIVersion = cooprwire.Version + 1
+	if err := testCapabilities(t, plan, info, options); err == nil {
+		t.Fatal("incompatible API version admitted")
+	}
+}
+
+func TestNamedContextCapabilityBeforeExecution(t *testing.T) {
+	w := fixture(t, "version: 1\ntasks: {gate: {image: scratch, contexts: {source: .}, steps: [{run: [true], mounts: [{type: context, context: source, target: /source}]}]}}\n")
+	plan, err := w.Expand(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := cooprwire.Info{Capabilities: []string{cooprwire.CapabilityExecute, cooprwire.CapabilityRunMounts}}
+	if err := testCapabilities(t, plan, info, Options{}); err == nil || !strings.Contains(err.Error(), cooprwire.CapabilityNamedContexts) {
+		t.Fatalf("named context omitted capability preflight: %v", err)
+	}
+	info.Capabilities = append(info.Capabilities, cooprwire.CapabilityNamedContexts)
+	if err := testCapabilities(t, plan, info, Options{}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Exercise workflow preflight through the real SDK, rather than duplicating
 // capability matching in a test fake.
 func testCapabilities(t *testing.T, plan *workflow.ExecutionPlan, info cooprwire.Info, options Options) error {
@@ -211,7 +256,9 @@ func testCapabilities(t *testing.T, plan *workflow.ExecutionPlan, info cooprwire
 	if err != nil {
 		t.Fatal(err)
 	}
-	info.APIVersion = cooprwire.Version
+	if info.APIVersion == 0 {
+		info.APIVersion = cooprwire.Version
+	}
 	server := &http.Server{ReadHeaderTimeout: time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/info" {
 			t.Errorf("preflight attempted execution: %s %s", r.Method, r.URL.Path)

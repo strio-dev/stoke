@@ -57,7 +57,7 @@ func TestCIExactRetryLineageWithCoopr(t *testing.T) {
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"build":   map[string]any{"image": "scratch", "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("", "payload", "/value")}},
 		"test":    map[string]any{"from": "build", "cache": false, "outputs": map[string]any{"filesystem": false}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo RETRY_TEST_RAN")}},
-		"package": map[string]any{"image": "scratch", "needs": []string{"test"}, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("build", "/value", "/result"), ciRegistryRun("echo RETRY_PACKAGE_RAN")}},
+		"package": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "needs": []string{"test"}, "steps": []any{ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("build", "/value", "/result"), ciRegistryRun("echo RETRY_PACKAGE_RAN")}},
 	}}), 0600)
 	plan := f.generateExactPlan("retry", caller, "stoke.json", f.registry+"/cache/retry", f.registry+"/results/exact", nil, []string{"package"})
 	build, test, pack := plan.job(t, "build"), plan.job(t, "test"), plan.job(t, "package")
@@ -294,7 +294,7 @@ from "${BASE}" {
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"image":     map[string]any{"coopr": map[string]any{"files": []string{"image.coopr"}}},
 		"component": map[string]any{"coopr": map[string]any{"kind": "component", "files": []string{"component.coopr"}}},
-		"consume":   map[string]any{"coopr": map[string]any{"files": []string{"consume.coopr"}, "args": map[string]any{"BASE": map[string]string{"from": "image"}, "COMPONENT": map[string]string{"from": "component"}}}},
+		"consume":   map[string]any{"outputs": map[string]bool{"filesystem": true}, "coopr": map[string]any{"files": []string{"consume.coopr"}, "args": map[string]any{"BASE": map[string]string{"from": "image"}, "COMPONENT": map[string]string{"from": "component"}}}},
 	}}), 0600)
 	plan := f.generateRegistryPlan("native", caller, f.registry+"/cache/native")
 	scope := f.exactScope("native", caller, plan)
@@ -332,8 +332,8 @@ from "${BASE}" {
 }
 `), 0644)
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-		"one": map[string]any{"cache": false, "environment": map[string]any{"files": []string{"env.coopr"}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_ENV_ONE_RAN")}},
-		"two": map[string]any{"cache": false, "environment": map[string]any{"files": []string{"./env.coopr"}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_ENV_TWO_RAN")}},
+		"one": map[string]any{"outputs": map[string]bool{"filesystem": true}, "cache": false, "environment": map[string]any{"files": []string{"env.coopr"}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_ENV_ONE_RAN")}},
+		"two": map[string]any{"outputs": map[string]bool{"filesystem": true}, "cache": false, "environment": map[string]any{"files": []string{"./env.coopr"}}, "steps": []any{ciRegistryRun("/bin/busybox cp /value /result; echo EXACT_ENV_TWO_RAN")}},
 	}}), 0600)
 	shared := f.generateRegistryPlan("environment", caller, f.registry+"/cache/environment")
 	if len(shared.Groups) != 3 || len(shared.Environments) != 1 || !shared.RequiresResults {
@@ -362,8 +362,8 @@ from "${BASE}" {
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"amd":      map[string]any{"image": "scratch", "platform": "linux/amd64", "steps": []any{ciRegistryCopy("", "payload", "/value")}},
 		"arm":      map[string]any{"image": "scratch", "platform": "linux/arm64", "steps": []any{ciRegistryCopy("", "payload", "/value")}},
-		"amd-copy": map[string]any{"image": "scratch", "platform": "linux/amd64", "steps": []any{ciRegistryCopy("amd", "/value", "/result")}},
-		"arm-copy": map[string]any{"image": "scratch", "platform": "linux/arm64", "steps": []any{ciRegistryCopy("arm", "/value", "/result")}},
+		"amd-copy": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "platform": "linux/amd64", "steps": []any{ciRegistryCopy("amd", "/value", "/result")}},
+		"arm-copy": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "platform": "linux/arm64", "steps": []any{ciRegistryCopy("arm", "/value", "/result")}},
 	}}), 0600)
 	platforms := f.generateRegistryPlan("platforms", caller, f.registry+"/cache/platforms")
 	platformScope := f.exactScope("platforms", caller, platforms)

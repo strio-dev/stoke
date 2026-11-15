@@ -149,6 +149,7 @@ support.
 
 The runner still needs the normal rootless namespaces, mappings, storage and
 mount permissions. Emulated Linux ARM64 execution on a configured x86_64
-runner is separate from qualification on a native ARM host. Native ARM-host
-execution remains unqualified in this milestone; no Windows, macOS or arbitrary
-architecture runtime support is implied. See [runtime and security](security.md).
+runner is separate from qualification on a native ARM host. Native AMD64 and
+ARM64 workflows have passed under the [documented hosted profile](../development/hosted-ci-qualification.md#verified-hosted-results).
+Other runner profiles, Windows, macOS and arbitrary architecture runtimes need
+separate qualification. See [runtime and security](security.md).

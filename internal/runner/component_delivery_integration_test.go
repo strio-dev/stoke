@@ -80,6 +80,7 @@ tasks:
   left: {coopr: {kind: component, files: [unused.coopr]}}
   right: {coopr: {kind: component, files: [unused.coopr]}}
   consume:
+    outputs: {filesystem: true}
     cache: false
     coopr: {files: [consumer.coopr], args: {LEFT: {from: left}, RIGHT: {from: right}}}
 `))

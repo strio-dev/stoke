@@ -104,7 +104,7 @@ func (a Argument) validate() error {
 	return nil
 }
 
-// Outputs controls flattened filesystem export; every image build also exports OCI.
+// Outputs controls optional flattened filesystem export.
 type Outputs struct {
 	Filesystem *bool `yaml:"filesystem,omitempty"`
 }
@@ -177,10 +177,7 @@ func (t Task) FilesystemEnabled() bool {
 	if t.OutputKind() != "image" {
 		return false
 	}
-	if t.Outputs != nil && t.Outputs.Filesystem != nil {
-		return *t.Outputs.Filesystem
-	}
-	return len(t.FileExports()) == 0
+	return t.Outputs != nil && t.Outputs.Filesystem != nil && *t.Outputs.Filesystem
 }
 
 func (t Task) validateNative() error {

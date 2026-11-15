@@ -172,12 +172,12 @@ func TestHostCapturedFilesFeedCoopr(t *testing.T) {
 	caller := filepath.Join(work, "context")
 	w := map[string]any{"version": 1, "tasks": map[string]any{
 		"prepare": map[string]any{"platform": runtime.GOOS + "/" + runtime.GOARCH, "host": map[string]any{"tools": []string{"python3"}, "outputs": []string{"out"}}, "steps": []any{map[string]any{"run": []string{"python3", "-c", "from pathlib import Path; Path('out').mkdir(); Path('out/value').write_text('exact host capture')"}}}},
-		"image":   map[string]any{"image": "scratch", "steps": []any{map[string]any{"copy": map[string]any{"from": "prepare", "sources": []string{"out/value"}, "destination": "/input"}}}},
+		"image":   map[string]any{"image": "scratch", "outputs": map[string]any{"filesystem": true}, "steps": []any{map[string]any{"copy": map[string]any{"from": "prepare", "sources": []string{"out/value"}, "destination": "/input"}}}},
 	}}
 	f.write(filepath.Join(caller, "stoke.json"), f.encode(w), 0600)
 	report, _ := f.run("mixed", caller, filepath.Join(caller, "stoke.json"), []string{"--allow-host"}, true)
 	result := f.task(report, "image")
-	if string(f.read(filepath.Join(result.Filesystem, "input"))) != "exact host capture" || result.Kind != "image" {
+	if result.Filesystem == "" || result.Kind != "image" || string(f.read(filepath.Join(result.Filesystem, "input"))) != "exact host capture" {
 		t.Fatal("host files did not reach ordinary Coopr COPY", result)
 	}
 	f.write(filepath.Join(work, "summary.json"), f.encode(map[string]any{"status": "PASS", "hostArtifact": f.task(report, "prepare").Digest, "nativeImage": result.Digest, "report": report.Directory}), 0600)

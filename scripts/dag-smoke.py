@@ -209,6 +209,7 @@ def main():
                 {"copy": {"sources": ["busybox"], "destination": "/bin/busybox"}},
             ]},
             "matrix": {"from": "base", "strategy": {"matrix": {"mode": ["a", "b"]}, "max-parallel": 2},
+                       "outputs": {"filesystem": True},
                        "env": dict(proxy_env), "steps": [{"run": ["/bin/busybox", "sh", "-eu", "-c", matrix_command]}]},
             "complete": {"image": "scratch", "needs": ["matrix"]},
         }}))

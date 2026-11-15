@@ -52,10 +52,12 @@ func TestCINativePlatformOverrideWithCoopr(t *testing.T) {
 	w, err := workflow.Decode(strings.NewReader(`version: 1
 tasks:
   producer:
+    outputs: {filesystem: true}
     platform: linux/amd64
     cache: false
     coopr: {files: [image.coopr]}
   consume:
+    outputs: {filesystem: true}
     from: producer
     cache: false
     env: {PLATFORM_HANDOFF: exact}

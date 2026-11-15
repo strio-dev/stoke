@@ -10,7 +10,7 @@ Stoke resolves `--coopr-binary`, then `STOKE_COOPR_BINARY`, then `coopr` on PATH
 coopr system service --socket ABSOLUTE_SOCKET --parent-fd INHERITED_PIPE_FD
 ```
 
-The service creates a mode-0600 socket. Stoke requires API version `1`, `execute` and the native build/component/publication capabilities needed by the selected plan before submitting work. Independent HTTP requests carry concurrent matrix variants; there is no shared host service, TCP listener or required background daemon. Normal Coopr CLI commands remain daemonless, and its Go execution library remains available for other consumers.
+The service creates a mode-0600 socket. Stoke requires API version `1` and the capabilities needed by the selected plan before submitting work. Independent HTTP requests carry concurrent matrix variants; there is no shared host service, TCP listener or required background daemon. Normal Coopr CLI commands remain daemonless, and its Go execution library remains available for other consumers.
 
 Registry cache requests additionally require `registry-cache`. The wire cache
 options carry independent read and write repository lists to Coopr's existing
@@ -35,12 +35,11 @@ The socket provides same-account access to the service's authority. It is not an
 
 ## Product surface and release gate
 
-Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks retain OCI/native images. Explicit export steps use negotiated `selected-file-exports`; those stages omit the redundant full filesystem unless explicitly requested, while existing tasks keep their prior output default. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
+Stoke's YAML exposes literal operations, native `coopr` image/component tasks and explicit `publish` tasks. Argument bindings pass single-producer image/component identities or selected matrix values without generating native definition text. Definition selection can use caller context or the owning component's optional file snapshot; Coopr owns grammar and parsing. A local named `stoke-assets` context exposes only that package's declared files, while primary context remains caller-owned. The API carries local context bindings and an explicit typed COPY context selector; it does not upload or merge arbitrary host directories. Build tasks retain OCI/native images. Full filesystem output is opt-in with `outputs.filesystem: true`; explicit export steps independently use negotiated `selected-file-exports`. Publication runs after its data dependency and `needs` gates, is not cached, and preserves partial destination statuses. The separate `stoke publish` command publishes reusable YAML definitions.
 
-Coopr `0.6.0` provides the base service. Export steps require ordered-state
-capture and `selected-file-exports`; fresh CI gates without unused image output
-also require `optional-oci-output`. The [runtime guide](../guides/coopr-api.md)
-records the matching SDK/engine revision and startup capability checks.
+The planner and runtime share one capability calculation for selected jobs and
+their actual execution options. The [runtime guide](../guides/coopr-api.md)
+defines API compatibility, required capabilities and the matching source build.
 
 Workflow artifacts have one YAML layer and optional declared file layers. YAML-only packages remain valid. Imported templates retain their own file snapshots, including across `uses` and matrix expansion. Loader-owned temporary trees are removed on load failure or after confirmed engine cleanup. Unconfirmed cleanup retains borrowed inputs and staging for investigation. No shared persistent content store is introduced.
 

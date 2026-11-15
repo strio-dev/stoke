@@ -23,13 +23,16 @@ type Loader struct {
 	Fetch  func(context.Context, string) (*artifact.Document, error)
 }
 type Result struct {
-	Workflow   *workflow.Workflow
-	Targets    []string
-	ContextDir string
-	Reference  string
-	owned      []string
-	closeOnce  sync.Once
-	closeErr   error
+	Workflow *workflow.Workflow
+	// RootWorkflow is the parsed owning document from the same read that
+	// produced Workflow, before template resolution and input binding.
+	RootWorkflow *workflow.Workflow
+	Targets      []string
+	ContextDir   string
+	Reference    string
+	owned        []string
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // Close releases only the temporary component trees allocated by this load.
@@ -232,7 +235,7 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 	if err = expanded.Validate(); err != nil {
 		return nil, err
 	}
-	result.Workflow, result.Targets = expanded, targets
+	result.Workflow, result.RootWorkflow, result.Targets = expanded, root.workflow, targets
 	result.ContextDir, result.Reference = contextDir, document.Reference
 	return result, nil
 }

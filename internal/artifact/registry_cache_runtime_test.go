@@ -62,12 +62,12 @@ extend {
 `), 0644)
 	workflow := filepath.Join(caller, "stoke.yaml")
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-		"literal": map[string]any{"image": "scratch", "env": map[string]string{"CACHE_BRANCH": "literal"}, "steps": []any{
+		"literal": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "env": map[string]string{"CACHE_BRANCH": "literal"}, "steps": []any{
 			map[string]any{"copy": map[string]any{"sources": []string{"busybox"}, "destination": "/bin/busybox"}},
 			map[string]any{"copy": map[string]any{"sources": []string{"payload.txt"}, "destination": "/payload"}},
 			map[string]any{"run": []string{"/bin/busybox", "sh", "-eu", "-c", "/bin/busybox cp /payload /result.txt; echo STOKE_REGISTRY_LITERAL_RAN"}},
 		}},
-		"native":    map[string]any{"coopr": map[string]any{"files": []string{"native.coopr"}}},
+		"native":    map[string]any{"outputs": map[string]bool{"filesystem": true}, "coopr": map[string]any{"files": []string{"native.coopr"}}},
 		"component": map[string]any{"coopr": map[string]any{"kind": "component", "files": []string{"component.coopr"}}},
 	}}), 0600)
 	run := func(label, home, expected string, cacheFlags []string, success bool) (registryCacheReport, []byte) {

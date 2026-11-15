@@ -18,7 +18,6 @@ import (
 	coopr "github.com/strio-dev/stoke/internal/engine"
 	"github.com/strio-dev/stoke/internal/source"
 	"github.com/strio-dev/stoke/internal/workflow"
-	"golang.org/x/sys/unix"
 )
 
 type Options struct {
@@ -114,74 +113,115 @@ func runOwned(ctx context.Context, w *workflow.Workflow, plan *workflow.Executio
 	return report, err
 }
 
-func validateCapabilities(ctx context.Context, plan *workflow.ExecutionPlan, client *coopr.Client, options Options) error {
-	// Preflight the entire plan before starting jobs. Execute also negotiates,
-	// but discovering an unsupported later job after side effects is too late.
-	require := func(label string, capabilities ...string) error {
-		_, err := client.Negotiate(ctx, capabilities...)
-		if err != nil {
-			return fmt.Errorf("%s: %w", label, err)
+// RequiredCapabilities describes the selected execution using the same policy as
+// runtime preflight. The plan contains only executing jobs; an optional CI request
+// supplies their retained input kinds and required output identities, not paths.
+func RequiredCapabilities(plan *workflow.ExecutionPlan, request *CIRequest, options Options) ([]string, error) {
+	if request != nil {
+		options.ciImports = request.Imports
+		options.ciRequiredOutputs = nil
+		if len(request.Targets) != 0 {
+			options.ciRequiredOutputs = map[string]bool{}
+			for _, name := range request.RequiredOutputs {
+				options.ciRequiredOutputs[name] = true
+			}
 		}
-		return nil
 	}
-	var invocation []string
-	if options.Network != "" {
-		invocation = append(invocation, cooprwire.CapabilityRunNetwork)
-	}
-	if len(options.CacheFrom) != 0 || len(options.CacheTo) != 0 {
-		invocation = append(invocation, cooprwire.CapabilityRegistryCache)
-	}
-	for _, input := range options.ciImports {
+	var required []string
+	hostSources := map[string]bool{}
+	for name, input := range options.ciImports {
 		switch input.Kind {
 		case "component":
-			invocation = append(invocation, cooprwire.CapabilityComponentLoad, cooprwire.CapabilityComponentLoadName)
+			required = append(required, cooprwire.CapabilityComponentLoad, cooprwire.CapabilityComponentLoadName)
 		case "image":
-			invocation = append(invocation, cooprwire.CapabilityExecute)
+			required = append(required, cooprwire.CapabilityExecute)
+		case "host":
+			hostSources[name] = true
 		}
-	}
-	if err := require("workflow options and exact CI imports", invocation...); err != nil {
-		return err
 	}
 	for _, group := range plan.Groups {
 		for _, job := range group.Jobs {
 			if job.Definition.Host != nil {
-				continue
+				hostSources[job.Name] = true
 			}
-			capability := cooprwire.CapabilityExecute
-			var required []string
-			if omitCIImageOutput(job, options) {
-				required = append(required, cooprwire.CapabilityOptionalOCIOutput)
-			}
-			if len(job.Definition.AllMounts()) != 0 {
-				required = append(required, cooprwire.CapabilityRunMounts)
-			}
-			if len(job.Definition.FileExports()) != 0 {
-				required = append(required, cooprwire.CapabilitySelectedFileExports)
-			}
-			if job.Definition.Coopr != nil {
-				platform, err := job.Definition.ResolvedPlatform()
-				if err != nil {
-					return fmt.Errorf("task %q platform: %w", job.Task, err)
+			if request != nil && options.ciRequiredOutputs != nil {
+				if slices.Contains(request.Targets, job.Name) || slices.Contains(request.Targets, job.Task) {
+					options.ciRequiredOutputs[job.Name] = true
 				}
-				if platform != "" {
-					required = append(required, cooprwire.CapabilityBuildPlatform)
+				for name := range artifactResults(job.Definition, nil) {
+					options.ciRequiredOutputs[name] = true
 				}
-				capability = cooprwire.CapabilityBuild
-				if job.Definition.OutputKind() == "component" {
-					capability = cooprwire.CapabilityComponent
-				}
-			} else if job.Definition.Publish != nil {
-				if input, imported := options.ciImports[job.Definition.Publish.From]; imported && input.Kind == "image" {
-					required = append(required, cooprwire.CapabilityPublishOCILayout)
-				}
-				capability = cooprwire.CapabilityPublish
-			}
-			if err := require(fmt.Sprintf("task %q", job.Task), append(required, capability)...); err != nil {
-				return err
 			}
 		}
 	}
-	return nil
+	for _, group := range plan.Groups {
+		for _, job := range group.Jobs {
+			task := job.Definition
+			if task.Host != nil {
+				continue
+			}
+			if task.Publish != nil {
+				required = append(required, cooprwire.CapabilityPublish)
+				if input, imported := options.ciImports[task.Publish.From]; imported && input.Kind == "image" {
+					required = append(required, cooprwire.CapabilityPublishOCILayout)
+				}
+				continue
+			}
+			capability := cooprwire.CapabilityExecute
+			if task.Coopr != nil {
+				capability = cooprwire.CapabilityBuild
+				if task.OutputKind() == "component" {
+					capability = cooprwire.CapabilityComponent
+				}
+			}
+			required = append(required, capability)
+			if task.Environment != nil {
+				required = append(required, cooprwire.CapabilityBuild)
+			}
+			omitOCI := omitCIImageOutput(job, options)
+			if omitOCI {
+				required = append(required, cooprwire.CapabilityOptionalOCIOutput)
+			}
+			if options.Network != "" {
+				required = append(required, cooprwire.CapabilityRunNetwork)
+			}
+			if len(options.CacheFrom) != 0 || len(options.CacheTo) != 0 && !omitOCI {
+				required = append(required, cooprwire.CapabilityRegistryCache)
+			}
+			if len(task.AllMounts()) != 0 {
+				required = append(required, cooprwire.CapabilityRunMounts)
+			}
+			if len(task.FileExports()) != 0 {
+				required = append(required, cooprwire.CapabilitySelectedFileExports)
+			}
+			named := len(task.Contexts) != 0 || task.ComponentDir != ""
+			for name := range artifactResults(task, nil) {
+				named = named || hostSources[name]
+			}
+			if named {
+				required = append(required, cooprwire.CapabilityNamedContexts)
+			}
+			platform, err := task.ResolvedPlatform()
+			if err != nil {
+				return nil, fmt.Errorf("task %q platform: %w", job.Task, err)
+			}
+			if platform != "" && (task.Coopr != nil || task.Environment != nil) {
+				required = append(required, cooprwire.CapabilityBuildPlatform)
+			}
+		}
+	}
+	slices.Sort(required)
+	return slices.Compact(required), nil
+}
+
+func validateCapabilities(ctx context.Context, plan *workflow.ExecutionPlan, client *coopr.Client, options Options) error {
+	// Negotiate the entire selected plan before any task can have side effects.
+	required, err := RequiredCapabilities(plan, nil, options)
+	if err != nil {
+		return err
+	}
+	_, err = client.Negotiate(ctx, required...)
+	return err
 }
 
 func run(ctx context.Context, w *workflow.Workflow, targets []string, options Options, engine backend) (*Report, error) {
@@ -300,21 +340,13 @@ func runPrepared(ctx context.Context, w *workflow.Workflow, plan *workflow.Execu
 	if err := os.MkdirAll(options.CacheDir, 0700); err != nil {
 		return nil, err
 	}
-	// Serialize callers sharing this portable OCI cache, including other Stoke
-	// processes. An interrupted process automatically releases the OS lock.
-	lock, err := os.OpenFile(filepath.Join(options.CacheDir, ".stoke.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
 	defer func() {
-		retErr = errors.Join(retErr, lock.Close())
 		if report != nil {
 			retErr = persistReport(report, retErr)
 		}
 	}()
-	if err := unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
-		return nil, fmt.Errorf("cache is in use by another Stoke run: %w", err)
-	}
+	// Coopr locks portable-cache operations and persistent volumes. Native
+	// stores are invocation-private; host tasks retain their workspace leases.
 	dir, err := os.MkdirTemp(options.StateDir, "run-")
 	if err != nil {
 		return nil, err

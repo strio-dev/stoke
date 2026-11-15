@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	cooprwire "github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/stoke/internal/assets"
 	"github.com/strio-dev/stoke/internal/workflow"
 )
@@ -211,7 +212,7 @@ func TestPlanDecodeRejectsTamperingUnknownFieldsVersionsAndExtraDocuments(t *tes
 		t.Fatal(err)
 	}
 	for _, bad := range [][]byte{
-		bytes.Replace(data, []byte(`"version": 2`), []byte(`"version": 3`), 1),
+		bytes.Replace(data, []byte(fmt.Sprintf(`"version": %d`, Version)), []byte(fmt.Sprintf(`"version": %d`, Version+1)), 1),
 		bytes.Replace(data, []byte(`"generatedBy": "stoke-ci"`), []byte(`"generatedBy": "handwritten"`), 1),
 		bytes.Replace(data, []byte(`"timeoutMinutes": 45`), []byte(`"timeoutMinutes": 46`), 1),
 		append(bytes.TrimSpace(data), []byte("\n{}\n")...),
@@ -390,6 +391,37 @@ tasks:
 	}
 	if !slices.Contains(groupNamed(t, p, "publish").Needs, groupNamed(t, p, "test").ID) {
 		t.Fatal("publish bypasses test native gate")
+	}
+}
+
+func TestPlanCapabilitiesFollowSelectedCIOutputs(t *testing.T) {
+	for _, tc := range []struct {
+		name, gate, consumer, target string
+		optional, named, exports     bool
+	}{
+		{name: "fresh gate", gate: "from: build, cache: false", consumer: "image: scratch, needs: [gate]", target: "done", optional: true},
+		{name: "cached gate", gate: "from: build", consumer: "image: scratch, needs: [gate]", target: "done"},
+		{name: "requested rootfs", gate: "from: build, cache: false, outputs: {filesystem: true}", consumer: "image: scratch, needs: [gate]", target: "done"},
+		{name: "consumed output", gate: "from: build, cache: false", consumer: "from: gate", target: "done"},
+		{name: "terminal output", gate: "from: build, cache: false", consumer: "image: scratch, needs: [gate]", target: "gate"},
+		{name: "named input and report", gate: "from: build, cache: false, contexts: {source: .}, mounts: [{type: context, context: source, target: /source}], steps: [{run: [true]}, {export: {source: /report, destination: report}}]", consumer: "image: scratch, needs: [gate]", target: "done", optional: true, named: true, exports: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := decodeWorkflow(t, "version: 1\ntasks:\n  build: {image: scratch}\n  gate: {"+tc.gate+"}\n  done: {"+tc.consumer+"}\n")
+			p := buildPlanFixture(t, w, Config{Targets: []string{tc.target}})
+			if p.Engine.APIVersion != cooprwire.Version {
+				t.Fatalf("plan API version %d differs from SDK %d", p.Engine.APIVersion, cooprwire.Version)
+			}
+			for capability, want := range map[string]bool{
+				cooprwire.CapabilityOptionalOCIOutput:   tc.optional,
+				cooprwire.CapabilityNamedContexts:       tc.named,
+				cooprwire.CapabilitySelectedFileExports: tc.exports,
+			} {
+				if slices.Contains(p.Engine.Capabilities, capability) != want {
+					t.Fatalf("%s requirement=%t, want %t: %v", capability, !want, want, p.Engine.Capabilities)
+				}
+			}
+		})
 	}
 }
 
@@ -604,5 +636,45 @@ func TestNativeMetadataBudgetsAllowMatrixAndRejectHugeFanIn(t *testing.T) {
 		if count == 3 && (err == nil || !strings.Contains(err.Error(), "environment budget")) {
 			t.Fatalf("oversized native env accepted: %v", err)
 		}
+	}
+}
+
+func TestFrozenExecutionKeepsProducerMetadataWithoutSourceBodies(t *testing.T) {
+	w := decodeWorkflow(t, `version: 1
+tasks:
+  build: {coopr: {files: [private.coopr], args: {PRIVATE_BODY: secret-source-only}}, platform: linux/arm64}
+  check: {from: build, cache: false, steps: [{run: [check, '${{ literal }}']}]}
+  package:
+    image: registry.example.test/tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    needs: [check]
+    steps:
+      - copy: {from: build, sources: [/tool], destination: /tool}
+      - run: [check]
+        mounts: [{type: image, image: docker://registry.example.test/tools@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, target: /tools}]
+`)
+	p, err := BuildWithSource(w, w, Config{Targets: []string{"package"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"check", "package"} {
+		if !p.CanRunWithoutCheckout(groupNamed(t, p, name).Jobs[0]) {
+			t.Fatalf("%s unnecessarily requires source", name)
+		}
+	}
+	if p.CanRunWithoutCheckout(groupNamed(t, p, "build").Jobs[0]) || p.Execution.Tasks["build"].Coopr == nil || p.Execution.Tasks["build"].Platform.Value == nil {
+		t.Fatal("native producer lost its metadata-only type/platform boundary")
+	}
+	encoded, err := Encode(p)
+	if err != nil || bytes.Contains(encoded, []byte("private.coopr")) || bytes.Contains(encoded, []byte("secret-source-only")) {
+		t.Fatalf("source-owned body leaked: %v", err)
+	}
+	if _, err := Decode(bytes.NewReader(encoded)); err != nil {
+		t.Fatal(err)
+	}
+	root := *w
+	root.Tasks = map[string]workflow.Task{"check": {Uses: "private/check"}}
+	private, err := BuildWithSource(w, &root, Config{Targets: []string{"package"}})
+	if err != nil || private.Execution != nil {
+		t.Fatalf("imported task body became an execution snapshot: %v", err)
 	}
 }

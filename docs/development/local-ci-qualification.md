@@ -9,7 +9,7 @@ This procedure is development QA on an already provisioned rootless machine.
 An optional disposable VM separates guest users and stores; Stoke does not
 provision runners. This container-workflow qualification
 does not exercise generic [host tasks](../guides/host.md) or Nix flake checks as
-workflow stages. Use Coopr `0.6.0` for this local procedure. Hosted execution
+workflow stages. Select a compatible Coopr engine with `optional-oci-output`. Hosted execution
 remains a separate prepared test. See
 [CI generation](../guides/ci-generation.md) and
 [hosted qualification](hosted-ci-qualification.md).
@@ -19,7 +19,7 @@ in 22m47s on a Linux host with rootless VFS and explicit slirp4netns. It complet
 initial local run, five visible generated CI execution jobs, the final ordinary
 local run and the separate fresh-timestamp checkout probe. The equivalent-input
 CI/local-return Go build RUNs restored from registry cache; test/vet steps ran
-fresh, and the tested and packaged producer binary hashes matched. The timestamp
+fresh, and observed producer hashes matched across checks and package. The timestamp
 probe also restored the build RUN in this case; that is not a guarantee for
 arbitrary metadata changes.
 
@@ -33,8 +33,7 @@ are retained as historical failures; they are not substituted for this result.
 
 `internal/artifact/ci_real_workflow_runtime_test.go` drives the actual
 `examples/ci/stoke.yaml`, including its native Go build and fresh test/vet matrix.
-The example prints the SHA256 of `/built/stoke` inside each check. Its existing
-steps, gates, mounts and cache policy remain in effect.
+Each check hashes `/built/stoke`, uses it to validate the workflow and verifies rejection of version 0. Separate fresh Go test/vet commands check the source; existing gates, mounts and cache policy remain in effect.
 
 `internal/artifact/ci_real_workflow_helpers_test.go` supplies the optional user
 switching, complete-checkout manifests and binary verification. The shared
@@ -45,7 +44,7 @@ these options are absent.
 | Environment | Meaning |
 | --- | --- |
 | `STOKE_BINARY` | Absolute reviewed Stoke development executable. |
-| `STOKE_COOPR_BINARY` | Absolute Coopr `0.6.0` executable with its complete package. |
+| `STOKE_COOPR_BINARY` | Absolute explicitly selected Coopr executable with a compatible API, `optional-oci-output` and its complete package. |
 | `STOKE_SMOKE_BUSYBOX` | Absolute static BusyBox required by the shared registry fixture. The Stoke development shell supplies this. |
 | `STOKE_REAL_CI_SOURCE_DIR` | Complete actual checkout to copy; not a reduced compilation fixture. |
 | `STOKE_CACHE_CI_EVIDENCE_DIR` | Dedicated absolute evidence parent on adequate disk-backed storage. |

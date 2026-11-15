@@ -349,3 +349,41 @@ func TestJobContainerRejectsMutableReferencesAndExpressions(t *testing.T) {
 		}
 	}
 }
+
+func TestArtifactOnlyRunDeliversBoundedLiteralPlanWithoutCheckout(t *testing.T) {
+	w := decodeWorkflow(t, "version: 1\ntasks: {work: {image: scratch, steps: [{run: [check, '${{ secrets.LITERAL }}']}]}}\n")
+	p, err := BuildWithSource(w, w, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rendered := renderFixture(t, p, ".stoke/ci-plan.json")
+	job := renderedJobs(t, rendered)[p.Groups[0].ID]
+	if len(job.Steps) != 1 || job.Steps[0].Uses != "" || strings.Contains(job.Steps[0].Run, "${{") || !strings.Contains(job.Steps[0].Run, `\u0024{{`) {
+		t.Fatal("artifact-only plan requires checkout or exposes literal Actions expressions")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "stoke"), []byte("#!/bin/sh\ncat \"$4\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	command := exec.Command("bash", "-eu", "-c", job.Steps[0].Run)
+	command.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "STOKE_CI_JOB=work", "STOKE_CI_SCOPE={}", "GITHUB_RUN_ATTEMPT=1", "GITHUB_OUTPUT="+filepath.Join(dir, "outputs"), "RUNNER_TEMP="+dir)
+	data, err := command.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := Decode(bytes.NewReader(data))
+	if err != nil || decoded.ID != p.ID || decoded.Execution.Tasks["work"].Steps[0].Run[1] != "${{ secrets.LITERAL }}" {
+		t.Fatalf("inline plan did not retain exact reviewed task values: %v", err)
+	}
+	work := w.Tasks["work"]
+	work.Steps[0].Run[1] = strings.Repeat("x", maxGitHubRunChars)
+	w.Tasks["work"] = work
+	large, err := BuildWithSource(w, w, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rendered = renderFixture(t, large, ".stoke/ci-plan.json")
+	if renderedJobs(t, rendered)[large.Groups[0].ID].Steps[0].Uses != checkoutAction {
+		t.Fatal("oversized inline plan did not retain source execution")
+	}
+}

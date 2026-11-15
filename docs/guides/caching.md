@@ -227,7 +227,11 @@ Publication tasks always execute when selected after their prerequisites pass. T
 
 Independent ready tasks and matrix variants within one run share that cache under Coopr's coordination. Automatic scheduling does not create cache shards or a separate result cache. See [parallel tasks](parallel-tasks.md).
 
-Only one Stoke run may write a selected portable cache directory at a time. A concurrent run using the same directory fails with a cache-in-use error; choose separate local directories when running independent Stoke processes concurrently. Those runs can select the same registry repository, where Coopr manages cache entries by their keys.
+Independent Stoke processes may share a portable cache directory. Each run keeps
+its own native store and outputs; Coopr coordinates result-cache operations and
+cache-volume access. `sharing: locked` serializes users of that volume, while
+`sharing: shared` requires a tool that supports concurrent access. Host tasks
+retain their workspace leases. Registry repositories remain shareable by key.
 
 Cache repository options belong to the invocation. They do not change the workflow YAML, become workflow imports or add Bale dependency declarations. A registry cache is separate from publishing reusable Stoke components or final images.
 

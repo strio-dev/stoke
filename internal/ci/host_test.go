@@ -86,7 +86,7 @@ tasks:
     steps: [{copy: {from: produce, sources: [out], destination: /out}}]
 `)
 	p := buildPlanFixture(t, w, Config{})
-	if !slices.Equal(p.Engine.Capabilities, []string{"execute"}) || len(p.Host) != 1 || !p.RequiresResults {
+	if !slices.Equal(p.Engine.Capabilities, []string{"execute", "named-contexts"}) || len(p.Host) != 1 || !p.RequiresResults {
 		t.Fatalf("mixed plan capabilities: %#v", p.Engine)
 	}
 }

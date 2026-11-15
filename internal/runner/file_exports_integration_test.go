@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/strio-dev/stoke/internal/workflow"
 )
 
 func TestStageExportsWithCoopr(t *testing.T) {
@@ -114,6 +116,8 @@ func TestStageExportsWithCoopr(t *testing.T) {
 				}
 			}
 			task.Steps = steps
+			fullFilesystem := true
+			task.Outputs = &workflow.Outputs{Filesystem: &fullFilesystem}
 			withoutExports.Tasks["build"] = task
 			var plainLog bytes.Buffer
 			plainOptions := options("without-exports", &plainLog)
@@ -124,7 +128,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
 			}
 			plainResult := plain.Tasks[len(plain.Tasks)-1]
 			if plainResult.Filesystem == "" || len(plainResult.Exports) != 0 || !strings.Contains(plainLog.String(), "STOKE_PREFIX_EXECUTED") || !strings.Contains(plainLog.String(), "STOKE_LATER_EXECUTED") {
-				t.Fatalf("ordinary output default or fresh execution changed: %+v %s", plainResult, &plainLog)
+				t.Fatalf("explicit filesystem output or fresh execution changed: %+v %s", plainResult, &plainLog)
 			}
 			plainImage, err := readCIImage(ctx, plainResult.OCI, plainResult.Digest, plainResult.Platform)
 			if err != nil {

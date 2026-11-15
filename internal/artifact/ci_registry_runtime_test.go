@@ -180,8 +180,8 @@ func TestCIRegistryCacheInputInvalidationWithCoopr(t *testing.T) {
 	set := func(image, input, workdir string) {
 		t.Helper()
 		f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-			"resolved":   map[string]any{"image": image, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /resolved-result; echo CI_BASE_RAN")}},
-			"configured": map[string]any{"image": image, "env": map[string]string{"INPUT": input}, "workdir": workdir, "steps": []any{ciRegistryRun(`printf '%s|%s\n' "$INPUT" "$PWD" >/config-result; echo CI_CONFIG_RAN`)}},
+			"resolved":   map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": image, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /resolved-result; echo CI_BASE_RAN")}},
+			"configured": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": image, "env": map[string]string{"INPUT": input}, "workdir": workdir, "steps": []any{ciRegistryRun(`printf '%s|%s\n' "$INPUT" "$PWD" >/config-result; echo CI_CONFIG_RAN`)}},
 		}}), 0600)
 	}
 	set(baseOne, "one", "/work-one")
@@ -244,8 +244,8 @@ func TestCIRegistryCacheInputInvalidationWithCoopr(t *testing.T) {
 	f.write(filepath.Join(live, "input"), []byte("live\n"), 0644)
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
 		"live":     map[string]any{"image": baseOne, "mounts": []any{map[string]any{"type": "host", "source": live, "target": "/live", "read-only": false, "relabel": "shared"}}, "steps": []any{ciRegistryRun(`printf 'effect\n' >> /live/effects; echo CI_LIVE_RAN`)}},
-		"snapshot": map[string]any{"image": baseOne, "mounts": []any{map[string]any{"type": "context", "source": ".", "target": "/snapshot", "read-only": false}}, "steps": []any{ciRegistryRun("printf generated >/snapshot/generated; /bin/busybox cp /snapshot/generated /snapshot-result; echo CI_SNAPSHOT_RAN")}},
-		"volume":   map[string]any{"image": baseOne, "cache": false, "mounts": []any{map[string]any{"type": "cache", "id": "ci-disposable", "sharing": "locked", "target": "/cache"}}, "steps": []any{ciRegistryRun("test ! -e /cache/seed; printf seed >/cache/seed; printf empty >/volume-result; echo CI_EMPTY_VOLUME_RAN")}},
+		"snapshot": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": baseOne, "mounts": []any{map[string]any{"type": "context", "source": ".", "target": "/snapshot", "read-only": false}}, "steps": []any{ciRegistryRun("printf generated >/snapshot/generated; /bin/busybox cp /snapshot/generated /snapshot-result; echo CI_SNAPSHOT_RAN")}},
+		"volume":   map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": baseOne, "cache": false, "mounts": []any{map[string]any{"type": "cache", "id": "ci-disposable", "sharing": "locked", "target": "/cache"}}, "steps": []any{ciRegistryRun("test ! -e /cache/seed; printf seed >/cache/seed; printf empty >/volume-result; echo CI_EMPTY_VOLUME_RAN")}},
 	}}), 0600)
 	for _, label := range []string{"effects-cold", "effects-warm"} {
 		report, log := f.run(label, caller, workflow, []string{"--cache-from", cache, "--cache-to", cache}, true)
@@ -284,7 +284,7 @@ func TestCIRegistryCacheOptionalImageHistoryWithCoopr(t *testing.T) {
 	image := f.pushBaseImage("history-absent", map[string][]byte{"bin/busybox": f.read(os.Getenv("STOKE_SMOKE_BUSYBOX")), "base-value": []byte("optional-history\n")}, false)
 	workflow := filepath.Join(f.work, "optional-history.json")
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-		"resolved": map[string]any{"image": image, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /resolved-result; echo CI_OPTIONAL_HISTORY_RAN")}},
+		"resolved": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": image, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /resolved-result; echo CI_OPTIONAL_HISTORY_RAN")}},
 	}}), 0600)
 	cache := f.registry + "/cache/optional-history"
 	cold, coldLog := f.run("history-absent-cold", caller, workflow, []string{"--cache-to", cache}, true)
@@ -321,8 +321,8 @@ func TestCIRegistryMutableResolutionScopeWithCoopr(t *testing.T) {
 		files, mount, closeGate := gates.fifoGate(label, "ready", "release")
 		workflow := filepath.Join(f.work, label+".json")
 		f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-			"first":  map[string]any{"image": selector, "cache": false, "mounts": []any{mount}, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; printf r >/gate/ready; /bin/busybox head -c 1 /gate/release >/released; echo CI_RESOLUTION_FIRST_RAN")}},
-			"second": map[string]any{"image": selector, "cache": false, "needs": []string{"first"}, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; echo CI_RESOLUTION_SECOND_RAN")}},
+			"first":  map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": selector, "cache": false, "mounts": []any{mount}, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; printf r >/gate/ready; /bin/busybox head -c 1 /gate/release >/released; echo CI_RESOLUTION_FIRST_RAN")}},
+			"second": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": selector, "cache": false, "needs": []string{"first"}, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; echo CI_RESOLUTION_SECOND_RAN")}},
 		}}), 0600)
 		command := f.command(label+"-resolution", caller, workflow, nil)
 		var stdout, stderr bytes.Buffer
@@ -379,7 +379,7 @@ func TestCIRegistryMutableResolutionScopeWithCoopr(t *testing.T) {
 		// Keep only the second task's work for the fresh-store control. This is
 		// an independent invocation, not a fabricated success for the first gate.
 		f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-			"fresh": map[string]any{"image": selector, "cache": false, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; echo CI_RESOLUTION_FRESH_RAN")}},
+			"fresh": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": selector, "cache": false, "steps": []any{ciRegistryRun("/bin/busybox cp /base-value /selection; echo CI_RESOLUTION_FRESH_RAN")}},
 		}}), 0600)
 		fresh, freshLog := f.run(label+"-independent-resolution", caller, workflow, nil, true)
 		expected := "after\n"
@@ -446,20 +446,20 @@ func newCIRegistryFixture(t *testing.T) *ciRegistryFixture {
 func (f *ciRegistryFixture) setWorkflow(path, flavor string) {
 	f.t.Helper()
 	f.write(path, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
-		"producer": map[string]any{"coopr": map[string]any{"files": []string{"producer.coopr"}, "args": map[string]string{"FLAVOR": flavor}}},
-		"from":     map[string]any{"from": "producer", "steps": []any{ciRegistryRun("/bin/busybox cp /value /from-result; /bin/busybox touch -t 202009131226.40 /from-result; echo CI_FROM_RAN")}},
-		"copied": map[string]any{"image": "scratch", "steps": []any{
+		"producer": map[string]any{"outputs": map[string]bool{"filesystem": true}, "coopr": map[string]any{"files": []string{"producer.coopr"}, "args": map[string]string{"FLAVOR": flavor}}},
+		"from":     map[string]any{"outputs": map[string]bool{"filesystem": true}, "from": "producer", "steps": []any{ciRegistryRun("/bin/busybox cp /value /from-result; /bin/busybox touch -t 202009131226.40 /from-result; echo CI_FROM_RAN")}},
+		"copied": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "steps": []any{
 			ciRegistryCopy("", "busybox", "/bin/busybox"), ciRegistryCopy("producer", "/value", "/value"), ciRegistryRun("/bin/busybox cp /value /copy-result; /bin/busybox touch -t 202009131226.40 /copy-result; echo CI_COPY_RAN"),
 		}},
-		"mounted": map[string]any{"image": "scratch", "steps": []any{
+		"mounted": map[string]any{"outputs": map[string]bool{"filesystem": true}, "image": "scratch", "steps": []any{
 			ciRegistryCopy("", "busybox", "/bin/busybox"), map[string]any{"run": []string{"/bin/busybox", "sh", "-eu", "-c", "/bin/busybox cp /input/value /mount-result; /bin/busybox touch -t 202009131226.40 /mount-result; echo CI_STAGE_RAN"}, "mounts": []any{map[string]any{"type": "stage", "from": "producer", "target": "/input"}}},
 		}},
-		"native":    map[string]any{"coopr": map[string]any{"files": []string{"native.coopr"}, "args": map[string]any{"BASE": map[string]string{"from": "producer"}}}},
+		"native":    map[string]any{"outputs": map[string]bool{"filesystem": true}, "coopr": map[string]any{"files": []string{"native.coopr"}, "args": map[string]any{"BASE": map[string]string{"from": "producer"}}}},
 		"component": map[string]any{"coopr": map[string]any{"kind": "component", "files": []string{"component.coopr"}}},
-		"component-image": map[string]any{"coopr": map[string]any{"files": []string{"consume.coopr"}, "args": map[string]any{
+		"component-image": map[string]any{"outputs": map[string]bool{"filesystem": true}, "coopr": map[string]any{"files": []string{"consume.coopr"}, "args": map[string]any{
 			"BASE": map[string]string{"from": "producer"}, "COMPONENT": map[string]string{"from": "component"},
 		}}},
-		"fresh": map[string]any{"from": "producer", "cache": false, "steps": []any{ciRegistryRun("/bin/busybox cp /value /fresh-result; echo CI_FRESH_RAN")}},
+		"fresh": map[string]any{"outputs": map[string]bool{"filesystem": true}, "from": "producer", "cache": false, "steps": []any{ciRegistryRun("/bin/busybox cp /value /fresh-result; echo CI_FRESH_RAN")}},
 	}}), 0600)
 }
 
@@ -532,7 +532,7 @@ func (f *ciRegistryFixture) requireResults(report ciRegistryReport, expected str
 	f.t.Helper()
 	for name, path := range map[string]string{"producer": "value", "from": "from-result", "copied": "copy-result", "mounted": "mount-result", "native": "native-result", "component-image": "component-result", "fresh": "fresh-result"} {
 		task := f.task(report, name)
-		if task.Status != "passed" || string(f.read(filepath.Join(task.Filesystem, path))) != expected {
+		if task.Status != "passed" || task.Filesystem == "" || string(f.read(filepath.Join(task.Filesystem, path))) != expected {
 			f.t.Fatalf("%s content/status differs: %+v", name, task)
 		}
 	}
@@ -544,7 +544,7 @@ func (f *ciRegistryFixture) requireResults(report ciRegistryReport, expected str
 func (f *ciRegistryFixture) requireFile(report ciRegistryReport, name, path, expected string) {
 	f.t.Helper()
 	task := f.task(report, name)
-	if task.Status != "passed" || string(f.read(filepath.Join(task.Filesystem, path))) != expected {
+	if task.Status != "passed" || task.Filesystem == "" || string(f.read(filepath.Join(task.Filesystem, path))) != expected {
 		f.t.Fatalf("%s content/status differs: %+v", name, task)
 	}
 }

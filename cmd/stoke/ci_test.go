@@ -2,13 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/strio-dev/stoke/internal/artifact"
 	"github.com/strio-dev/stoke/internal/ci"
+	"github.com/strio-dev/stoke/internal/source"
 )
 
 func TestCIGenerationPreservesHandwrittenWorkflows(t *testing.T) {
@@ -281,5 +284,59 @@ func TestCIContainerGenerationChecksExactImageAndOptions(t *testing.T) {
 	}
 	if !bytes.Equal(before, readCIFile(t, ".github/workflows/stoke.generated.yml")) {
 		t.Fatal("failed container check changed workflow")
+	}
+}
+
+func TestArtifactOnlyExecutionRequiresAbsentSourceAndPreservesNativeSpecs(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeCIFile(t, "stoke.yaml", "version: 1\ntasks:\n  build: {coopr: {files: [unavailable.coopr]}, platform: linux/arm64}\n  gate: {from: build, cache: false}\n")
+	if code, _, stderr := invokeCI([]string{"ci", "generate", "gate"}); code != 0 {
+		t.Fatal(stderr)
+	}
+	p, err := ci.Decode(bytes.NewReader(readCIFile(t, ".stoke/ci-plan.json")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := p.Groups[len(p.Groups)-1].Jobs[0]
+	if err := os.Remove("stoke.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	loaded, frozen, err := loadCIExecution(t.Context(), p, selected, artifact.Client{})
+	if err != nil || !frozen {
+		t.Fatalf("artifact-only execution still needs checkout: %v", err)
+	}
+	defer func() { _ = loaded.Close() }()
+	specs, err := ciProducerSpecs(loaded.Workflow, p)
+	if err != nil || specs["build"].Kind != "image" || specs["build"].Platform != "" || specs["build"].Unit != p.Groups[0].Jobs[0].ID {
+		t.Fatalf("retained native producer expectations changed: %+v %v", specs, err)
+	}
+	if err := os.Mkdir(".git", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadCIExecution(t.Context(), p, selected, artifact.Client{}); err == nil {
+		t.Fatal("deleted checkout workflow bypassed stale-source validation")
+	}
+}
+
+func TestFrozenExecutionOwnershipUsesTheResolvedRootRead(t *testing.T) {
+	t.Chdir(t.TempDir())
+	const reference = "registry.example.test/private@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	writeCIFile(t, "stoke.yaml", "version: 1\nimports: {private: "+reference+"}\ntasks: {work: {uses: private/work}}\n")
+	loaded, err := (source.Loader{Fetch: func(context.Context, string) (*artifact.Document, error) {
+		// Change ownership after the loader parsed root but before it finishes
+		// resolving the private template. Both versions deliberately use work.
+		writeCIFile(t, "stoke.yaml", "version: 1\ntasks: {work: {image: scratch}}\n")
+		return &artifact.Document{Reference: reference, Data: []byte("version: 1\ntasks: {work: {image: scratch, steps: [{run: [PRIVATE_TEMPLATE_BODY]}]}}\n")}, nil
+	}}).Load(t.Context(), "stoke.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = loaded.Close() }()
+	p, err := buildCIPlan(loaded, ci.Config{Workflow: "stoke.yaml", Context: "."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Execution != nil {
+		t.Fatal("a later local root authorized delivery of the previously resolved private body")
 	}
 }

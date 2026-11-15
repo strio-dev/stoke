@@ -27,7 +27,7 @@ import (
 	"oras.land/oras-go/v2/registry"
 )
 
-const Version = 2
+const Version = 3
 const MaxPlanBytes = 4 << 20
 
 // MaxGroups reserves provider jobs for invocation setup and the aggregate result.
@@ -72,6 +72,8 @@ type Plan struct {
 	Limitations     []string                   `json:"limitations"`
 	Environments    map[string]string          `json:"environments,omitempty"`
 	RequiresResults bool                       `json:"requiresResults"`
+	Execution       *workflow.Workflow         `json:"execution,omitempty"`
+	ArtifactOnly    []string                   `json:"artifactOnly,omitempty"`
 	Host            map[string]HostRequirement `json:"host,omitempty"`
 }
 
@@ -109,8 +111,8 @@ type Job struct {
 
 var limitations = []string{
 	"GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
-	"Runners must already provide Stoke, compatible Coopr API v1, Linux rootless execution and any required binfmt/QEMU; generation installs nothing.",
-	"GitHub.com reusable workflows only; GitHub Enterprise Server and native ARM/restricted-runner execution are not qualified.",
+	fmt.Sprintf("Runners must already provide Stoke, compatible Coopr API v%d, Linux rootless execution and any required binfmt/QEMU; generation installs nothing.", cooprwire.Version),
+	"GitHub.com reusable workflows only; GitHub Enterprise Server and runner profiles beyond the qualified native AMD64/ARM64 configuration remain unqualified.",
 	"Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
 	"Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
 	"Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
@@ -121,6 +123,10 @@ var limitations = []string{
 // Build uses the same resolved workflow and Expand implementation as local runs.
 // Provider configuration does not alter task definitions or invent new edges.
 func Build(w *workflow.Workflow, config Config) (*Plan, error) {
+	return build(w, nil, config)
+}
+
+func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 	config, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
@@ -294,35 +300,9 @@ func Build(w *workflow.Workflow, config Config) (*Plan, error) {
 			if gi < len(expanded.Groups) {
 				semantics = append(semantics, semanticJob{Name: job.Name, Definition: semantic, Assets: files, MaxParallel: group.MaxParallel, FailFast: group.FailFast})
 			}
-			switch {
-			case task.Host != nil:
-				// Host execution uses provisioned tools, not the Coopr API.
-			case task.Publish != nil:
-				capabilities["publish"] = true
-			case task.Coopr != nil:
-				if task.OutputKind() == "component" {
-					capabilities["component"] = true
-				} else {
-					capabilities["build"] = true
-				}
-			default:
-				capabilities["execute"] = true
-			}
-			if task.Environment != nil {
-				capabilities["build"] = true
-			}
-			if len(task.AllMounts()) != 0 {
-				capabilities["run-mounts"] = true
-			}
-			if len(task.FileExports()) != 0 {
-				capabilities["selected-file-exports"] = true
-			}
 			platform, err := task.ResolvedPlatform()
 			if err != nil {
 				return nil, err
-			}
-			if platform != "" && (task.Coopr != nil || task.Environment != nil) {
-				capabilities["build-platform"] = true
 			}
 			if task.Host != nil {
 				if p.Host == nil {
@@ -438,30 +418,30 @@ func Build(w *workflow.Workflow, config Config) (*Plan, error) {
 				}
 				owner.Exports = append(owner.Exports, name)
 				p.RequiresResults = true
-				switch definitions[name].OutputKind() {
-				case "component":
-					capabilities["component-load"] = true
-					capabilities["component-load-name"] = true
-				case "image":
-					capabilities["execute"] = true
-				}
-			}
-			for _, name := range job.Execute {
-				publication := definitions[name].Publish
-				if publication != nil && slices.Contains(job.Imports, publication.From) && definitions[publication.From].OutputKind() == "image" {
-					capabilities["publish-oci-layout"] = true
-				}
 			}
 		}
 	}
 	for _, job := range owners {
 		job.Exports = sortedUnique(job.Exports)
 	}
-	if (len(config.CacheFrom) != 0 || len(config.CacheTo) != 0) && len(capabilities) != 0 {
-		capabilities["registry-cache"] = true
-	}
-	if config.Network != "" && len(capabilities) != 0 {
-		capabilities["run-network"] = true
+	for _, group := range p.Groups {
+		for _, job := range group.Jobs {
+			selected := &workflow.ExecutionPlan{}
+			for _, name := range job.Execute {
+				selected.Groups = append(selected.Groups, workflow.Group{Jobs: []workflow.Job{{Name: name, Task: nodes[concrete[name]].Name, Definition: definitions[name]}}})
+			}
+			request := runner.CIRequest{Targets: config.Targets, RequiredOutputs: append(slices.Clone(job.Exports), job.Data...), Imports: map[string]runner.CIImport{}}
+			for _, name := range job.Imports {
+				request.Imports[name] = runner.CIImport{Kind: definitions[name].OutputKind()}
+			}
+			required, err := runner.RequiredCapabilities(selected, &request, runner.Options{Network: config.Network, CacheFrom: config.CacheFrom, CacheTo: config.CacheTo})
+			if err != nil {
+				return nil, err
+			}
+			for _, capability := range required {
+				capabilities[capability] = true
+			}
+		}
 	}
 	if len(p.Host) != 0 {
 		p.Limitations = append(p.Limitations,
@@ -484,6 +464,7 @@ func Build(w *workflow.Workflow, config Config) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
+	freezeExecution(w, root, p)
 	p.ID, err = planDigest(p)
 	if err != nil {
 		return nil, err
@@ -794,6 +775,9 @@ func (p *Plan) Validate() error {
 		if _, ok := owners[consumer]; !ok {
 			return errors.New("synthetic CI environment representative is absent")
 		}
+	}
+	if err := p.validateExecution(); err != nil {
+		return err
 	}
 	expected, err := planDigest(p)
 	if err != nil || !validDigest(p.ID) || p.ID != expected {

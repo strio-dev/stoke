@@ -40,10 +40,8 @@ CI jobs. Edited generated content is rejected rather than silently overwritten.
 Expected fingerprints in commands reject stale plan/YAML pairs. These checks
 establish configuration consistency, not publisher authentication.
 
-The current plan format is version 2. Version 1 plans are rejected. Preserve an
-older generated pair before removing those two generated files and regenerating;
-keep handwritten workflow files in place. Stoke does not silently migrate or
-overwrite an unsupported plan.
+The current plan format is version 3. Regenerate the owned plan/workflow pair
+together when updating Stoke; handwritten workflow jobs remain separate.
 
 Check regeneration with identical options:
 
@@ -56,6 +54,14 @@ stoke ci generate --check -f examples/ci/stoke.yaml --context . \
 
 Inputs are recorded configuration, not a secret channel. Changes to ordinary
 source bytes remain Coopr cache inputs; the CI plan does not freeze a checkout.
+Eligible artifact-only jobs carry their reviewed task definitions and expected
+producer metadata in the generated workflow and omit checkout. Source-consuming
+jobs still check out and validate the workflow against the plan. This optimization
+requires root-authored tasks, image-only imported values, and scratch or
+SHA-256-pinned registry images and mounts. Native builds, component-owned files
+and oversized inline plans retain checkout. Plans containing host tasks or
+inline environments currently retain checkout throughout. Private imported task
+bodies are not copied into generated workflow files.
 
 ## Supply the repository from handwritten CI
 
@@ -90,8 +96,9 @@ credentials. Other registries use their own provisioned credentials.
 Runners must already provide Stoke and the selected tasks' tools and native
 platform. Container tasks also require compatible Coopr and rootless/runtime
 capabilities; host-only plans do not start Coopr. `--runner` selects labels; it
-does not provision software, architectures or QEMU. Install Coopr `0.6.0` on the
-runner and use `STOKE_COOPR_BINARY` or `--coopr-binary` to select it explicitly. Generic [host steps](host.md) require the
+does not provision software, architectures or QEMU. Select a
+[compatible Coopr executable](coopr-api.md#select-a-compatible-executable) with
+`STOKE_COOPR_BINARY` or `--coopr-binary`. Generic [host steps](host.md) require the
 handwritten caller's `allow_host: true` input and explicit capability
 attestations. The earlier Nix-specific executor draft is not used.
 
@@ -99,7 +106,8 @@ attestations. The earlier Nix-specific executor draft is not used.
 
 Use `--job-container-image REGISTRY/REPOSITORY@sha256:DIGEST` to put invocation
 setup and task execution jobs in the same tools image. This supplies Stoke and
-compatible Coopr without installing them in job steps. The final status gate
+compatible Coopr without installing them in job steps. Use the same Stoke build
+for generation and execution. The final status gate
 uses GitHub's native prerequisite results and the runner's shell; it needs no
 tools container, checkout or registry credentials. The image reference must be
 digest-pinned and literal; generation neither builds nor publishes it. The default remains ordinary runner jobs.
@@ -157,14 +165,15 @@ with libcap headers. This enables upstream's capability-aware setuid path for
 permissions or install file capabilities. The build checks that both helpers
 contain that path. Host permissions and container security options are unchanged.
 
-Select the Coopr release source and the measured runner UID/GID. This example
-builds from the Stoke checkout and the immutable source of Coopr `0.6.0`.
+Select a [compatible Coopr source](coopr-api.md#select-a-compatible-executable)
+and the measured runner UID/GID. This example builds from the Stoke checkout and
+the same immutable Coopr source as its SDK.
 
 ```sh
 nix build --impure --max-jobs 1 --cores 2 --out-link result-tools-image --expr '
   let
     stoke = builtins.getFlake ("path:" + toString ./.);
-    coopr = builtins.getFlake "github:strio-dev/coopr/35871e4b01e60657b45fd17e04ac1db119f839e6";
+    coopr = builtins.getFlake "github:strio-dev/coopr/7daf44e90a64a7297f896c10e8342266ca5300bf";
   in stoke.lib.mkContainer {
     cooprFlake = coopr;
     system = "x86_64-linux";
@@ -180,19 +189,11 @@ registry digest can be used for generation only after separate authorized
 publication. The job image must already be available when GitHub creates the
 job container.
 
-The earlier tools image built from Coopr PR22 source passed local unprivileged
-tests of raw Node, packaged tools, control-job commands and writes to runner-style
-paths owned by UID 1001. Writes to UID 1000-owned paths failed with `EACCES`.
-The privileged Docker VM proof used a separate prototype. A later offline probe
-of the release-based image failed UID/GID map writes even with explicitly relaxed
-seccomp, AppArmor and system-path restrictions. Static inspection identified
-missing capability-aware helper code. With the packaging correction, native
-AMD64 and ARM64 hosted jobs completed networked Go builds under the explicitly
-approved profile. The ARM run then failed exact-result publication and the AMD
-run was cancelled. This establishes nested execution on those runners, not a
-successful build/test/package handoff or cache restoration. See the
-[qualification record](../development/hosted-ci-qualification.md) for exact images,
-runs and remaining coverage.
+Native AMD64 and ARM64 hosted workflows have exercised networked builds, fresh
+checks, package gates and exact registry handoff under the explicitly selected
+[container profile](../development/hosted-ci-qualification.md#verified-hosted-results).
+That evidence applies to the recorded image/source pair and runner configuration;
+it does not qualify other container profiles or newly rebuilt images.
 
 ## Visible stages, matrices and environments
 

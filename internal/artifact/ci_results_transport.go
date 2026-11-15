@@ -295,6 +295,7 @@ func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInput
 	if err != nil {
 		return set, err
 	}
+	lineage := []CIInputSet{set}
 	for index, name := range names {
 		ref := set.Bindings[name]
 		member := object.members[index]
@@ -313,14 +314,13 @@ func (s *ciReadSession) inputSet(ctx context.Context, reference string) (CIInput
 			if err != nil {
 				return set, err
 			}
-			for ancestor, parent := range parents.Bindings {
-				if set.Bindings[ancestor] != parent {
-					return set, fmt.Errorf("CI input set omits or conflicts with producer %q lineage", ancestor)
-				}
-			}
+			lineage = append(lineage, parents)
 		}
 	}
-	set.Bindings = maps.Clone(set.Bindings)
+	set.Bindings, err = MergeCIBindings(lineage...)
+	if err != nil {
+		return CIInputSet{}, err
+	}
 	s.sets[reference] = set
 	return set, nil
 }
@@ -469,7 +469,8 @@ func (s *ciReadSession) validateOutput(ctx context.Context, result CIResult) err
 	return nil
 }
 
-// ReadCIInputSet verifies the selected set and its bounded metadata lineage.
+// ReadCIInputSet verifies the selected set and returns its closed bindings,
+// including ancestors reached through each result's bounded metadata lineage.
 // It fetches no ancestor image layers and never discovers results through tags.
 func (c Client) ReadCIInputSet(ctx context.Context, repository, reference string, scope CIScope) (CIInputSet, error) {
 	session, err := c.ciSession(repository, scope)
@@ -605,6 +606,7 @@ func (c Client) PublishCIInputSet(ctx context.Context, repository string, set CI
 	}
 	slices.Sort(names)
 	layers := make([]v1.Descriptor, 0, len(names))
+	lineage := []CIInputSet{set}
 	for _, name := range names {
 		if !ciText(name, 512) {
 			return "", errors.New("invalid CI binding producer")
@@ -622,11 +624,7 @@ func (c Client) PublishCIInputSet(ctx context.Context, repository string, set CI
 			if err != nil {
 				return "", err
 			}
-			for ancestor, parent := range parents.Bindings {
-				if set.Bindings[ancestor] != parent {
-					return "", fmt.Errorf("CI input set omits or conflicts with producer %q lineage", ancestor)
-				}
-			}
+			lineage = append(lineage, parents)
 		}
 		selected, _ := ciReference(repository, ref)
 		descriptor, err := session.repo.Resolve(ctx, selected)
@@ -634,6 +632,9 @@ func (c Client) PublishCIInputSet(ctx context.Context, repository string, set CI
 			return "", err
 		}
 		layers = append(layers, descriptor)
+	}
+	if _, err := MergeCIBindings(lineage...); err != nil {
+		return "", err
 	}
 	set.Bindings = maps.Clone(set.Bindings)
 	return c.pushCIObject(ctx, repository, CIInputSetType, ciInputSetConfigType, set.Scope, "inputs", set, layers)
