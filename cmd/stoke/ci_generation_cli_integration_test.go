@@ -2,10 +2,41 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestCIGenerationRefusesUnscopedOwnershipWithoutWriting(t *testing.T) {
+	const body = "handwritten stage\n"
+	digest := stageDigest([]byte(body))
+	scope := stageDigest([]byte("other origin"))
+	for _, scenario := range []struct {
+		name     string
+		metadata string
+	}{
+		{"bare-checksum", digest + "\n"},
+		{"unscoped-current", fmt.Sprintf(`{"version":1,"current":{"sha256":%q}}`, digest)},
+		{"unscoped-pending", fmt.Sprintf(`{"version":1,"current":{"sha256":%q,"scope":%q},"pending":{"sha256":%q}}`, digest, scope, digest)},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			t.Chdir(t.TempDir())
+			writeCIFile(t, "stoke.yaml", "version: 1\ntasks: {test: {image: scratch}}\n")
+			path := stageAction("test")
+			sidecar := stageChecksumPath(path)
+			writeCIFile(t, path, body)
+			writeCIFile(t, sidecar, scenario.metadata)
+
+			for _, flags := range [][]string{nil, {"--check"}} {
+				runGenerationOwnership(t, 1, "invalid ownership checksum for generated stage "+path, append([]string{"github"}, flags...)...)
+				if string(readCIFile(t, path)) != body || string(readCIFile(t, sidecar)) != scenario.metadata {
+					t.Fatalf("generate %v modified the stage or sidecar", flags)
+				}
+			}
+		})
+	}
+}
 
 func TestCIGenerationConflictLeavesOutputUntouched(t *testing.T) {
 	t.Chdir(t.TempDir())

@@ -136,6 +136,14 @@ func TestCIGenerationWriterUsesActualOwnerDuringInterruptedTransfer(t *testing.T
 	if err := writeStages([]ci.StageFile{before, keep}, first, false, false); err != nil {
 		t.Fatal(err)
 	}
+	checksum := stageChecksumPath(before.Path)
+	originalOwnership := readCIFile(t, checksum)
+	if err := writeStages([]ci.StageFile{before}, second, false, false); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(originalOwnership, readCIFile(t, checksum)) {
+		t.Fatal("identical output changed ownership")
+	}
 	update, err := prepareStageUpdate(after, second, false)
 	if err != nil {
 		t.Fatal(err)
@@ -159,32 +167,6 @@ func TestCIGenerationWriterUsesActualOwnerDuringInterruptedTransfer(t *testing.T
 	}
 	if err := writeStages([]ci.StageFile{after}, second, false, false); err != nil {
 		t.Fatalf("second origin could not finish the transfer: %v", err)
-	}
-}
-
-func TestCIGenerationWriterChecksLegacyChecksumWithoutInferringOrigin(t *testing.T) {
-	t.Chdir(t.TempDir())
-	scope := generationTestScope(t, "stoke.yaml", "stage.tmpl")
-	legacy := ci.StageFile{Path: ".stoke/ci/legacy.sh", Data: []byte("legacy output\n")}
-	legacyChecksum := ci.StageChecksum(legacy.Data)
-	writeCIFile(t, legacy.Path, string(legacy.Data))
-	legacySidecar := stageChecksumPath(legacy.Path)
-	writeCIFile(t, legacySidecar, string(legacyChecksum))
-	if err := writeStages([]ci.StageFile{legacy}, scope, true, true); err != nil {
-		t.Fatalf("legacy generated output is not checkable: %v", err)
-	}
-	if !bytes.Equal(legacyChecksum, readCIFile(t, legacySidecar)) {
-		t.Fatal("--check rewrote a legacy checksum")
-	}
-	other := ci.StageFile{Path: ".stoke/ci/new.sh", Data: []byte("new output\n")}
-	if err := writeStages([]ci.StageFile{other}, scope, false, true); err != nil {
-		t.Fatalf("legacy sidecar was incorrectly attributed: %v", err)
-	}
-	if err := writeStages([]ci.StageFile{legacy}, scope, false, false); err != nil {
-		t.Fatalf("selected legacy file could not be adopted: %v", err)
-	}
-	if err := writeStages([]ci.StageFile{other}, scope, true, true); err == nil || !strings.Contains(err.Error(), legacy.Path) {
-		t.Fatalf("adopted stage was not reported as obsolete: %v", err)
 	}
 }
 

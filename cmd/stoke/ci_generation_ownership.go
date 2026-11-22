@@ -54,7 +54,7 @@ func validStageDigest(value string) bool {
 
 type stageStamp struct {
 	Hash  string `json:"sha256"`
-	Scope string `json:"scope,omitempty"`
+	Scope string `json:"scope"`
 }
 
 type stageOwnership struct {
@@ -64,17 +64,13 @@ type stageOwnership struct {
 }
 
 func parseStageOwnership(data []byte) (stageOwnership, bool) {
-	// Existing SHA-256 sidecars have integrity information but no origin.
-	if hash, found := strings.CutSuffix(string(data), "\n"); found && validStageDigest(hash) {
-		return stageOwnership{Current: stageStamp{Hash: hash}}, true
-	}
 	var owner stageOwnership
 	if err := json.Unmarshal(data, &owner); err != nil || owner.Version != 1 ||
 		(owner.Current == (stageStamp{}) && owner.Pending == (stageStamp{})) {
 		return stageOwnership{}, false
 	}
 	validCurrent := owner.Current == (stageStamp{}) || (validStageDigest(owner.Current.Hash) &&
-		(owner.Current.Scope == "" || validStageDigest(owner.Current.Scope)))
+		validStageDigest(owner.Current.Scope))
 	validPending := owner.Pending == (stageStamp{}) || (validStageDigest(owner.Pending.Hash) &&
 		validStageDigest(owner.Pending.Scope))
 	return owner, validCurrent && validPending
@@ -143,7 +139,7 @@ func prepareStageUpdate(stage ci.StageFile, scope string, check bool) (stageUpda
 		}
 		return stageUpdate{}, nil
 	}
-	if !replaceBody && previous.Scope != "" {
+	if !replaceBody {
 		// Identical bytes do not move ownership to a different origin.
 		next = previous
 		if owner.Pending == (stageStamp{}) {
