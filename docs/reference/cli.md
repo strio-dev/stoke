@@ -2,6 +2,24 @@
 
 Run `stoke --help` for command help. Flags precede positional targets or references. The default workflow file is `stoke.yaml`; ordinary workflow commands accept `oci://registry/repository@sha256:…` through `-f`. CI generation currently requires a local checkout-relative workflow selector.
 
+## Log in to a registry
+
+```sh
+stoke registry login registry.example.com
+stoke registry login --username USER --password-stdin --authfile FILE registry.example.com
+```
+
+Give the registry host and optional port. Stoke verifies TLS and prompts for
+missing credentials. The password prompt hides input. Supply a password or
+token on stdin for automation.
+
+Login uses the shared Podman/Coopr credential store. The destination follows
+`--authfile`, then `REGISTRY_AUTH_FILE`, then `$DOCKER_CONFIG/config.json` if
+`DOCKER_CONFIG` is set, then the native default. On Linux the native default
+is normally `$XDG_RUNTIME_DIR/containers/auth.json`. Login can create the file.
+For Docker's global `credsStore`, use `docker login` or select a separate
+native auth file. Stoke can write through a configured per-registry helper.
+
 ## Inspect a workflow
 
 ```sh
@@ -14,7 +32,7 @@ stoke plan [-f FILE] [--input NAME=VALUE ...] [TASK ...]
 `check`, `plan` and `run` accept repeated `--input NAME=VALUE` flags for the root workflow's declared string inputs. Flags precede positional targets. The first `=` separates the name from the value; later `=` characters belong to the literal value. Quote shell-sensitive values, for example `--input 'message=a=b'`. Explicit empty values use `--input note=`. Duplicate CLI input names are rejected. Unknown input names and missing required inputs fail before execution. Optional inputs use their declared defaults, or empty strings when no default exists. Input values are ordinary build configuration, not a secret channel. See [reusable inputs](../guides/reusable-inputs.md).
 
 In the human plan, `needs` lists explicit success gates and `data-from` lists
-consumed task outputs. Data dependencies must succeed too. A task can copy from
+consumed task outputs. Data dependencies must succeed too. A task can consume
 `build` while separately waiting for `test`, as in [the first workflow](../tutorials/first-workflow.md).
 
 Local workflow paths must resolve to regular files, including through symlinks,
@@ -40,14 +58,14 @@ stoke run [-f FILE] [OPTIONS] [TASK ...]
 | `--cache-to REGISTRY/REPOSITORY` | Write Coopr execution results to an OCI registry repository; repeatable and an explicit registry write. |
 | `--no-cache` | Bypass execution-result reads for all selected tasks; newly executed results can still be stored locally or in selected cache destinations. |
 | `--coopr-binary PATH` | Compatible Coopr executable; defaults to `STOKE_COOPR_BINARY`, then `coopr` on PATH. Requires local API v1 and the [capabilities needed by selected tasks](../guides/coopr-api.md#select-a-compatible-executable). |
-| `--events FILE` | Optional validated [CDEvents JSONL](../guides/events.md) in a fresh private file outside execution inputs and runtime storage. Also supported by direct `ci run`. |
+| `--events FILE` | Optional validated [CDEvents JSONL](../guides/events.md) in a fresh private file outside execution inputs and runtime storage. Also supported by direct `stoke run --ci`. |
 | `--runtime PATH` | OCI runtime; defaults to `crun`. |
 | `--network MODE` | Explicit container RUN network default, requiring `run-network`; native RUN choices still apply. Does not change host-step networking or registry access. |
 | `--storage-driver NAME` | Native storage driver; defaults to `vfs`. |
-| `--authfile FILE` | Registry credential file. |
+| `--authfile FILE` | Registry credential file. Overrides `REGISTRY_AUTH_FILE` and `DOCKER_CONFIG`. See [credential lookup](../guides/security.md#credentials-and-ci). |
 | `--signature-policy FILE` | Native containers/image signature policy. |
 | `--tls-verify=BOOL` | Override native image/component/cache registry TLS verification; use `--tls-verify=false` only for isolated development registries. Omitted values retain Coopr defaults. |
-| `--plain-http` | Use HTTP for all resolved OCI workflow references; use only with isolated development registries. |
+| `--plain-http` | Use HTTP for Stoke workflow artifacts, imports and host-file caches. For isolated test registries only. |
 
 Host-only execution requires no Coopr executable. Host tasks default to fresh
 execution and export only declared captured files. Explicitly reusable host
@@ -55,11 +73,13 @@ results use a separate bounded OCI file format through the same directional
 cache repository options. Host cache lookup/authentication/integrity errors
 fail clearly; a missing key executes the command. See [host steps](../guides/host.md).
 
-Registry cache reads and writes are independent. Supplying only `--cache-from`
-leaves that repository read-only; supplying only `--cache-to` writes newly
-produced results without querying that repository. Use both for read/write reuse,
-and repeat either option for multiple repositories. The local `--cache-dir`
-continues to operate alongside them. For example:
+Registry directions resolve independently: CLI flags override `STOKE_CACHE_FROM`
+and `STOKE_CACHE_TO`, which override root workflow `cache-from` and `cache-to`.
+The variables use comma-separated repositories without spaces; set-empty clears,
+while unset falls back. `--cache-from=` or `--cache-to=` explicitly clears that
+direction. An unspecified direction retains its lower-priority default, so use
+`--cache-to=` to guarantee a read-only registry-cache invocation. Local cache
+storage remains separate. See [caching](../guides/caching.md).
 
 ```sh
 stoke run \
@@ -77,7 +97,7 @@ cache format and identity belong to Coopr. Missing entries rebuild; lookup error
 warn and rebuild, while invalid configuration and explicit export/seeding write
 failures fail the build. See [registry cache reuse](../guides/caching.md#share-results-through-an-oci-registry).
 
-Default run state is retained under `$XDG_STATE_HOME/stoke/runs`, falling back to `~/.local/state/stoke/runs`, with a unique run directory. Each successful image job exports `outputs/JOB/image` as an OCI layout. Full flattened filesystem output at `outputs/JOB/rootfs` is disabled by default; `outputs.filesystem: true` enables it, and `false` keeps it disabled. Each export snapshots its ordered-step filesystem into a caller-workspace destination, including declared reports attempted before ordinary failed-RUN cleanup. Component jobs instead export `outputs/JOB/component.oci.tar`, an OCI archive file with no flattened filesystem. Publication tasks record transfer results rather than another build export. With `--output`, that fresh directory replaces `outputs`; selected workspace destinations, native/component stores and `run.json` keep their existing locations. Run stores and output directories must remain outside the input context. Existing outputs are not overwritten. A failure prevents dependent work and, according to matrix failure policy, stops admission and cancels active workflow work. Stoke waits for cleanup and retains evidence; failed runs are not successful artifacts.
+Default run state is retained under `$XDG_STATE_HOME/stoke/runs`, falling back to `~/.local/state/stoke/runs`, with a unique run directory. Each successful image job exports `outputs/JOB/image` as an OCI layout. Full flattened filesystem output at `outputs/JOB/rootfs` is disabled by default; `outputs.filesystem: true` enables it, and `false` keeps it disabled. Each export snapshots its ordered-step filesystem into a caller-workspace destination, including declared reports attempted before ordinary failed-RUN cleanup. Component jobs instead export `outputs/JOB/component.oci.tar`, an OCI archive file with no flattened filesystem. Publication tasks record transfer results rather than another build export. With `--output`, that fresh directory replaces `outputs`; selected workspace destinations, native/component stores and `run.json` keep their existing locations. Run stores and output directories must remain outside the input context. OCI and rootfs destinations must be fresh. Local reruns update matching selected files and merge directories in the workspace. A failure prevents dependent work and, according to matrix failure policy, stops admission and cancels active workflow work. Stoke waits for cleanup and retains evidence; failed runs are not successful artifacts.
 
 Ready jobs run automatically, with an internal bound of four active jobs across the workflow. Each task's `strategy.max-parallel` adds a per-matrix limit. Ready dependents may start while unrelated branches remain active. The internal bound controls execution admission, not CPU or memory reservation. See [parallel tasks](../guides/parallel-tasks.md).
 
@@ -97,91 +117,37 @@ marks its returned report failed; the saved report can be absent or retain an
 earlier complete version. Use the exit status and returned error when deciding
 whether a run succeeded.
 
-## Generate and execute CI jobs
+## CI stages
 
 ```sh
 stoke ci plan [-f FILE] [--context DIR] [OPTIONS] [TASK ...]
-stoke ci generate [-f FILE] [--context DIR] [OPTIONS] [TASK ...]
-stoke ci scope --plan-id ID [--github-output FILE]
-stoke ci run --plan FILE --job ID --scope JSON --attempt N [OPTIONS]
-stoke ci verify-results --results JSON
-stoke ci cleanup --results-repository REPOSITORY --scope JSON --result REFERENCE
+stoke ci generate [TEMPLATE [STAGE]] [OPTIONS]
+stoke ci generate [STAGE] --template-file FILE [OPTIONS]
+stoke run --ci [OPTIONS] TASK
 ```
 
-`ci plan` resolves the same inputs, imports, selected dependency closure and
-matrix variants as local execution. Plan version two preserves visible authored
-stages and native matrix rows by default. Shared inline environments spanning
-jobs become visible producer jobs. `--co-locate` is an explicit choice.
-Local workflow/context selectors stay inside the checkout; OCI workflow imports
-remain supported. Recorded input values must not contain secrets.
+`ci plan` prints the resolved groups, matrix variants and their native
+dependencies. `ci generate` renders standalone stage files. The native caller
+owns scheduling, checkout, success gates and credentials. See
+[CI stage templates](../guides/ci-generation.md) for built-in, local and OCI
+selectors and the root `ci-template` setting.
 
-`ci generate` writes a separately owned reusable workflow and plan. It never
-merges handwritten jobs. Generated ownership/fingerprint checks reject edited
-files and stale pairs. Both output paths must stay inside the repository without
-symlink traversal. Native CI owns success gates and credentials.
+Generation accepts `-f`, `--context`, repeatable `--input` and
+`--co-locate TASK`. Explicit `--network`, `--cache-from` and `--cache-to`
+are included in the emitted command when set. Generation reads no ambient
+cache overrides. Use `--check` to detect stale generated files without writing.
+`--authfile` uses the normal registry credential lookup. `--plain-http`
+is for isolated template or workflow registry fixtures.
 
-| Generation option | Meaning |
-| --- | --- |
-| `-f FILE` | Checkout-relative workflow; defaults to `stoke.yaml`. |
-| `--context DIR` | Checkout-relative caller context; defaults to the workflow directory. |
-| `--input NAME=VALUE` | Declared workflow input, repeatable. |
-| `--runner LABEL` | Existing runner label, repeatable; replaces `self-hosted`, `linux`. |
-| `--job-container-image REF` | Opt-in digest-pinned tools image for every generated job, including setup/result checks. |
-| `--job-container-options TEXT` | Explicit Docker job-container options; requires an image and adds no security options implicitly. |
-| `--github-token-auth` | Opt in to GHCR image pulls and per-job registry login with the caller-granted GitHub token. Requires provisioned Coopr for login and caller-owned package permissions. |
-| `--timeout MINUTES` | Native job timeout, 1–360; defaults to 45. |
-| `--cache-from REPOSITORY`, `--cache-to REPOSITORY` | Independent Coopr registry-cache directions, repeatable. |
-| `--network MODE` | Record the container RUN default in the plan and generated jobs. |
-| `--results-repository REPOSITORY` | Exact OCI result repository, independent of caches. If omitted when cross-job data exists, generation emits a required reusable-call input. |
-| `--co-locate TASK` | Explicitly group that data-connected component, including shared environments and necessary intervening gates; repeatable. |
-| `--output FILE`, `--plan-output FILE` | Generated workflow and JSON plan destinations. |
-| `--check` | Compare both generated files without writing; fail on drift. |
-| `--authfile FILE`, `--plain-http` | Import registry access; never recorded as credentials. HTTP is for isolated test registries. |
+`run --ci` uses the same workflow inputs and execution options as `run`.
+It requires explicit task selections and fails if external data prerequisites
+cannot be restored from the normal Coopr cache. The caller handles gates that
+only require success.
 
-`ci scope` reads provisioned `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`,
-`GITHUB_RUN_ID` and `GITHUB_SHA`, creates a random invocation nonce and emits
-scope JSON. `--github-output` also appends the native `scope` output. Scope fields
-and nonces establish consistency and uniqueness, not authorization.
-
-`ci run` executes one planned job or explicitly grouped unit. It fetches exact
-immutable result bindings, rejects conflicts/missing data and imports selected
-payloads into Coopr's ordinary stores. It never rebuilds an external producer on
-a cache miss. Ordinary `stoke run` retains the full locally gated workflow.
-The JSON report adds `ci` input-binding metadata; it is an optional report, not a
-success receipt or a required CI artifact. Gate-only bindings may be emitted
-before the gate executes. Native `needs` remains the success authority.
-
-| CI execution option | Meaning |
-| --- | --- |
-| `--plan FILE`, `--plan-id ID` | Plan path and expected fingerprint embedded by generation. |
-| `--job ID` | Required concrete planned job/unit ID. |
-| `--scope JSON`, `--attempt N` | Native invocation scope and positive current attempt. Explicit prior-attempt results may be reused when valid; no registry attempt scanning. |
-| `--needs-env` | Read only expected per-variant native environment slots generated by Stoke. |
-| `--needs JSON` | Explicit native `needs` object for local/provider integration; mutually exclusive with `--needs-env`. |
-| `--github-output FILE` | Append this variant's bounded unique native metadata output to an existing regular file; symlinks are rejected. |
-| `--results-repository REPOSITORY` | Runtime result repository; required for cross-job data if not configured in the plan. |
-| `--output DIR`, `--cache-dir DIR` | Fresh outputs and local cache/staging outside the checkout; generated jobs use `$RUNNER_TEMP`. |
-| `--coopr-binary PATH` | Reviewed executable; defaults to `STOKE_COOPR_BINARY`, then `coopr` on PATH. |
-| `--cache-from REPOSITORY`, `--cache-to REPOSITORY` | Independent invocation cache directions, repeatable. |
-| `--no-cache` | Force this job's work fresh; does not authorize producer replay. |
-| `--runtime PATH`, `--storage-driver NAME` | Native execution defaults: `crun`, `vfs`. |
-| `--network MODE` | Must match the generated plan when supplied; defaults to that plan's recorded selection. |
-| `--authfile FILE`, `--signature-policy FILE`, `--tls-verify BOOL`, `--plain-http` | Registry policy; TLS false/HTTP are isolated-test options. HTTP applies to workflow/result transport; native/cache TLS uses the Coopr option. |
-
-Missing or omitted native output metadata fails with a producer-and-dependent-gates
-rerun instruction. GitHub partial-rerun output preservation remains a hosted
-qualification gap. A result envelope contains exact output and input identities,
-never pass/fail; an input-set reference cannot replace a native gate.
-
-`ci verify-results` accepts the native compact status array or a `needs` result
-object. Empty/malformed values and every status except `success` fail, including
-skipped and cancelled jobs. `ci cleanup` deletes only one scope-validated metadata
-root. Call it after stopping writers and waiting out the retry window; the
-command does not establish those conditions. Digest deletion also
-removes every tag alias for that metadata index. It does not delete shared
-payload manifests/blobs/cache entries; registry retention and deletion support
-remain operator-owned. See [CI generation](../guides/ci-generation.md) for trust,
-retention, import bounds, explicit co-location and provider/platform limitations.
+In CI mode, a literal image job with `cache: false` and no requested rootfs
+does not export an OCI layout or digest if the resolved workflow uses it only
+as a success gate. This applies even when the gate is explicitly selected.
+An in-store image ID is not an exported OCI result.
 
 ## Publish and retrieve definitions
 
@@ -200,7 +166,7 @@ This command publishes workflow definitions only. Built image/component delivery
 
 ## Help and version
 
-`stoke`, `stoke help`, `stoke -h` and `stoke --help` print help. `stoke version` and `stoke --version` print the build version, which is `dev` in a development checkout. Errors are reported on stderr with a nonzero exit status; task failures do not become successful runs.
+`stoke`, `stoke help`, `stoke -h` and `stoke --help` print help. `stoke help run` also opens `stoke run --help`. `stoke version` and `stoke --version` print the build version, which is `dev` in a development checkout. Errors are reported on stderr with a nonzero exit status; task failures do not become successful runs.
 
 Exit status 0 indicates success or help, 1 indicates validation/resolution/execution/I/O failure, and 2 indicates an unknown command, invalid flags or missing required arguments.
 
@@ -214,9 +180,9 @@ other CI jobs receive the same terminal diagnostics and nonzero exit status.
 After fixing the cause, rerun the original terminal targets with the same inputs
 and execution options; retrying only the failed prerequisite can omit its gates
 or downstream work. Fresh tasks and side effects can execute again. Explicit
-`--output` and `--events` destinations must be fresh. Selected exports require
-absent caller-workspace destinations too: preserve existing files elsewhere or
-use a fresh workspace. A new `--output` does not relocate selected exports.
+`--output` and `--events` destinations must be fresh. A local retry can update
+earlier selected exports. Move them aside to keep the earlier contents. A
+new `--output` does not relocate selected exports.
 
 For generated CI, use provider-native retries preserving the original invocation
-scope and inherited inputs. See [exact selection and retry behavior](../guides/ci-generation.md#exact-selection-and-retry-behavior).
+native success gates. Retry the workflow after changing its inputs.

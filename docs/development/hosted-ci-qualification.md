@@ -88,66 +88,12 @@ A COPY hit, echoed command or identical binary bytes alone was insufficient.
 This establishes registry reuse by the repaired engine against the original
 input bytes; it does not rerun the complete DAG with that engine.
 
-## Native caller and batch bounds
+## Historical qualification
 
-The generator owns these five plan/workflow pairs:
-
-| Case | Plan | Generated workflow |
-| --- | --- | --- |
-| Cold | `.stoke/hosted-cold.json` | `.github/workflows/hosted-cold.generated.yml` |
-| Warm | `.stoke/hosted-warm.json` | `.github/workflows/hosted-warm.generated.yml` |
-| Failure | `.stoke/hosted-failure.json` | `.github/workflows/hosted-failure.generated.yml` |
-| ARM cold | `.stoke/hosted-arm-cold.json` | `.github/workflows/hosted-arm-cold.generated.yml` |
-| ARM warm | `.stoke/hosted-arm-warm.json` | `.github/workflows/hosted-arm-warm.generated.yml` |
-
-The reusable `.github/workflows/stoke-dogfood.yml` caller runs a cold invocation
-followed by two concurrent AMD64 warm invocations, an ARM cold/warm path, or the
-separate expected-failure fixture. Each invocation owns its scope. Native
-producer, matrix and package dependencies remain visible; the final status gate
-uses native conditions on the host without a container or tool provisioning.
-The generic example and host-workflow pairs remain separate.
-
-Manual dispatch through `.github/workflows/stoke-runtime.yml` is restricted to
-`strio-dev/stoke`'s `initial` branch. `prepare-images` selects image preparation;
-`roundtrip`, `arm-roundtrip` and `failure` select the dogfood caller;
-`candidate` selects both native full workflows; `candidate-amd` and
-`candidate-arm` select one full workflow for targeted retry qualification.
-`cache-reuse` selects the final build-only matrix. Unknown direct reusable-call
-strings select no jobs. Use `[skip ci]` on qualification branch updates to avoid
-the unrelated push-triggered runtime matrix.
-
-The batch used **54 of 54 container-job starts**, including the final two-job
-reuse matrix. No additional qualification dispatch or selective rerun remains
-within this budget. The batch kept at most two concurrent workflows and matrix parallelism
-two. Qualification runtime jobs and both native image-preparation jobs have
-45-minute limits; these do not bound queued time. The earlier drain time and
-absolute deadline are superseded. Preserve actual counts, report omitted cases,
-and stop on unexpected failure.
-
-## Generate and validate callers
-
-Validate the workflows from the repository root:
-
-```sh
-stoke check -f examples/ci/stoke.yaml --context .
-stoke check -f examples/ci/failure.yaml --context .
-```
-
-Run `stoke ci generate --check` for every pair using its reviewed image digest,
-native runner (`ubuntu-24.04` or `ubuntu-24.04-arm`), 45-minute timeout, approved
-container options and `--github-token-auth`. Keep `--context .`: omitting it
-selects the workflow directory and misses repository-root inputs. Regeneration
-is checked locally; no duplicate hosted validator executes the workflow.
-See the [tools-container generator](../guides/ci-generation.md#opt-in-tools-containers).
-
-Cache directions are literal plan configuration. Cold exports without
-`--cache-from`; warm and failure include cache import. Exact-result storage is
-configured separately. Coopr's `instruction-`, `package-` and `graph-v2-` tags
-are distinct from Stoke's `sci-`, `scip-` and `stoke-host-v1-` tags, so the
-authorized repository can hold both. The final reuse probe imports only.
-Keep exact references throughout the retry window; this batch performs no
-registry deletion. Internal handoff uses OCI references and native job outputs
-without CI artifact upload/download or a successful-status object.
+The run links above identify the tested workflows and tools images.
+Those runs used the earlier exact-result exchange. Current generated stages
+invoke `stoke run --ci` and restore external image dependencies from Coopr's
+ordinary cache. The historical results do not qualify this current path.
 
 ## Container profile and authentication
 
@@ -174,9 +120,11 @@ private. Check its identity, visibility and caller access before writes; missing
 or public metadata is not permission to create a package. No new package or
 multiarch index is part of this batch.
 
-`--github-token-auth` authenticates each generated execution job independently
-through Coopr login and a private auth file. It supplies result transport,
-registry-cache access and credentials for the private tools-image pull.
+In those recorded workflows, the former `--github-token-auth` generator option
+authenticated execution jobs through Coopr login and a private auth file.
+Those jobs used it for result exchange, registry cache access and private
+tools-image pulls. Current stage templates leave authentication to the native
+caller.
 Execution/preparation jobs use `contents: read` and `packages: write`; the final
 reuse probe uses `contents: read` and `packages: read`. The host final gate
 requires no package authentication. The caller owns permissions and package
@@ -212,19 +160,6 @@ unqualified on GitHub. Generated unique output names and local fixtures do not
 establish those provider retry behaviors. See [matrix outputs](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#jobsjob_idoutputs)
 and [reruns](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/re-run-workflows-and-jobs).
 
-Missing exact-result handling remains a local-fixture proof. The hosted batch
+The recorded hosted batch
 did not remove results to test a missing consumer input, and did not qualify a
 retry-retention window or GitHub package-version retention.
-
-## GHCR cleanup qualification boundary
-
-Stoke's generic `ci cleanup` verifies scope/type and requests deletion of one OCI
-metadata index by digest. It does not discover safe candidates, enforce retry
-windows, map GitHub package versions or garbage-collect shared blobs.
-[OCI Distribution](https://github.com/opencontainers/distribution-spec/blob/v1.1.1/spec.md#content-management)
-permits registries to disable deletion; deleting a manifest can invalidate all
-tags referencing it. Local deletion fixtures do not establish GHCR behavior.
-No remote deletion, package-administration or GC operation is prepared or
-authorized. Future deletion, tag/version cleanup, restoration or blob collection
-requires separate targets and authorization while preserving retained attempts
-and shared content.

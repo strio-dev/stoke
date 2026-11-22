@@ -1,15 +1,23 @@
-# Build, test and export an artifact
+# Build, test and export a file
 
-Run the checked-in example at `examples/first-workflow/stoke.yaml`. It turns a text file into an uppercase artifact, verifies the result and packages only that file in a scratch image.
+Turn a text file into an uppercase artifact, test it and export just that file.
 
-## Before you start
+## Set up the workspace
 
-Complete [getting started](../getting-started.md), which builds `/tmp/stoke`. Run commands from the repository root; if Stoke is already installed, substitute `stoke` for `/tmp/stoke`. You need registry access for `docker.io/library/busybox:1.37` and a working rootless execution environment.
+Complete [getting started](../getting-started.md). The workflow pulls BusyBox
+from Docker Hub. Create a workspace with the input file.
 
-## Read the workflow
+```sh
+workspace="$(mktemp -d)"
+cd "$workspace"
+printf '%s\n' 'hello from stoke' > message.txt
+```
+
+Save this workflow as `stoke.yaml`.
 
 ```yaml
 version: 1
+
 tasks:
   build:
     image: docker.io/library/busybox:1.37
@@ -18,56 +26,58 @@ tasks:
       - copy:
           sources: [message.txt]
           destination: /work/message.txt
-      - run: [sh, -eu, -c, 'mkdir -p /out; tr a-z A-Z < message.txt > /out/message.txt']
+      - run: |
+          mkdir -p /out
+          tr a-z A-Z < message.txt > /out/message.txt
+
   test:
     from: build
     cache: false
     steps:
-      - run: [sh, -eu, -c, 'test "$(cat /out/message.txt)" = "HELLO FROM STOKE"']
+      - run: |
+          test "$(cat /out/message.txt)" = "HELLO FROM STOKE"
+
   artifact:
-    image: scratch
+    from: build
     needs: [test]
-    outputs: {filesystem: true}
     steps:
-      - copy:
-          from: build
-          sources: [/out/message.txt]
-          destination: /message.txt
+      - export:
+          source: /out/message.txt
+          destination: dist/message.txt
 ```
 
-`from: build` starts the test from the build's completed image. The artifact's `needs: [test]` waits for test success; it does not copy files. Its `copy.from: build` supplies the artifact bytes. A failed test prevents the artifact task from running. `cache: false` keeps the test command from being replaced by a cached result. The artifact task explicitly requests filesystem output so its file can be read from the host.
+`run: |` executes a POSIX shell script with `sh -eu`: command failures and unset variables fail the step, subject to the shell's normal rules. The image must supply `sh`.
+
+Both `test` and `artifact` use `from: build` to consume the build's completed image. The artifact's separate `needs: [test]` waits for test success; it does not supply data. A failed test prevents the artifact task from running. `cache: false` keeps the test fresh. The export step copies only `/out/message.txt` to `dist/message.txt` in the caller workspace; it needs neither a scratch image nor a full filesystem export.
 
 ## Inspect the plan
 
 ```sh
-/tmp/stoke check -f examples/first-workflow/stoke.yaml
-/tmp/stoke plan -f examples/first-workflow/stoke.yaml artifact
+stoke check
+stoke plan artifact
 ```
 
-The selected order is `build`, `test`, `artifact`. Tasks outside this closure are not executed. Without targets, Stoke selects every root workflow task.
+The selected order is `build`, `test`, `artifact`. The plan distinguishes the artifact's `needs: test` success gate from its `data-from: build` input. Tasks outside this closure are not executed. Without targets, Stoke selects every root workflow task.
 
 ## Run and inspect the result
 
 ```sh
-stoke_output="$(mktemp -d)/outputs"
-/tmp/stoke run -f examples/first-workflow/stoke.yaml \
-  --context examples/first-workflow --output "$stoke_output" artifact
-cat "$stoke_output/artifact/rootfs/message.txt"
+stoke run artifact
+cat dist/message.txt
 ```
 
-The last command prints `HELLO FROM STOKE` followed by a newline. Each successful image task has an OCI image layout. The artifact's layout is at `$stoke_output/artifact/image`; its explicitly requested filesystem contains only `message.txt`. The run reports its retained directory, where `run.json` records execution results.
-
-The output directory must be fresh and outside the input context. Keep execution stores and cache outside the context too, so later builds do not copy generated state back into their inputs.
+The last command prints `HELLO FROM STOKE` followed by a newline. The run also retains its normal image outputs and run report in the reported run directory. No flattened rootfs is requested. `--output` can relocate that retained directory; it does not relocate the selected file, whose destination is relative to `--context`.
 
 ## Run again
 
-Choose another fresh output directory, or omit `--output` to use a unique retained run directory:
+Run the same target again in the same workspace.
 
 ```sh
-/tmp/stoke run -f examples/first-workflow/stoke.yaml \
-  --context examples/first-workflow artifact
+stoke run artifact
 ```
 
-Existing output directories are not replaced. If you use `--events`, choose a fresh event file outside the input context for each invocation. Workflows with selected file exports also need unused destination paths in the caller workspace; a new `--output` alone does not make those paths reusable.
+A local rerun updates matching files and merges directories, preserving
+unrelated entries. Use a separate workspace to keep an earlier export. A
+custom `--output` or `--events` path must still be fresh. A missing export source fails the task; a failed test leaves the gated artifact unexported. Exporting reports from a failed command is covered in [selected-file exports](../reference/workflow.md#outputs).
 
-Coopr can reuse cached build instructions; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.
+Coopr can reuse cached build instructions and selected outputs; the test still runs because its cache is disabled. Cache counters describe portable cache decisions, not all native storage reuse. Read [caching](../guides/caching.md) before deciding whether to cache real tests.

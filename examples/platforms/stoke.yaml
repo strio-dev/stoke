@@ -5,8 +5,8 @@ tasks:
     strategy:
       matrix:
         platform: [linux/amd64, linux/arm64]
-    environment:
-      files: [examples/platforms/environment.coopr]
+    build:
+      coopr: [examples/platforms/environment.coopr]
       target: test
     cache: false
     outputs: {filesystem: false}

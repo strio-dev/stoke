@@ -77,6 +77,9 @@ func (i *instance) emit(name string) (string, error) {
 		return key, nil
 	}
 	key := i.prefix + name
+	if len(key) > workflow.MaxJobNameBytes {
+		return "", fmt.Errorf("expanded task name %q exceeds %d bytes", key, workflow.MaxJobNameBytes)
+	}
 	task, err := i.resolve(name)
 	if err != nil {
 		return "", fmt.Errorf("task %q: %w", key, err)
@@ -142,7 +145,7 @@ func (i *instance) resolve(name string) (workflow.Task, error) {
 			copy.From = i.emitted[copy.From]
 		}
 	}
-	for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment} {
+	for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment.Native()} {
 		if build == nil {
 			continue
 		}

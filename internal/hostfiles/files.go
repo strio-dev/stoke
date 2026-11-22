@@ -139,21 +139,12 @@ func inventory(ctx context.Context, root *os.Root, selected []string) ([]Entry, 
 		}
 		entry := Entry{Path: name, Mode: uint32(info.Mode().Perm()), Directory: info.IsDir()}
 		if !info.IsDir() {
-			if info.Size() < 0 || info.Size() > MaxBytes-total {
-				return errors.New("host files exceed byte limit")
-			}
-			file, err := root.Open(name)
+			file, actual, err := openRegular(ctx, root, name, info, MaxBytes-total)
 			if err != nil {
-				return err
-			}
-			actual, err := file.Stat()
-			if err != nil {
-				_ = file.Close()
 				return err
 			}
 			if err := regular(actual); err != nil {
-				_ = file.Close()
-				return err
+				return errors.Join(err, file.Close())
 			}
 			hash := sha256.New()
 			n, copyErr := io.Copy(hash, contextReader{ctx, io.LimitReader(file, info.Size()+1)})
@@ -172,6 +163,9 @@ func inventory(ctx context.Context, root *os.Root, selected []string) ([]Entry, 
 		return nil
 	}
 	for _, name := range selected {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if err := checkParents(root, name); err != nil {
 			return nil, err
 		}
@@ -184,16 +178,7 @@ func inventory(ctx context.Context, root *os.Root, selected []string) ([]Entry, 
 				return nil, err
 			}
 		}
-		if err := fs.WalkDir(root.FS(), name, func(name string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			info, err := d.Info()
-			if err != nil {
-				return err
-			}
-			return add(name, info)
-		}); err != nil {
+		if err := walkInventory(ctx, root, name, func() int { return len(entries) }, add); err != nil {
 			return nil, err
 		}
 	}
@@ -215,7 +200,7 @@ func Copy(ctx context.Context, sourceRoot, sourcePath, destinationRoot, destinat
 	if !cleanName(sourcePath, true) || !cleanName(destinationPath, true) {
 		return errors.New("host snapshot paths must be relative and nonescaping")
 	}
-	source, err := os.OpenRoot(sourceRoot)
+	source, err := openDirectoryRoot(ctx, sourceRoot)
 	if err != nil {
 		return err
 	}
@@ -224,7 +209,7 @@ func Copy(ctx context.Context, sourceRoot, sourcePath, destinationRoot, destinat
 	if err != nil {
 		return err
 	}
-	dest, err := os.OpenRoot(destinationRoot)
+	dest, err := openDirectoryRoot(ctx, destinationRoot)
 	if err != nil {
 		return err
 	}
@@ -271,6 +256,9 @@ func Copy(ctx context.Context, sourceRoot, sourcePath, destinationRoot, destinat
 		return err
 	}
 	for i := len(entries) - 1; i >= 0; i-- {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		entry := entries[i]
 		if !entry.Directory {
 			continue
@@ -292,7 +280,7 @@ func Copy(ctx context.Context, sourceRoot, sourcePath, destinationRoot, destinat
 			}
 		}
 	}
-	return nil
+	return ctx.Err()
 }
 
 // Materialized views expose the archive's canonical time, not the time of a
@@ -344,7 +332,7 @@ func copyEntry(ctx context.Context, source *os.Root, entry Entry, dest *os.Root,
 	if err := dest.MkdirAll(path.Dir(target), 0700); err != nil {
 		return err
 	}
-	in, err := source.Open(entry.Path)
+	in, err := openCapturedFile(ctx, source, entry)
 	if err != nil {
 		return err
 	}
@@ -385,7 +373,7 @@ func CaptureWithKey(ctx context.Context, workspace string, paths []string, layou
 	if _, err := os.Lstat(layout); !errors.Is(err, os.ErrNotExist) {
 		return "", errors.New("host capture layout must be fresh")
 	}
-	source, err := os.OpenRoot(workspace)
+	source, err := openDirectoryRoot(ctx, workspace)
 	if err != nil {
 		return "", err
 	}
@@ -430,7 +418,7 @@ func CaptureWithKey(ctx context.Context, workspace string, paths []string, layou
 			return "", err
 		}
 		if !entry.Directory {
-			in, err := source.Open(entry.Path)
+			in, err := openCapturedFile(ctx, source, entry)
 			if err != nil {
 				_ = file.Close()
 				return "", err
@@ -484,6 +472,9 @@ func CaptureWithKey(ctx context.Context, workspace string, paths []string, layou
 		return "", err
 	}
 	if err := os.WriteFile(filepath.Join(staging, "oci-layout"), []byte("{\"imageLayoutVersion\":\"1.0.0\"}"), 0600); err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	if err := Commit(staging, layout); err != nil {

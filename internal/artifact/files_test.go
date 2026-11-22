@@ -12,9 +12,9 @@ import (
 
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/memory"
 	"github.com/strio-dev/stoke/internal/assets"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
 )
 
 type observedStore struct {

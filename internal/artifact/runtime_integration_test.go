@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"github.com/opencontainers/go-digest"
+	"github.com/oras-project/oras-go/v3/registry/remote"
 	"github.com/strio-dev/bale"
 	cooprwire "github.com/strio-dev/coopr/api"
 	"github.com/strio-dev/stoke/internal/assets"
 	"github.com/strio-dev/stoke/internal/engine"
-	"oras.land/oras-go/v2/registry/remote"
 )
 
 type ociRuntimeTask struct {
@@ -153,7 +153,7 @@ func TestPackagedWorkflowWithCooprBale(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		repo.PlainHTTP = true
+		repo.Registry.PlainHTTP = true
 		descriptor, err := repo.Resolve(ctx, "stable")
 		if err != nil {
 			t.Fatal(err)

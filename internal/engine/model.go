@@ -38,10 +38,6 @@ type Options struct {
 }
 type Result struct {
 	ImageID, ManifestDigest, Platform, OCI, Filesystem, Reference string
-	// CanonicalReference retains an exact transported payload for publication;
-	// ImageID is only the local execution identity after verified import.
-	CanonicalReference string
-	// CanonicalOCI retains the verified original layout; publication copies its
 	// canonical digest instead of re-exporting the native execution image.
 	CanonicalOCI    string
 	Cache           CacheStats

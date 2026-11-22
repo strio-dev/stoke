@@ -116,17 +116,7 @@ func descriptor(d v1.Descriptor, maxSize int64) error {
 }
 
 func readSmall(ctx context.Context, root *os.Root, name string, limit int64) ([]byte, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	info, err := root.Lstat(name)
-	if err != nil {
-		return nil, err
-	}
-	if !info.Mode().IsRegular() || info.Size() > limit {
-		return nil, errors.New("invalid host-file OCI metadata file")
-	}
-	file, err := root.Open(name)
+	file, _, err := openRegular(ctx, root, name, nil, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -193,7 +183,7 @@ func metadata(ctx context.Context, root *os.Root, identity string) (v1.Manifest,
 
 // Validate checks the selected immutable layout, including every captured byte.
 func Validate(ctx context.Context, layout, identity string) (Config, error) {
-	root, err := os.OpenRoot(layout)
+	root, err := openDirectoryRoot(ctx, layout)
 	if err != nil {
 		return Config{}, err
 	}
@@ -211,7 +201,7 @@ func Restore(ctx context.Context, layout, identity, destination string) (retErr 
 	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 		return errors.New("host-file restore destination must be fresh")
 	}
-	root, err := os.OpenRoot(layout)
+	root, err := openDirectoryRoot(ctx, layout)
 	if err != nil {
 		return err
 	}
@@ -241,7 +231,7 @@ func Restore(ctx context.Context, layout, identity, destination string) (retErr 
 			retErr = errors.Join(retErr, err, os.RemoveAll(staging))
 		}
 	}()
-	target, err := os.OpenRoot(staging)
+	target, err := openDirectoryRoot(ctx, staging)
 	if err != nil {
 		return err
 	}
@@ -257,18 +247,14 @@ func Restore(ctx context.Context, layout, identity, destination string) (retErr 
 
 func readLayer(ctx context.Context, source *os.Root, layer v1.Descriptor, config Config, target *os.Root) error {
 	name := "blobs/sha256/" + layer.Digest.Encoded()
-	info, err := source.Lstat(name)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Size() != layer.Size {
-		return errors.New("invalid host-file layer")
-	}
-	file, err := source.Open(name)
+	file, info, err := openRegular(ctx, source, name, nil, layer.Size)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = file.Close() }()
+	if info.Size() != layer.Size {
+		return errors.New("invalid host-file layer")
+	}
 	hash := sha256.New()
 	limited := &io.LimitedReader{R: contextReader{ctx, file}, N: layer.Size + 1}
 	reader := io.TeeReader(limited, hash)

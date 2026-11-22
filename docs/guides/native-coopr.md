@@ -2,6 +2,10 @@
 
 Use a `coopr` task when a build already lives in Coopr definition files or produces a reusable Coopr component. Stoke orders the workflow, supplies explicit arguments and retains results; Coopr parses its native definitions and owns their component/build graph, execution and cache behavior. This does not make Coopr's native grammar a second Stoke workflow language.
 
+Use `build.coopr` when ordinary steps need a Coopr-built starting image.
+Dockerfile/Containerfile support is outside v1. Build those images externally
+and select their OCI registry reference with `image:`, preferably pinned by digest.
+
 Select a [compatible Coopr executable](coopr-api.md#select-a-compatible-executable)
 with the capabilities required by your tasks.
 If the executable is outside PATH, select it through `STOKE_COOPR_BINARY`.
@@ -77,7 +81,7 @@ args:
 
 This is a field reference, not a complete task: the input declaration, named sources and matrix key must exist in its workflow. Quote numeric and boolean literals when they are native argument strings. Stoke does not evaluate expressions or substitute values into filenames, targets or arbitrary YAML text.
 
-An image task binding supplies a Coopr image source: `containers-storage:IMAGE_ID` for a local result or a digest-pinned registry reference for an exact CI input. A component binding supplies its native component digest reference. Treat these values as source references, not stable literal identifiers. The native definition decides where an argument is consumed—for example, as a FROM source or component reference. Stoke passes values to Coopr's normal argument interface instead of generating native source text. Coopr's normal argument scope still applies: the example redeclares its global `COMPONENT` argument inside the image stage before using it in a component call.
+An image task binding supplies a Coopr image source: `containers-storage:IMAGE_ID`. A component binding supplies its native component digest reference. Treat these values as source references, not stable literal identifiers. The native definition decides where an argument is consumed—for example, as a FROM source or component reference. Stoke passes values to Coopr's normal argument interface instead of generating native source text. Coopr's normal argument scope still applies: the example redeclares its global `COMPONENT` argument inside the image stage before using it in a component call.
 
 `{input: version}` supplies the declared component input after required/default resolution. A reusable caller passes it with `with`; a local or remote root receives it from `--input version=VALUE`. See [reusable inputs](reusable-inputs.md).
 
@@ -103,7 +107,7 @@ artifact:
         destination: artifacts/native/output.txt
 ```
 
-The source is inside that task's filesystem at the export operation; the destination is relative to the caller workspace, including inside a native CI job. Later RUNs cannot change bytes already captured by an earlier export. Imported templates retain the caller destination. Cached prefixes restore their selected files without rerunning instructions. A declared export following an ordinary failed RUN is attempted before cleanup while preserving failure and dependent success gates. Destinations must be fresh, nonoverlapping workspace paths; globs, traversal, reserved control paths, escaping or dangling symlinks and special files are rejected. See [output validation](../reference/workflow.md#outputs).
+The source is inside that task's filesystem at the export operation; the destination is relative to the caller workspace, including inside a native CI job. Later RUNs cannot change bytes already captured by an earlier export. Imported templates retain the caller destination. Cached prefixes restore their selected files without rerunning instructions. A declared export following an ordinary failed RUN is attempted before cleanup while preserving failure and dependent success gates. Destinations must be nonoverlapping workspace paths. Local reruns update matching files and merge directories. Generated CI jobs require fresh destinations. See [output validation](../reference/workflow.md#outputs).
 
 On a cache hit, Coopr restores the selected native image before copying those paths; its image layers may still need to be downloaded.
 

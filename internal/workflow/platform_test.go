@@ -40,7 +40,7 @@ func TestPlatformBindingsRoundTripAndIsolation(t *testing.T) {
 inputs: {target: {required: true}}
 tasks:
   native: {coopr: {files: [ci.coopr]}, platform: {input: target}}
-  inline: {environment: {files: [ci.coopr]}, platform: linux/x86_64}
+  inline: {build: {coopr: [ci.coopr]}, platform: linux/x86_64}
   matrix:
     image: scratch
     platform: {matrix: target}

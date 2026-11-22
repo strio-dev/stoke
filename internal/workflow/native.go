@@ -17,6 +17,7 @@ type CooprBuild struct {
 	Kind      string              `yaml:"kind,omitempty"`
 	Target    string              `yaml:"target,omitempty"`
 	Args      map[string]Argument `yaml:"args,omitempty"`
+	Context   string              `yaml:"-" json:",omitempty"`
 }
 
 // Argument is a literal value or an explicit task-output/matrix binding.
@@ -186,11 +187,11 @@ func (t Task) validateNative() error {
 	}
 	if t.Environment != nil {
 		if t.Environment.Kind != "" && t.Environment.Kind != "image" {
-			return errors.New("environment must build an image, not a component")
+			return errors.New("build must produce an image, not a component")
 		}
-		buildTask := Task{Coopr: t.Environment, Strategy: t.Strategy}
+		buildTask := Task{Coopr: t.Environment.Native(), Strategy: t.Strategy}
 		if err := buildTask.validateNative(); err != nil {
-			return fmt.Errorf("environment: %w", err)
+			return fmt.Errorf("build: %w", err)
 		}
 	}
 	if t.Coopr != nil {
@@ -198,6 +199,12 @@ func (t Task) validateNative() error {
 			return errors.New("coopr cannot be combined with env, workdir or steps; use a separate from task")
 		}
 		build := t.Coopr
+		if build.Context != "" {
+			clean := path.Clean(build.Context)
+			if path.IsAbs(build.Context) || clean == ".." || strings.HasPrefix(clean, "../") || strings.ContainsAny(build.Context, "\x00\r\n\\") {
+				return errors.New("build context must stay inside the caller workflow root")
+			}
+		}
 		if build.FilesFrom != "" && build.FilesFrom != "context" && build.FilesFrom != "component" {
 			return errors.New("coopr files-from must be context or component")
 		}

@@ -48,10 +48,11 @@ func SharedEnvironmentConsumers(expanded *workflow.ExecutionPlan, contextDir str
 			if err := source.ValidateComponentContext(definition.ComponentDir, contextDir); err != nil {
 				return nil, fmt.Errorf("task %q: %w", job.Name, err)
 			}
-			environment.Files, err = source.DefinitionFilesForTask(*definition, contextDir)
+			resolved, err := source.ResolveDefinitionBuild(*definition, contextDir)
 			if err != nil {
-				return nil, fmt.Errorf("task %q environment files: %w", job.Name, err)
+				return nil, fmt.Errorf("task %q build files: %w", job.Name, err)
 			}
+			definition.Environment = (*workflow.Build)(resolved)
 		}
 	}
 	lowered, err := lowerEnvironments(plan)
@@ -102,7 +103,7 @@ func lowerEnvironments(plan *workflow.ExecutionPlan) (*workflow.ExecutionPlan, e
 			// Gates are part of producer identity. Combining gates from different
 			// consumers can introduce cycles or run an environment too early.
 			producer := workflow.Task{
-				Coopr: definition.Environment, ComponentDir: definition.ComponentDir,
+				Coopr: definition.Environment.Native(), ComponentDir: definition.ComponentDir,
 				Contexts: definition.Contexts, Cache: definition.Cache,
 				Needs: definition.Dependencies(),
 			}

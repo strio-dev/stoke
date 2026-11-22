@@ -4,41 +4,61 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 
 	"github.com/strio-dev/stoke/internal/workflow"
 )
 
-// CIRequest selects visible CI jobs and their exact externally produced inputs.
-// External pure success gates remain the CI provider's responsibility.
-// Environments maps portable synthetic producer names to representative consumers
-// so the existing environment lowering remains the only producer definition.
+// CIRequest selects the concrete tasks in one native job. The CI provider
+// owns success gates outside this selection.
 type CIRequest struct {
-	Targets         []string
-	Execute         []string
-	RequiredOutputs []string // Producer values required by the validated CI plan.
-	Environments    map[string]string
-	Imports         map[string]CIImport
+	Targets []string
+	Execute []string
 }
 
-// CIImport identifies an exact output whose metadata was verified by the caller.
-// Images may use a pinned registry reference without a local OCI payload.
-// Images use an OCI layout directory; components use an OCI archive file.
-// CanonicalReference selects the original immutable payload for publication.
-type CIImport struct {
-	Kind, OCI, Digest, Platform, CanonicalReference string
-	ArchiveDigest                                   string // Optional verified transport descriptor for a component archive.
+// SelectCI resolves explicitly selected tasks and concrete matrix variants
+// without selecting their predecessors for execution.
+func SelectCI(w *workflow.Workflow, selectors []string) (CIRequest, error) {
+	if len(selectors) == 0 {
+		return CIRequest{}, errors.New("--ci requires at least one explicit task")
+	}
+	var request CIRequest
+	for _, name := range selectors {
+		logical := name
+		if _, ok := w.Tasks[name]; !ok {
+			if split := strings.LastIndex(name, "--matrix-"); split > 0 {
+				logical = name[:split]
+			}
+		}
+		if !slices.Contains(request.Targets, logical) {
+			request.Targets = append(request.Targets, logical)
+		}
+	}
+	expanded, err := w.Expand(request.Targets)
+	if err != nil {
+		return CIRequest{}, err
+	}
+	jobs, groups := indexCIJobs(expanded)
+	for _, selector := range selectors {
+		if _, authored := w.Tasks[selector]; authored {
+			for _, job := range groups[selector] {
+				request.Execute = append(request.Execute, job.Name)
+			}
+		} else if job, exists := jobs[selector]; exists {
+			request.Execute = append(request.Execute, job.Name)
+		} else {
+			return CIRequest{}, fmt.Errorf("unknown CI task or variant %q", selector)
+		}
+	}
+	return request, nil
 }
 
-// RunCI executes selected jobs using exact imported data. Missing or invalid
-// inputs fail; cache misses never authorize replay of an external producer.
+// RunCI restores external image dependencies before running the selected jobs.
 func RunCI(ctx context.Context, w *workflow.Workflow, request CIRequest, options Options) (*Report, error) {
 	if options.Events != nil && options.Events.ci == nil {
-		return nil, errors.New("CDEvents CI observation requires its actual scope, unit and attempt")
+		return nil, errors.New("CDEvents CI observation requires the selected unit and attempt")
 	}
 	plan, options, err := prepareCI(ctx, w, request, options)
 	if err != nil {
@@ -63,177 +83,44 @@ func prepareCI(ctx context.Context, w *workflow.Workflow, request CIRequest, opt
 	if len(request.Execute) == 0 {
 		return nil, options, errors.New("CI projection requires selected concrete jobs")
 	}
+	options.CacheFrom, options.CacheTo = w.CacheRepositories(options.CacheFrom, options.CacheTo)
 	expanded, err := w.Expand(request.Targets)
 	if err != nil {
 		return nil, options, err
 	}
-	original := map[string]workflow.Job{}
-	for _, group := range expanded.Groups {
-		for _, job := range group.Jobs {
-			original[job.Name] = job
-		}
-	}
-	// Validate public selections before resolving any unrelated execution input.
-	for _, name := range request.Execute {
-		job, exists := original[name]
-		if !exists {
-			consumer, synthetic := request.Environments[name]
-			job, exists = original[consumer]
-			if !synthetic || !exists || job.Definition.Environment == nil {
-				return nil, options, fmt.Errorf("CI job %q is not a selected expanded variant or environment producer", name)
-			}
-		}
-		if err := portableJobPaths(job.Definition); err != nil {
-			return nil, options, fmt.Errorf("CI job %q: %w", name, err)
-		}
-	}
-	// Preserve authored gate identities through ordinary path resolution and
-	// environment lowering. Prune external scheduling edges only afterwards.
-	options.hostSelections = map[string]bool{}
-	for _, name := range request.Execute {
-		options.hostSelections[name] = true
-	}
-	prepared, options, err := prepareCIExecution(ctx, expanded, request.Execute, options)
+	projection, restore, err := projectCI(expanded, request.Execute, options.NoCache)
 	if err != nil {
 		return nil, options, err
 	}
-	jobs, groups := indexCIJobs(prepared)
-	hiddenConsumers := map[string][]string{}
-	for name, job := range original {
-		if job.Definition.Environment != nil {
-			hidden := jobs[name].Definition.From
-			hiddenConsumers[hidden] = append(hiddenConsumers[hidden], name)
-		}
-	}
-	renames := map[string]string{}
-	for stable, representative := range request.Environments {
-		if !safeCIName(stable) {
-			return nil, options, fmt.Errorf("invalid CI environment producer %q", stable)
-		}
-		if _, exists := jobs[stable]; exists {
-			return nil, options, fmt.Errorf("CI environment producer %q collides with an existing job", stable)
-		}
-		consumer, exists := original[representative]
-		resolved, resolvedExists := jobs[representative]
-		if !exists || !resolvedExists || consumer.Definition.Environment == nil {
-			return nil, options, fmt.Errorf("CI environment representative %q has no inline environment", representative)
-		}
-		actual := resolved.Definition.From
-		if _, exists := original[actual]; exists || actual == "" {
-			return nil, options, errors.New("CI environment representative did not lower to a private producer")
-		}
-		if _, duplicate := renames[actual]; duplicate {
-			return nil, options, errors.New("the same inline environment has multiple CI producer identities")
-		}
-		renames[actual] = stable
-	}
-	if len(renames) != 0 {
-		for gi := range prepared.Groups {
-			group := &prepared.Groups[gi]
-			if stable := renames[group.Name]; stable != "" {
-				group.Name = stable
-			}
-			for ji := range group.Jobs {
-				job := &group.Jobs[ji]
-				if stable := renames[job.Name]; stable != "" {
-					job.Name, job.Task = stable, stable
-				}
-				if stable := renames[job.Definition.From]; stable != "" {
-					job.Definition.From = stable
-				}
-			}
-		}
-		jobs, groups = indexCIJobs(prepared)
-	}
-	primary := map[string]bool{}
+	options.ciCacheOnly = restore
+	_, groups := indexCIJobs(expanded)
+	selected := make(map[string]bool, len(request.Execute))
 	for _, name := range request.Execute {
-		if _, exists := jobs[name]; !exists {
-			return nil, options, fmt.Errorf("CI job %q is absent after environment lowering", name)
-		}
-		if primary[name] {
-			return nil, options, fmt.Errorf("duplicate selected CI job %q", name)
-		}
-		primary[name] = true
+		selected[name] = true
 	}
-	imports := maps.Clone(request.Imports)
-	for name, input := range imports {
-		job, exists := jobs[name]
-		_, authored := original[name]
-		_, promoted := request.Environments[name]
-		if !exists || !authored && !promoted || primary[name] || job.Definition.Publish != nil {
-			return nil, options, fmt.Errorf("CI import %q is not an external image or component producer", name)
-		}
-		if err := validateCIImport(ctx, input, job.Definition); err != nil {
-			return nil, options, fmt.Errorf("CI import %q: %w", name, err)
-		}
+	options.ciRequiredOutputs = ciOutputDemand(w)
+	projection, options, err = preparePlan(ctx, projection, options)
+	if err != nil {
+		return nil, options, err
 	}
-	include := map[string]bool{}
-	usedImports := map[string]CIImport{}
-	var require func(string) error
-	require = func(name string) error {
-		if include[name] {
-			return nil
-		}
-		if input, imported := imports[name]; imported {
-			usedImports[name] = input
-			return nil
-		}
-		job, exists := jobs[name]
-		if !exists {
-			return fmt.Errorf("CI data prerequisite %q is absent from the execution plan", name)
-		}
-		_, authored := original[name]
-		_, promoted := request.Environments[name]
-		if !primary[name] && (authored || promoted) {
-			return fmt.Errorf("CI unit is not data-closed: job requires exact data prerequisite %q; rerun its producer and dependent gates", name)
-		}
-		for _, consumer := range hiddenConsumers[name] {
-			if !primary[consumer] {
-				return fmt.Errorf("shared inline environment requires an exact promoted result or all its consumers in one explicit invocation; missing consumer %q", consumer)
-			}
-		}
-		// Only an unpromoted hidden environment is implicitly local to its
-		// selected consumer. Authored producers are never silently executed.
-		include[name] = true
-		data := job.Definition
-		data.Needs = nil
-		for _, dependency := range data.Dependencies() {
-			if err := require(dependency); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	for _, name := range request.Execute {
-		if err := require(name); err != nil {
-			return nil, options, err
-		}
-	}
-	if len(usedImports) != len(imports) {
-		return nil, options, errors.New("CI imports contain an unused data producer")
-	}
-	projection := &workflow.ExecutionPlan{}
-	for _, originalGroup := range prepared.Groups {
-		group := originalGroup
-		group.Jobs = nil
-		for _, originalJob := range originalGroup.Jobs {
-			if !include[originalJob.Name] {
-				continue
-			}
-			job := originalJob
+	// Lower environments with their original gates before removing external
+	// gates. The authored gates distinguish otherwise identical environments.
+	for gi := range projection.Groups {
+		for ji := range projection.Groups[gi].Jobs {
+			job := &projection.Groups[gi].Jobs[ji]
 			var needs []string
-			for _, dependency := range originalJob.Definition.Needs {
+			for _, dependency := range job.Definition.Needs {
 				count := 0
 				for _, prerequisite := range groups[dependency] {
-					if include[prerequisite.Name] {
+					if selected[prerequisite.Name] {
 						count++
 					}
 				}
 				if count == 0 {
-					continue // Native CI owns this external pure success gate.
+					continue // A native success gate outside this job.
 				}
 				if count != len(groups[dependency]) {
-					return nil, options, fmt.Errorf("CI projection includes only part of internal prerequisite group %q", dependency)
+					return nil, options, fmt.Errorf("CI selection includes only part of internal prerequisite group %q", dependency)
 				}
 				needs = append(needs, dependency)
 			}
@@ -244,43 +131,91 @@ func prepareCI(ctx context.Context, w *workflow.Workflow, request CIRequest, opt
 					return nil, options, fmt.Errorf("CI named context %q resolves outside the checkout", name)
 				}
 			}
-			group.Jobs = append(group.Jobs, job)
+		}
+	}
+	if err := admitFileExports(projection, options.ContextDir, nil, restore); err != nil {
+		return nil, options, err
+	}
+	return projection, options, nil
+}
+
+// projectCI follows the ordinary data edges, leaving external success gates
+// to the CI provider. Only explicitly selected jobs may execute on a miss.
+func projectCI(expanded *workflow.ExecutionPlan, execute []string, noCache bool) (*workflow.ExecutionPlan, map[string]bool, error) {
+	jobs, _ := indexCIJobs(expanded)
+	included := make(map[string]bool, len(execute))
+	restore := map[string]bool{}
+	queue := slices.Clone(execute)
+	for _, name := range execute {
+		if _, exists := jobs[name]; !exists || included[name] {
+			return nil, nil, fmt.Errorf("unknown or duplicate CI selection %q", name)
+		}
+		included[name] = true
+	}
+	for i := 0; i < len(queue); i++ {
+		job := jobs[queue[i]]
+		if err := portableJobPaths(job.Definition); err != nil {
+			return nil, nil, fmt.Errorf("CI task %q: %w", job.Name, err)
+		}
+		data := job.Definition
+		data.Needs = nil
+		for _, name := range data.Dependencies() {
+			if included[name] {
+				continue
+			}
+			producer, exists := jobs[name]
+			if !exists {
+				return nil, nil, fmt.Errorf("CI task %q has unknown data dependency %q", job.Name, name)
+			}
+			task := producer.Definition
+			if noCache || !task.CacheEnabled() || task.OutputKind() != "image" || task.Environment != nil || len(task.AllMounts()) != 0 || task.HasScripts() {
+				return nil, nil, fmt.Errorf("CI task %q requires %q in the same job; use --co-locate %s because the producer cannot use cache-only image restoration", job.Name, name, job.Task)
+			}
+			included[name], restore[name] = true, true
+			queue = append(queue, name)
+		}
+	}
+	projection := &workflow.ExecutionPlan{}
+	for _, original := range expanded.Groups {
+		group := original
+		group.Jobs = nil
+		for _, job := range original.Jobs {
+			if included[job.Name] {
+				group.Jobs = append(group.Jobs, job)
+			}
 		}
 		if len(group.Jobs) != 0 {
 			projection.Groups = append(projection.Groups, group)
 		}
 	}
-	if err := admitFileExports(projection, options.ContextDir); err != nil {
-		return nil, options, err
-	}
-	// Without explicit terminal targets, retain the ordinary all-target output
-	// contract. Otherwise preserve planned values and every local data edge.
-	if len(request.Targets) != 0 {
-		options.ciRequiredOutputs = map[string]bool{}
-		for _, name := range request.RequiredOutputs {
-			if _, exists := jobs[name]; !exists {
-				return nil, options, fmt.Errorf("required CI output %q is absent from the selected plan", name)
-			}
-			options.ciRequiredOutputs[name] = true
+	return projection, restore, nil
+}
+
+// Every stage derives logical output demand from the authored graph without
+// expanding unrelated tasks. Data producers and terminal tasks keep outputs;
+// a fresh stage used only as a success gate needs no image.
+func ciOutputDemand(w *workflow.Workflow) map[string]bool {
+	required, consumed := map[string]bool{}, map[string]bool{}
+	for _, task := range w.Tasks {
+		for _, name := range task.Dependencies() {
+			consumed[name] = true
 		}
-		for _, group := range projection.Groups {
-			for _, job := range group.Jobs {
-				if slices.Contains(request.Targets, job.Name) || slices.Contains(request.Targets, job.Task) {
-					options.ciRequiredOutputs[job.Name] = true
-				}
-				for name := range artifactResults(job.Definition, nil) {
-					options.ciRequiredOutputs[name] = true
-				}
-			}
+		task.Needs = nil
+		for _, name := range task.Dependencies() {
+			required[name] = true
 		}
 	}
-	options.ciImports = usedImports
-	return projection, options, nil
+	for name := range w.Tasks {
+		if !consumed[name] {
+			required[name] = true
+		}
+	}
+	return required
 }
 
 func omitCIImageOutput(job workflow.Job, options Options) bool {
 	task := job.Definition
-	return options.ciRequiredOutputs != nil && !options.ciRequiredOutputs[job.Name] &&
+	return options.ciRequiredOutputs != nil && !options.ciRequiredOutputs[job.Task] &&
 		task.Cache != nil && !*task.Cache && !task.FilesystemEnabled() &&
 		task.Coopr == nil && task.Host == nil && task.Publish == nil
 }
@@ -297,12 +232,6 @@ func indexCIJobs(plan *workflow.ExecutionPlan) (map[string]workflow.Job, map[str
 	return jobs, groups
 }
 
-var ciNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,255}$`)
-
-func safeCIName(name string) bool {
-	return ciNamePattern.MatchString(name)
-}
-
 func portableJobPaths(task workflow.Task) error {
 	for _, mount := range task.AllMounts() {
 		if mount.Type == "host" {
@@ -315,44 +244,4 @@ func portableJobPaths(task workflow.Task) error {
 		}
 	}
 	return nil
-}
-
-// Retained producer definitions supply type/provenance metadata, not local file
-// inputs. Inline environments keep their canonical path resolution and lowering.
-func prepareCIExecution(ctx context.Context, plan *workflow.ExecutionPlan, execute []string, options Options) (*workflow.ExecutionPlan, Options, error) {
-	for _, group := range plan.Groups {
-		for _, job := range group.Jobs {
-			if job.Definition.Environment != nil {
-				return preparePlan(ctx, plan, options)
-			}
-		}
-	}
-	selected := &workflow.ExecutionPlan{}
-	for _, group := range plan.Groups {
-		copy := group
-		copy.Jobs = nil
-		for _, job := range group.Jobs {
-			if slices.Contains(execute, job.Name) {
-				copy.Jobs = append(copy.Jobs, job)
-			}
-		}
-		if len(copy.Jobs) != 0 {
-			selected.Groups = append(selected.Groups, copy)
-		}
-	}
-	prepared, options, err := preparePlan(ctx, selected, options)
-	if err != nil {
-		return nil, options, err
-	}
-	resolved, _ := indexCIJobs(prepared)
-	result := &workflow.ExecutionPlan{Groups: slices.Clone(plan.Groups)}
-	for gi := range result.Groups {
-		result.Groups[gi].Jobs = slices.Clone(plan.Groups[gi].Jobs)
-		for ji, job := range result.Groups[gi].Jobs {
-			if replacement, exists := resolved[job.Name]; exists {
-				result.Groups[gi].Jobs[ji] = replacement
-			}
-		}
-	}
-	return result, options, nil
 }

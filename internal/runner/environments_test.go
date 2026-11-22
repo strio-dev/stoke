@@ -18,12 +18,12 @@ func TestInlineEnvironmentSharedNativeProducerAndImageInheritance(t *testing.T) 
 	w := fixture(t, `version: 1
 tasks:
   one:
-    environment: {files: [image.coopr], target: tools, args: {MODE: debug}}
+    build: {coopr: [image.coopr], target: tools, args: {MODE: debug}}
     env: {MODE: override}
     workdir: /work
     steps: [{run: [check]}]
   two:
-    environment: {files: [image.coopr], target: tools, args: {MODE: debug}}
+    build: {coopr: [image.coopr], target: tools, args: {MODE: debug}}
     steps: [{run: [check]}]
 `)
 	opts := nativeOptions(t)
@@ -61,11 +61,56 @@ tasks:
 	}
 }
 
+func TestBuildContextStaysOnNativeProducer(t *testing.T) {
+	opts := nativeOptions(t)
+	scoped := filepath.Join(opts.ContextDir, "service")
+	if err := os.Mkdir(scoped, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scoped, "image.coopr"), []byte("from \"scratch\" {}"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("service", filepath.Join(opts.ContextDir, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	w := fixture(t, `version: 1
+tasks:
+  one:
+    build: {coopr: [image.coopr], context: service}
+    contexts: {caller: .}
+    steps: [{copy: {sources: [caller.txt], destination: /caller.txt}}]
+  two:
+    build: {coopr: [image.coopr], context: alias}
+    contexts: {caller: .}
+    steps: [{run: [check]}]
+`)
+	var builds, executions atomic.Int32
+	_, err := run(t.Context(), w, nil, opts, fakeEngine{
+		build: func(_ context.Context, b cooprwire.Build, _ bool, o coopr.Options) (coopr.Result, error) {
+			builds.Add(1)
+			if o.ContextDir != scoped || o.Contexts["caller"] != opts.ContextDir || b.Files[0] != filepath.Join(scoped, "image.coopr") {
+				t.Errorf("native build scopes: %+v %+v", b, o)
+			}
+			return coopr.Result{Platform: "linux/amd64", ImageID: "environment"}, nil
+		},
+		execute: func(_ context.Context, p coopr.Program, o coopr.Options) (coopr.Result, error) {
+			executions.Add(1)
+			if o.ContextDir != opts.ContextDir || o.Contexts["caller"] != opts.ContextDir {
+				t.Errorf("build context escaped into task context: %+v", o)
+			}
+			return coopr.Result{Platform: "linux/amd64", ImageID: string(p.Output)}, nil
+		},
+	})
+	if err != nil || builds.Load() != 1 || executions.Load() != 2 || w.Tasks["one"].Environment.Context != "service" {
+		t.Fatalf("shared scoped build or execution copies lost: builds=%d executions=%d err=%v", builds.Load(), executions.Load(), err)
+	}
+}
+
 func TestInlineEnvironmentKeepsDistinctPrerequisiteGates(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
-  one: {environment: {files: [image.coopr]}, steps: [{run: [check]}]}
-  two: {environment: {files: [image.coopr]}, needs: [one], steps: [{run: [check]}]}
+  one: {build: {coopr: [image.coopr]}, steps: [{run: [check]}]}
+  two: {build: {coopr: [image.coopr]}, needs: [one], steps: [{run: [check]}]}
 `)
 	var builds, executions atomic.Int32
 	_, err := run(t.Context(), w, nil, nativeOptions(t), fakeEngine{
@@ -90,7 +135,7 @@ func TestFailedGateBlocksInlineEnvironmentAndConsumer(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
   gate: {image: scratch}
-  test: {environment: {files: [image.coopr]}, needs: [gate], steps: [{run: [check]}]}
+  test: {build: {coopr: [image.coopr]}, needs: [gate], steps: [{run: [check]}]}
 `)
 	failure := errors.New("required gate failed")
 	report, err := run(t.Context(), w, nil, nativeOptions(t), fakeEngine{
@@ -114,7 +159,7 @@ func TestEnvironmentMatrixUsesOneEquivalentProducer(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
   test:
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     strategy: {matrix: {mode: [a, b]}}
     steps: [{run: [check]}]
 `)
@@ -134,10 +179,10 @@ tasks:
 }
 
 func TestEnvironmentFilesUnavailableBeforeExecution(t *testing.T) {
-	w := fixture(t, "version: 1\ntasks: {test: {environment: {files: [missing.coopr]}, steps: [{run: [check]}]}}\n")
+	w := fixture(t, "version: 1\ntasks: {test: {build: {coopr: [missing.coopr]}, steps: [{run: [check]}]}}\n")
 	opts := testOptions(t)
 	opts.CooprBinary = "/not/an/engine"
-	if _, err := Run(t.Context(), w, nil, opts); err == nil || !strings.Contains(err.Error(), "environment files") {
+	if _, err := Run(t.Context(), w, nil, opts); err == nil || !strings.Contains(err.Error(), "build files") {
 		t.Fatalf("missing environment did not fail before engine startup: %v", err)
 	}
 	if _, err := os.Stat(opts.StateDir); !errors.Is(err, os.ErrNotExist) {

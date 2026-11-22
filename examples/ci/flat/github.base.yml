@@ -1,0 +1,19 @@
+name: Publish a tested image
+on:
+  workflow_dispatch:
+    inputs:
+      publish_approved:
+        description: Allow publication
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  release_policy:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions: {}
+    steps:
+      - run: test "$APPROVED" = true
+        env:
+          APPROVED: ${{ inputs.publish_approved }}

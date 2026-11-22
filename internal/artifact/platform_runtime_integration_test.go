@@ -343,7 +343,7 @@ func (f *platformRuntimeFixture) qualifyEnvironments() {
 		return map[string]any{"from": from, "env": map[string]string{"OVERRIDE": "task"}, "steps": platformRuntimeProof(`"$EXPECTED_ARCH"`)}
 	}
 	inline := func(platform string, definition map[string]any) map[string]any {
-		task := map[string]any{"environment": definition, "env": map[string]string{"OVERRIDE": "task"}, "steps": platformRuntimeProof(`"$EXPECTED_ARCH"`)}
+		task := map[string]any{"build": map[string]any{"coopr": definition["files"], "target": definition["target"]}, "env": map[string]string{"OVERRIDE": "task"}, "steps": platformRuntimeProof(`"$EXPECTED_ARCH"`)}
 		if platform != "" {
 			task["platform"] = platform
 		}

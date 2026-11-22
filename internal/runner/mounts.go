@@ -60,6 +60,35 @@ func resolveTaskMounts(task *workflow.Task, contextDir string) error {
 	return nil
 }
 
+// The caller's primary context is checked separately. Named and live inputs
+// may be outside that context, but cannot contain or be inside run storage.
+func validateMountIsolation(task workflow.Task, options Options) error {
+	runtimePaths := []struct{ kind, directory string }{
+		{"state", options.StateDir}, {"cache", options.CacheDir}, {"output", options.OutputDir},
+	}
+	check := func(input string) error {
+		for _, runtimePath := range runtimePaths {
+			if runtimePath.directory != "" && overlap(input, runtimePath.directory) {
+				return fmt.Errorf("input directory %q overlaps runtime %s path %q", input, runtimePath.kind, runtimePath.directory)
+			}
+		}
+		return nil
+	}
+	for _, name := range slices.Sorted(maps.Keys(task.Contexts)) {
+		if err := check(task.Contexts[name]); err != nil {
+			return fmt.Errorf("named context %q: %w", name, err)
+		}
+	}
+	for _, mount := range task.AllMounts() {
+		if mount.Type == "host" {
+			if err := check(mount.Source); err != nil {
+				return fmt.Errorf("live host mount %q: %w", mount.Target, err)
+			}
+		}
+	}
+	return nil
+}
+
 func mountDirectory(base, directory string) (string, error) {
 	if !filepath.IsAbs(directory) {
 		directory = filepath.Join(base, directory)

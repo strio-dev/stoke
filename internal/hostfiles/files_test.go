@@ -5,9 +5,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -188,6 +191,91 @@ func TestCaptureRejectsUnsafeInputsAndCancellation(t *testing.T) {
 	}
 	if _, err := os.Stat(layout); !os.IsNotExist(err) {
 		t.Fatal("canceled capture left layout")
+	}
+}
+
+func TestRegularAdmissionRejectsNonregularDescriptorsAndOversizeFiles(t *testing.T) {
+	dir, _ := fixture(t)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = root.Close() }()
+	info, err := root.Lstat("private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f, _, err := openRegular(t.Context(), root, "private", info, info.Size()-1); err == nil {
+		_ = f.Close()
+		t.Fatal("accepted a file beyond the byte limit")
+	}
+	if f, _, err := openRegular(t.Context(), root, "out", info, MaxBytes); err == nil {
+		_ = f.Close()
+		t.Fatal("accepted a directory descriptor with stale file metadata")
+	}
+	if err := syscall.Mkfifo(filepath.Join(dir, "pipe"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if f, _, err := openRegular(t.Context(), root, "pipe", nil, MaxBytes); err == nil {
+		_ = f.Close()
+		t.Fatal("accepted a nonregular file")
+	}
+	if _, err := Capture(t.Context(), filepath.Join(dir, "pipe"), []string{"."}, filepath.Join(t.TempDir(), "layout"), "linux/amd64"); err == nil {
+		t.Fatal("accepted a non-directory capture root")
+	}
+}
+
+func TestHostFilesRespectCancellationBeforeMaterializing(t *testing.T) {
+	source, paths := fixture(t)
+	work := t.TempDir()
+	layout := filepath.Join(work, "layout")
+	identity, err := Capture(t.Context(), source, paths, layout, "linux/amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	restored := filepath.Join(work, "restored")
+	captured := filepath.Join(work, "captured")
+	if err := Copy(ctx, source, "out/tool", work, "copied"); !errors.Is(err, context.Canceled) {
+		t.Errorf("copy: got %v, want context cancellation", err)
+	}
+	if _, err := Capture(ctx, source, paths, captured, "linux/amd64"); !errors.Is(err, context.Canceled) {
+		t.Errorf("capture: got %v, want context cancellation", err)
+	}
+	if _, err := Validate(ctx, layout, identity); !errors.Is(err, context.Canceled) {
+		t.Errorf("validate: got %v, want context cancellation", err)
+	}
+	if err := Restore(ctx, layout, identity, restored); !errors.Is(err, context.Canceled) {
+		t.Errorf("restore: got %v, want context cancellation", err)
+	}
+	for _, path := range []string{filepath.Join(work, "copied"), captured, restored} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("canceled operation materialized %q: %v", path, err)
+		}
+	}
+}
+
+func TestInventoryWalkKeepsAllBatchesInCanonicalOrder(t *testing.T) {
+	source := t.TempDir()
+	for i := 129; i >= 0; i-- {
+		if err := os.WriteFile(filepath.Join(source, fmt.Sprintf("file-%03d", i)), nil, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	layout := filepath.Join(t.TempDir(), "layout")
+	identity, err := Capture(t.Context(), source, []string{"."}, layout, "linux/amd64")
+	if err != nil {
+		t.Fatal(err)
+	}
+	config, err := Validate(t.Context(), layout, identity)
+	if err != nil || len(config.Entries) != 130 {
+		t.Fatalf("validated %d entries: %v", len(config.Entries), err)
+	}
+	for i, entry := range config.Entries {
+		if want := fmt.Sprintf("file-%03d", i); entry.Path != want {
+			t.Fatalf("entry %d = %q, want %q", i, entry.Path, want)
+		}
 	}
 }
 

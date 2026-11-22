@@ -1,0 +1,37 @@
+# Handwritten. Put this file in .github/workflows in the example repository.
+name: Publish a tested image
+on:
+  workflow_dispatch:
+    inputs:
+      publish_approved:
+        description: Allow publication
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [self-hosted, linux]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.stoke/ci/github/build
+  test:
+    runs-on: [self-hosted, linux]
+    needs: build
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.stoke/ci/github/test
+  release_policy:
+    runs-on: ubuntu-latest
+    needs: test
+    permissions: {}
+    steps:
+      - run: test "$APPROVED" = true
+        env:
+          APPROVED: ${{ inputs.publish_approved }}
+  publish:
+    runs-on: [self-hosted, linux]
+    needs: release_policy
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ./.stoke/ci/github/publish

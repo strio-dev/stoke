@@ -30,17 +30,12 @@ func hostContextName(name string) string {
 	return fmt.Sprintf("stoke-host-%x", sum[:8])
 }
 
-func needsEngine(plan *workflow.ExecutionPlan, imports map[string]CIImport) bool {
+func needsEngine(plan *workflow.ExecutionPlan) bool {
 	for _, group := range plan.Groups {
 		for _, job := range group.Jobs {
 			if job.Definition.Host == nil {
 				return true
 			}
-		}
-	}
-	for _, input := range imports {
-		if input.Kind != "host" {
-			return true
 		}
 	}
 	return false
@@ -435,6 +430,10 @@ func executeHostProcess(ctx context.Context, job workflow.Job, options Options, 
 			}
 		}
 	}
+	scriptDir := filepath.Join(runtimeRoot, "scripts")
+	if err := stageTaskScripts(task, scriptDir); err != nil {
+		return result, err
+	}
 	environment := make([]string, 0, len(env))
 	for name, value := range env {
 		environment = append(environment, name+"="+value)
@@ -460,10 +459,14 @@ func executeHostProcess(ctx context.Context, job workflow.Job, options Options, 
 		if err := hostWorkdir(workspace, task.Workdir); err != nil {
 			return result, err
 		}
-		command := exec.Command(tools[step.Run[0]], step.Run[1:]...)
-		// Resolve and hash the executable without changing authored argv[0]:
-		// shells and multicall tools use their invocation name as semantics.
-		command.Args[0] = step.Run[0]
+		var command *exec.Cmd
+		if step.Script != "" {
+			command = exec.Command(filepath.Join(scriptDir, scriptName(step.Script)))
+		} else {
+			command = exec.Command(tools[step.Run[0]], step.Run[1:]...)
+			// Multicall tools use their authored invocation name as semantics.
+			command.Args[0] = step.Run[0]
+		}
 		command.Env, command.Dir = environment, filepath.Join(workspace, task.Workdir)
 		outs, errs := []io.Writer{stdout}, []io.Writer{stderr}
 		if options.Stdout != nil {

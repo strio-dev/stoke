@@ -12,7 +12,7 @@ Your CI platform handles triggers, checkout, job placement, credentials and appr
 
 ## Start with a local workflow
 
-[Get started](getting-started.md) to build Stoke, install Coopr and prepare rootless execution. Then follow the [first-workflow tutorial](tutorials/first-workflow.md) to build, test and package a text artifact.
+[Get started](getting-started.md) with Stoke installation and rootless setup. Then follow the [first-workflow tutorial](tutorials/first-workflow.md) to build, test and export a text file.
 
 ## Reuse and move definitions
 

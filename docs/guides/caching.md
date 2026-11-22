@@ -38,7 +38,41 @@ Use Coopr's existing registry cache to warm a later run on another machine. The
 same Stoke workflow can run locally and inside your existing CI job; the cache
 repository carries eligible execution results between them.
 
-For example, run locally and write results to a repository you control:
+The root workflow can own the repository defaults:
+
+```yaml
+version: 1
+cache-from: [registry.example.com/team/stoke-cache]
+cache-to: [registry.example.com/team/stoke-cache]
+tasks:
+  check:
+    image: docker.io/library/busybox:1.37
+    steps:
+      - run: [echo, checked]
+```
+
+Use a repository you control and provision its credentials separately. Stoke does
+not infer a path from Git remotes or require a registry service. With neither
+direction configured, execution uses only the local cache. Imported components
+cannot replace the caller root's cache policy.
+
+Each direction resolves independently: **CLI flags > environment > root YAML >
+local-only**. `STOKE_CACHE_FROM` and `STOKE_CACHE_TO` are comma-separated bare
+repository lists, without spaces, empty items or expansion. A set-empty variable
+clears its direction; unsetting it restores the YAML default. For a read-only run:
+
+```sh
+STOKE_CACHE_TO= stoke run check
+# Or override only writes through the CLI:
+stoke run --cache-to= check
+```
+
+An empty flag clears earlier values of that direction; later repeated flags can
+add repositories. Clearing both directions leaves local results and cache mounts
+enabled. Local runs and CI jobs apply the same write policy, subject to registry
+credentials; there is no CI-only write switch.
+
+For example, override writes for one local invocation:
 
 ```sh
 stoke run --cache-to registry.example.com/team/stoke-cache test
@@ -77,8 +111,13 @@ Stoke accepts an explicit registry and repository, without a tag or digest, such
 as `ghcr.io/example/stoke-cache` or `localhost:5000/team/stoke-cache`. Short names,
 transport prefixes, `oci://` references and BuildKit-style `type=registry,...`
 options are rejected. Coopr chooses cache entry identities within the repository.
-The cache format belongs to Coopr and is not interchangeable with BuildKit or
-Dagger cache formats.
+The image/component cache format belongs to Coopr and is not interchangeable
+with BuildKit or Dagger cache formats.
+
+Coopr-backed cache reads follow `containers/registries.conf` location/mirror rules
+and their tag-versus-digest eligibility. A digest-only mirror is not eligible for
+a tag lookup. Writes go to the explicit `cache-to` repository, without mirror
+redirection. These rules do not apply to Stoke's separate host-file transport.
 
 The local cache selected by `--cache-dir` remains enabled alongside registry
 sources and destinations. A registry hit can seed the writable local cache for
@@ -100,8 +139,8 @@ access for consumers and write access only for runs allowed to update the cache.
 The CI platform supplies those credentials; they do not belong in workflow YAML.
 Registry caches use Coopr's native authentication, certificate and TLS settings.
 `--tls-verify=false` is intended only for isolated development registries.
-`--plain-http` controls OCI workflow definitions and imports; it does not switch
-native registry-cache transport to HTTP.
+`--plain-http` enables HTTP for Stoke's workflow artifacts and host-file caches on commands that transfer them. Coopr applies its own
+registry transport settings to image, component and native cache transfers.
 
 Trust cache repositories as build inputs. Cache entries are checked for content
 integrity, but a matching digest does not establish trust in the publisher.
@@ -235,7 +274,7 @@ retain their workspace leases. Registry repositories remain shareable by key.
 
 Cache repository options belong to the invocation. They do not change the workflow YAML, become workflow imports or add Bale dependency declarations. A registry cache is separate from publishing reusable Stoke components or final images.
 
-Cache volumes are exposed through task/step mounts. Stoke provides no container-cache pruning command or distributed cache service. Coopr's native store maintenance is separate; consult its storage guide before selecting a store for pruning. Generated CI's [exact-result cleanup](ci-generation.md#retention-access-and-cleanup) has a separate retention contract. Do not share writable cache directories between mutually untrusted users. Keep caches outside the host context. Losing a cache should cost execution time, not remove the source of truth for an artifact.
+Cache volumes are exposed through task/step mounts. Stoke provides no container-cache pruning command or distributed cache service. Coopr's native store maintenance is separate; consult its storage guide before selecting a store for pruning. Do not share writable cache directories between mutually untrusted users. Keep caches outside the host context. Losing a cache should cost execution time, not remove the source of truth for an artifact.
 
 ## Host result reuse
 
@@ -254,14 +293,14 @@ execution location and declared content; different runner identities can
 conservatively miss. A hit restores the exact captured files and seeds explicit
 cache destinations. `--no-cache` forces commands to execute.
 
-Host registry transport uses `--authfile` and TLS by default; `--plain-http`
+Host cache transport uses Stoke's ORAS client; it does not apply
+`containers/registries.conf` remaps, mirrors or blocking rules. It uses the resolved
+cache directions above, with `--authfile` and TLS by default; `--plain-http`
 explicitly enables HTTP for that transport. Trust repository writers as build
 input publishers. Digest and input-key validation establish integrity and
 binding, not that a trusted command actually produced the bytes. A missing key
 executes the task, while authentication, transport and malformed-entry failures
 are reported. No automatic host-cache pruning is provided.
 
-Disposable host-cache lookup is separate from exact CI result exchange. A
-missing exact producer result fails rather than replaying a fresh producer
-after its tests. Only authorized registry writers should publish either kind;
-native CI success gates still control downstream admission.
+Keep host tasks that exchange captured files in the same invocation. Native
+CI success gates still control downstream admission.

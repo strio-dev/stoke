@@ -8,12 +8,18 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/oras-project/oras-go/v3"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/oci"
+	"github.com/oras-project/oras-go/v3/errdef"
+	"github.com/oras-project/oras-go/v3/registry/remote"
+	"github.com/strio-dev/stoke/internal/engine"
 	"github.com/strio-dev/stoke/internal/hostfiles"
-	"oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content/oci"
-	"oras.land/oras-go/v2/errdef"
 )
+
+const maxHostCacheMetadata = 4 << 20
 
 func hostCacheTag(key string) (string, error) {
 	if len(key) != 64 {
@@ -26,13 +32,13 @@ func hostCacheTag(key string) (string, error) {
 }
 
 // Host cache tags are disposable input-key lookup hints. The payload config
-// binds the key; exact CI consumers still select the separate immutable result.
+// binds the key and platform before the archive is fetched.
 func (c Client) FetchHostCache(ctx context.Context, repository, key, platform, destination string) (identity string, hit bool, retErr error) {
 	tag, err := hostCacheTag(key)
 	if err != nil {
 		return "", false, err
 	}
-	repo, err := c.ciRepository(repository)
+	repo, err := c.hostCacheRepository(repository)
 	if err != nil {
 		return "", false, err
 	}
@@ -43,36 +49,38 @@ func (c Client) FetchHostCache(ctx context.Context, repository, key, platform, d
 	if err != nil {
 		return "", false, err
 	}
-	session := &ciReadSession{repo: repo}
-	result := CIResult{Kind: "host", Output: root, Platform: platform}
-	if err := session.validateOutput(ctx, result); err != nil {
-		return "", false, err
+	if root.MediaType != v1.MediaTypeImageManifest || root.Digest.Validate() != nil ||
+		root.Digest.Algorithm() != digest.SHA256 || root.Size < 0 || root.Size > maxHostCacheMetadata ||
+		len(root.URLs) != 0 || len(root.Data) != 0 {
+		return "", false, errors.New("invalid host cache manifest descriptor")
 	}
-	data, err := session.fetch(ctx, root)
+	data, err := content.FetchAll(ctx, repo, root)
 	if err != nil {
 		return "", false, err
 	}
 	var manifest v1.Manifest
-	if err := ciDecode(data, &manifest); err != nil {
+	if err := json.Unmarshal(data, &manifest); err != nil {
 		return "", false, err
 	}
-	configData, err := session.fetch(ctx, manifest.Config)
+	configDesc := manifest.Config
+	if configDesc.MediaType != hostfiles.ConfigMediaType || configDesc.Digest.Validate() != nil ||
+		configDesc.Digest.Algorithm() != digest.SHA256 || configDesc.Size < 0 || configDesc.Size > maxHostCacheMetadata ||
+		len(configDesc.URLs) != 0 || len(configDesc.Data) != 0 {
+		return "", false, errors.New("invalid host cache config descriptor")
+	}
+	data, err = content.FetchAll(ctx, repo, configDesc)
 	if err != nil {
 		return "", false, err
 	}
-	var config hostfiles.Config
-	if err := json.Unmarshal(configData, &config); err != nil {
+	config, err := hostfiles.ValidateManifest(manifest, data)
+	if err != nil {
 		return "", false, err
 	}
 	if config.InputKey != key {
 		return "", false, errors.New("registry host cache payload has a different input key")
 	}
-	bounded, err := preflightCIPayload(ctx, repo, root, session.metadata, session.bytes)
-	if err != nil {
-		return "", false, err
-	}
-	if bounded.encodedBytes > hostfiles.MaxBytes+2*hostfiles.MaxMetadata {
-		return "", false, errors.New("host cache transfer exceeds bounded capture size")
+	if config.Platform.OS+"/"+config.Platform.Architecture != platform {
+		return "", false, errors.New("registry host cache payload has a different platform")
 	}
 	if _, err := os.Lstat(destination); !errors.Is(err, os.ErrNotExist) {
 		return "", false, errors.New("host cache destination must be fresh")
@@ -90,14 +98,14 @@ func (c Client) FetchHostCache(ctx context.Context, repository, key, platform, d
 	if err != nil {
 		return "", false, err
 	}
-	options := oras.DefaultCopyOptions
+	options := oras.DefaultCopyGraphOptions
 	options.Concurrency = 1
-	copied, err := oras.Copy(ctx, bounded, root.Digest.String(), store, "host", options)
-	if err != nil {
+	options.MaxMetadataBytes = maxHostCacheMetadata
+	if err := oras.CopyGraph(ctx, repo, store, root, options); err != nil {
 		return "", false, err
 	}
-	if copied.Digest != root.Digest {
-		return "", false, errors.New("host cache copy changed identity")
+	if err := store.Tag(ctx, root, "host"); err != nil {
+		return "", false, err
 	}
 	if _, err := hostfiles.Validate(ctx, staging, root.Digest.String()); err != nil {
 		return "", false, err
@@ -125,27 +133,25 @@ func (c Client) PublishHostCache(ctx context.Context, repository, key, layout, i
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	store, err := newCILocalSource(ctx, root.FS(), identity)
+	store, err := oci.NewFromFS(ctx, root.FS())
 	if err != nil {
 		return err
 	}
-	descriptor, err := store.Resolve(ctx, identity)
-	if err != nil {
-		return err
-	}
-	bounded, err := preflightCIPayload(ctx, store, descriptor, nil, 0)
-	if err != nil {
-		return err
-	}
-	if bounded.encodedBytes > hostfiles.MaxBytes+2*hostfiles.MaxMetadata {
-		return errors.New("host cache transfer exceeds bounded capture size")
-	}
-	repo, err := c.ciRepository(repository)
+	repo, err := c.hostCacheRepository(repository)
 	if err != nil {
 		return err
 	}
 	options := oras.DefaultCopyOptions
 	options.Concurrency = 1
-	_, err = oras.Copy(ctx, bounded, identity, repo, tag, options)
+	options.MaxMetadataBytes = maxHostCacheMetadata
+	_, err = oras.Copy(ctx, store, identity, repo, tag, options)
 	return err
+}
+
+func (c Client) hostCacheRepository(repository string) (*remote.Repository, error) {
+	if err := engine.ValidateCacheRepository(repository); err != nil {
+		return nil, err
+	}
+	repo, _, _, err := c.clients(repository)
+	return repo, err
 }

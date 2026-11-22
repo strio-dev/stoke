@@ -3,6 +3,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"maps"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(caller, "environment.coopr"), []byte("from \"scratch\" { copy \"busybox\" \"/bin/busybox\" }\n"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				base = "    environment: {files: [environment.coopr]}\n    steps:\n"
+				base = "    build: {coopr: [environment.coopr]}\n    steps:\n"
 			}
 			w := fixture(t, "version: 1\ntasks:\n  build:\n"+base+`      - run: [/bin/busybox, sh, -c, 'printf v1 > /report; echo STOKE_PREFIX_EXECUTED']
       - export: {source: /report, destination: exported/prefix}
@@ -70,7 +71,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Minute)
 			defer cancel()
 			var digest string
-			var exportedImage ciImage
+			var exportedImage v1.Image
 			for _, phase := range []string{"cold", "warm"} {
 				var stdout bytes.Buffer
 				report, err := Run(ctx, w, []string{"build"}, options(phase, &stdout))
@@ -89,7 +90,7 @@ func TestStageExportsWithCoopr(t *testing.T) {
 				}
 				if phase == "cold" {
 					digest = result.Digest
-					exportedImage, err = readCIImage(ctx, result.OCI, result.Digest, result.Platform)
+					exportedImage, err = readTestImageConfig(ctx, result.OCI, result.Digest, result.Platform)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -130,21 +131,22 @@ func TestStageExportsWithCoopr(t *testing.T) {
 			if plainResult.Filesystem == "" || len(plainResult.Exports) != 0 || !strings.Contains(plainLog.String(), "STOKE_PREFIX_EXECUTED") || !strings.Contains(plainLog.String(), "STOKE_LATER_EXECUTED") {
 				t.Fatalf("explicit filesystem output or fresh execution changed: %+v %s", plainResult, &plainLog)
 			}
-			plainImage, err := readCIImage(ctx, plainResult.OCI, plainResult.Digest, plainResult.Platform)
+			plainImage, err := readTestImageConfig(ctx, plainResult.OCI, plainResult.Digest, plainResult.Platform)
 			if err != nil {
 				t.Fatal(err)
 			}
 			// Fresh RUNs have different creation/history and filesystem timestamps.
 			// Compare runtime config and authored history; warm identity above is exact.
-			exportedImage.config.Created, plainImage.config.Created = nil, nil
-			exportedImage.config.RootFS.DiffIDs, plainImage.config.RootFS.DiffIDs = nil, nil
-			for i := range exportedImage.config.History {
-				exportedImage.config.History[i].Created = nil
+			exportedImage.Created, plainImage.Created = nil, nil
+			sameLayerCount := len(exportedImage.RootFS.DiffIDs) == len(plainImage.RootFS.DiffIDs)
+			exportedImage.RootFS.DiffIDs, plainImage.RootFS.DiffIDs = nil, nil
+			for i := range exportedImage.History {
+				exportedImage.History[i].Created = nil
 			}
-			for i := range plainImage.config.History {
-				plainImage.config.History[i].Created = nil
+			for i := range plainImage.History {
+				plainImage.History[i].Created = nil
 			}
-			if !reflect.DeepEqual(exportedImage.config, plainImage.config) || len(exportedImage.manifest.Layers) != len(plainImage.manifest.Layers) {
+			if !reflect.DeepEqual(exportedImage, plainImage) || !sameLayerCount {
 				t.Fatal("export checkpoints changed final config, authored history or layer count")
 			}
 			if got, err := os.ReadFile(filepath.Join(plainResult.Filesystem, "report")); err != nil || string(got) != "v2" {

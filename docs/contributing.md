@@ -23,8 +23,7 @@ selection and preserve their evidence.
 
 The combined literal/native fixture explicitly uses `network=none`. The DAG fixture covers networked workflow and matrix scheduling. These suites do not replace the separate Pasta HTTP/DNS/isolation qualification. Stoke cancellation coverage includes DAG active/queued workload drain and native frontend cancellation; Coopr owns direct API service lifetime acceptance.
 
-`just ci-integration` invokes the Go registry/generated-job/exact-result tests
-directly. Set `STOKE_COOPR_BINARY`, `STOKE_SMOKE_BUSYBOX` and
+`just ci-integration` runs the Go registry-cache tests. Set `STOKE_COOPR_BINARY`, `STOKE_SMOKE_BUSYBOX` and
 `STOKE_CACHE_CI_EVIDENCE_DIR` to provisioned executables and a disk-backed evidence
 parent outside the checkout. The tests own disposable local registries and
 independent stores. The recipe is an entry point to those tests, not additional
@@ -39,8 +38,8 @@ Shared helpers and wrapper recipes are not additional independent test evidence.
 
 The actual Go workflow fixture (`TestCIRealWorkflowRegistryWithCoopr`) also accepts
 `STOKE_REAL_CI_NETWORK` as an explicit invocation setting, validated by the normal
-CLI. For example, `slirp4netns` is recorded in the generated plan and used by the
-initial local run, CI jobs, local return and fresh-checkout probe. An empty value
+CLI. For example, `slirp4netns` is passed to the initial local run, local return
+and fresh-checkout probe. An empty value
 keeps the existing default; there is no backend fallback. The selected value is
 retained in `execution-configuration.json` and `real-workflow-proof.json`. A run
 with slirp4netns does not qualify Pasta or change the authored workflow.

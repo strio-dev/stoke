@@ -24,10 +24,10 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
-	"oras.land/oras-go/v2/registry/remote"
+	"github.com/oras-project/oras-go/v3"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/memory"
+	"github.com/oras-project/oras-go/v3/registry/remote"
 )
 
 type mountsRuntimeTask struct {
@@ -134,11 +134,12 @@ from "scratch" as="ci" {
 	artifact := f.pushArtifact("files", map[string][]byte{"payload.txt": []byte("artifact-one\n"), "payload.tar": archive})
 	image := f.pushImage("image", map[string][]byte{"bin/busybox": f.read(busybox), "image.txt": []byte("image-one\n"), "left.txt": []byte("selected\n"), "right.txt": []byte("selected\n")})
 	definition := map[string]any{"files": []string{"environment.coopr"}, "target": "ci"}
+	build := map[string]any{"coopr": definition["files"], "target": definition["target"]}
 	contexts := map[string]string{"fixtures": "../inputs"}
 	equivalence := []any{mountsRuntimeRun(`printf '%s|%s|%s\n' "$NATIVE" "$OVERRIDE" "$PWD" > /equivalence.txt`, nil)}
 	inherited := []any{mountsRuntimeRun(`printf '%s|%s|%s\n' "$NATIVE" "$OVERRIDE" "$PWD" > /inherited.txt`, nil)}
 	inline := func() map[string]any {
-		return map[string]any{"environment": definition, "contexts": contexts, "env": map[string]string{"OVERRIDE": "task"}, "workdir": "/task-work", "steps": equivalence}
+		return map[string]any{"build": build, "contexts": contexts, "env": map[string]string{"OVERRIDE": "task"}, "workdir": "/task-work", "steps": equivalence}
 	}
 	readerMounts := []any{
 		map[string]any{"type": "context", "source": "payload.txt", "target": "/primary.txt"},
@@ -159,7 +160,7 @@ from "scratch" as="ci" {
 	tasks := map[string]any{
 		"base":     map[string]any{"coopr": definition, "contexts": contexts},
 		"inline-a": inline(), "inline-b": inline(),
-		"inline-inherited":   map[string]any{"environment": definition, "contexts": contexts, "steps": inherited},
+		"inline-inherited":   map[string]any{"build": build, "contexts": contexts, "steps": inherited},
 		"explicit-inherited": map[string]any{"from": "base", "steps": inherited},
 		"explicit":           map[string]any{"from": "base", "env": map[string]string{"OVERRIDE": "task"}, "workdir": "/task-work", "steps": equivalence},
 		"reader":             map[string]any{"image": "scratch", "contexts": contexts, "mounts": readerMounts, "steps": mountsRuntimeSteps(readerCommand, nil)},
@@ -504,7 +505,7 @@ func (f *mountsRuntimeFixture) push(store *memory.Store, descriptor v1.Descripto
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	repo.PlainHTTP = true
+	repo.Registry.PlainHTTP = true
 	published, err := oras.Copy(f.ctx, store, "fixture", repo, "fixture", oras.DefaultCopyOptions)
 	if err != nil {
 		f.t.Fatal(err)

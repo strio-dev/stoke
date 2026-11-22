@@ -276,3 +276,28 @@ func testCapabilities(t *testing.T, plan *workflow.ExecutionPlan, info cooprwire
 	t.Cleanup(client.CloseIdleConnections)
 	return validateCapabilities(t.Context(), plan, client, options)
 }
+
+func TestRootCacheDefaultsReachLocalAndCIExecution(t *testing.T) {
+	for _, ciJob := range []bool{false, true} {
+		opts := nativeOptions(t)
+		opts.CacheFrom = []string{} // Explicit read clear; YAML writes remain.
+		w := fixture(t, "version: 1\ncache-from: [registry.test/root-read]\ncache-to: [registry.test/root-write]\ntasks: {build: {image: scratch}}\n")
+		calls := 0
+		engine := fakeEngine{execute: func(_ context.Context, _ coopr.Program, o coopr.Options) (coopr.Result, error) {
+			calls++
+			if len(o.Cache.RegistryFrom) != 0 || !reflect.DeepEqual(o.Cache.RegistryTo, []string{"registry.test/root-write"}) {
+				t.Fatalf("local=%v: %+v", !ciJob, o.Cache)
+			}
+			return coopr.Result{Platform: "linux/amd64", ImageID: "image"}, nil
+		}}
+		var err error
+		if ciJob {
+			_, err = runCI(t.Context(), w, CIRequest{Execute: []string{"build"}}, opts, engine)
+		} else {
+			_, err = run(t.Context(), w, nil, opts, engine)
+		}
+		if err != nil || calls != 1 {
+			t.Fatal("execution did not preserve owning policy", ciJob, calls, err)
+		}
+	}
+}

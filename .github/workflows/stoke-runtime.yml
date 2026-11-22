@@ -7,8 +7,8 @@ on:
       scenario:
         description: Approved bounded qualification case
         type: choice
-        options: [prepare-images, roundtrip, failure, arm-roundtrip, cache-reuse, engine-compare, candidate, candidate-amd, candidate-arm]
-        default: roundtrip
+        options: [prepare-images, cache-reuse, engine-compare]
+        default: cache-reuse
       benchmark_reference:
         description: Include the standalone BuildKit reference in prepared images
         type: boolean
@@ -38,14 +38,6 @@ jobs:
     with:
       trace_patch_b64: ${{ inputs.trace_patch_b64 }}
       benchmark_reference: ${{ inputs.benchmark_reference }}
-  dogfood:
-    if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["roundtrip","failure","arm-roundtrip","candidate","candidate-amd","candidate-arm"]'), inputs.scenario) }}
-    permissions:
-      contents: read
-      packages: write
-    uses: ./.github/workflows/stoke-dogfood.yml
-    with:
-      scenario: ${{ inputs.scenario }}
   cache-reuse:
     if: ${{ github.event_name == 'workflow_dispatch' && github.repository == 'strio-dev/stoke' && github.ref == 'refs/heads/initial' && contains(fromJSON('["cache-reuse","engine-compare"]'), inputs.scenario) }}
     name: ${{ inputs.scenario == 'engine-compare' && 'Engine comparison' || format('Registry read/write {0} build', inputs.cache_read && 'warm' || 'cold') }} / ${{ matrix.arch }} / vfs
@@ -60,20 +52,12 @@ jobs:
             manifest: sha256:ca7ba59621d845c6192810246dfb4de08f4d6e70e5c6f4df02d8b98401b4106e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:22e3b902505753780e7f98adfeea91048d8fdcdcf811d1adab3c1548c7e73230
             benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:a37c2c716702ec223c28a756ff9fb9ad8fc0cbed3941dee536df401a3b6ff149
-            plan: .stoke/hosted-warm.json
-            plan_id: 68305e8836bcc80366540ebf8e8b55b6c370c6eead0112d96c6c13ad5b3710e7
-            cold_plan: .stoke/hosted-cold.json
-            cold_plan_id: 7be44ad88939e561d890e4e30c1069b2e63a18f383cf666f421b97792b7e5301
           - arch: arm64
             runner: ubuntu-24.04-arm
             source: 22f540863e3e3bf854bbfb37530de5c0d5305e88
             manifest: sha256:6c1a7fa3f5b974d1aee84fa81baf0b41ee52a06a2e3a01341ba9b872ef792b9e
             image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:593c25e9cf20d7e4fa454ee18f79da09c75014b848e3e38534034df6d6e6e985
             benchmark_image: ghcr.io/strio-dev/stoke-qualification-tools@sha256:c65d34a71a451706782841533a5fe7f7c6319465b6d177c1e507a14bca1e0fba
-            plan: .stoke/hosted-arm-warm.json
-            plan_id: 06e241137e1b331ffa494ed679c549abb44f10e8992a7e2d645aa37d43efcac3
-            cold_plan: .stoke/hosted-arm-cold.json
-            cold_plan_id: e579174fb6ab1916182914f1b366a3575aabbeb0c98de974072537b129f4d8b8
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
     permissions:
@@ -91,10 +75,6 @@ jobs:
       EXPECTED_MANIFEST: ${{ matrix.manifest }}
       EXPECTED_MANIFESTS: ${{ inputs.expected_manifests || '{}' }}
       CACHE_READ: ${{ inputs.cache_read }}
-      STOKE_CI_PLAN: ${{ matrix.plan }}
-      STOKE_CI_PLAN_ID: ${{ matrix.plan_id }}
-      STOKE_CI_COLD_PLAN: ${{ matrix.cold_plan }}
-      STOKE_CI_COLD_PLAN_ID: ${{ matrix.cold_plan_id }}
       GIT_OPTIONAL_LOCKS: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,15 +104,9 @@ jobs:
           assert all(isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in overrides.values()), "expected canonical sha256 digests"
           with open(os.environ["GITHUB_ENV"], "a") as output:
               output.write("EXPECTED_MANIFEST=" + overrides.get(os.environ["APPLICATION_PLATFORM"], os.environ["EXPECTED_MANIFEST"]) + "\n")
-              if os.environ["CACHE_READ"] == "false":
-                  with open(os.environ["STOKE_CI_COLD_PLAN"]) as source:
-                      plan = json.load(source)
-                  assert plan["id"] == os.environ["STOKE_CI_COLD_PLAN_ID"] and not plan["config"].get("cacheFrom"), "cold plan must have no registry cache reads"
-                  assert plan["config"].get("cacheTo") == ["ghcr.io/strio-dev/stoke-qualification-tools"], "cold plan changed the cache destination"
-                  output.write("STOKE_CI_PLAN=" + os.environ["STOKE_CI_COLD_PLAN"] + "\nSTOKE_CI_PLAN_ID=" + plan["id"] + "\n")
           PY
       - id: auth
-        name: Authenticate registry cache and exact-result publication
+        name: Authenticate the registry cache
         shell: bash
         env:
           GHCR_USER: ${{ github.actor }}
@@ -151,21 +125,16 @@ jobs:
         run: |
           log="$RUNNER_TEMP/stoke-build-reuse.log"
           printf 'WORKFLOW_COMMIT=%s\n' "$GITHUB_SHA"
-          scope=$(GITHUB_SHA="$APPLICATION_SOURCE" stoke ci scope --plan-id "$STOKE_CI_PLAN_ID")
-          printf '%s\n' "$scope"
           started_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
           cache_args=()
           if [[ "$CACHE_READ" = true ]]; then cache_args+=(--cache-from ghcr.io/strio-dev/stoke-qualification-tools); fi
           status=0
-          stoke ci run --plan "$STOKE_CI_PLAN" --plan-id "$STOKE_CI_PLAN_ID" \
-            --job build --scope "$scope" --attempt "$GITHUB_RUN_ATTEMPT" \
-            --needs-env --github-output "$GITHUB_OUTPUT" \
+          stoke run -f examples/ci/stoke.yaml --context . \
             --runtime crun --storage-driver vfs \
             "${cache_args[@]}" \
             --cache-to ghcr.io/strio-dev/stoke-qualification-tools \
-            --results-repository ghcr.io/strio-dev/stoke-qualification-tools \
             --authfile "$STOKE_GHCR_AUTH_DIR/auth.json" \
-            --cache-dir "$RUNNER_TEMP/stoke-cache" --output "$RUNNER_TEMP/stoke-output" \
+            --cache-dir "$RUNNER_TEMP/stoke-cache" --output "$RUNNER_TEMP/stoke-output" build \
             2>&1 | tee "$log" || status=$?
           python3 - "$started_ns" "$APPLICATION_PLATFORM" "$log" <<'PY'
           import json, os, re, sys, time
@@ -237,18 +206,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        include:
-          - os: ubuntu-24.04
-            arch: amd64
-            sha256: d8db82fe51ef2ba3b2c7deaeb68a42d2daaa44f23cc22b666582e9d8aa082558
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            sha256: 2f45e43a21320cb4f35093a60a12319ef2004f80c2d7e0c461a77e7525337dee
+        os: [ubuntu-24.04, ubuntu-24.04-arm]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
-    env:
-      COOPR_ARCH: ${{ matrix.arch }}
-      COOPR_SHA256: ${{ matrix.sha256 }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -292,17 +252,13 @@ jobs:
       - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
         with:
           enable_kvm: false
-      - name: Verify and install the checked Coopr package
+      - name: Build the matching Coopr package
         shell: bash
         run: |
-          mkdir -m 700 "$RUNNER_TEMP/coopr-package"
-          archive="$RUNNER_TEMP/coopr-linux-$COOPR_ARCH.tar.gz"
-          curl --fail --location --retry 3 \
-            "https://github.com/strio-dev/coopr/releases/download/0.6.0/coopr-linux-$COOPR_ARCH.tar.gz" \
-            --output "$archive"
-          printf '%s  %s\n' "$COOPR_SHA256" "$archive" | sha256sum --check
-          tar --no-same-owner -xzf "$archive" -C "$RUNNER_TEMP/coopr-package" coopr libexec
-          "$RUNNER_TEMP/coopr-package/coopr" --version
+          nix build --no-update-lock-file --max-jobs 1 --cores 2 \
+            github:strio-dev/coopr/1549d40196d5313bcf5d44e47c3eedb0cdce90fb#coopr \
+            --out-link "$RUNNER_TEMP/coopr-package"
+          "$RUNNER_TEMP/coopr-package/bin/coopr" --version
       - name: Build Stoke from this commit
         shell: bash
         run: nix build --no-update-lock-file --max-jobs 1 --cores 2 path:.#stoke --out-link "$RUNNER_TEMP/stoke"
@@ -312,7 +268,7 @@ jobs:
           mkdir -m 700 "$RUNNER_TEMP/stoke-runtime-evidence" "$RUNNER_TEMP/stoke-runtime-tmp"
           nix develop --no-update-lock-file --max-jobs 1 --cores 2 path:. -c env \
             STOKE_BINARY="$RUNNER_TEMP/stoke/bin/stoke" \
-            STOKE_COOPR_BINARY="$RUNNER_TEMP/coopr-package/coopr" \
+            STOKE_COOPR_BINARY="$RUNNER_TEMP/coopr-package/bin/coopr" \
             STOKE_CACHE_CI_EVIDENCE_DIR="$RUNNER_TEMP/stoke-runtime-evidence" \
             TMPDIR="$RUNNER_TEMP/stoke-runtime-tmp" \
             GOMAXPROCS=1 GOMEMLIMIT=768MiB GOFLAGS=-p=1 \

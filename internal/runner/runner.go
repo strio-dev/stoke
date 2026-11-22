@@ -34,12 +34,12 @@ type Options struct {
 	EventName                                         string
 	EventPath                                         string
 	runMounts                                         bool
-	ciImports                                         map[string]CIImport
+	priorFileExports                                  map[string]bool
 	ciRequiredOutputs                                 map[string]bool
+	ciCacheOnly                                       map[string]bool
 	AllowHost                                         bool
 	HostCapabilities                                  []string
 	HostCachePlainHTTP                                bool
-	hostSelections                                    map[string]bool
 	hostContextDir                                    string
 }
 
@@ -103,7 +103,7 @@ func runOwned(ctx context.Context, w *workflow.Workflow, plan *workflow.Executio
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if !needsEngine(plan, options.ciImports) {
+	if !needsEngine(plan) {
 		return runPrepared(ctx, w, plan, options, nil)
 	}
 	// Readiness observes cancellation. Once ready, the owner keeps the service
@@ -121,50 +121,36 @@ func runOwned(ctx context.Context, w *workflow.Workflow, plan *workflow.Executio
 	closeErr := service.Close()
 	err = errors.Join(runErr, closeErr)
 	if report != nil && closeErr != nil {
-		err = persistReport(report, err)
+		err = FinalizeReport(report, err)
 	}
 	return report, err
 }
 
 // RequiredCapabilities describes the selected execution using the same policy as
-// runtime preflight. The plan contains only executing jobs; an optional CI request
-// supplies their retained input kinds and required output identities, not paths.
-func RequiredCapabilities(plan *workflow.ExecutionPlan, request *CIRequest, options Options) ([]string, error) {
+// runtime preflight.
+func RequiredCapabilities(w *workflow.Workflow, plan *workflow.ExecutionPlan, request *CIRequest, options Options) ([]string, error) {
 	if request != nil {
-		options.ciImports = request.Imports
-		options.ciRequiredOutputs = nil
-		if len(request.Targets) != 0 {
-			options.ciRequiredOutputs = map[string]bool{}
-			for _, name := range request.RequiredOutputs {
-				options.ciRequiredOutputs[name] = true
-			}
+		if w == nil {
+			return nil, errors.New("CI capability planning requires the resolved workflow")
 		}
+		options.ciRequiredOutputs = ciOutputDemand(w)
+		projection, restore, err := projectCI(plan, request.Execute, options.NoCache)
+		if err != nil {
+			return nil, err
+		}
+		plan, options.ciCacheOnly = projection, restore
 	}
 	var required []string
-	hostSources := map[string]bool{}
-	for name, input := range options.ciImports {
-		switch input.Kind {
-		case "component":
-			required = append(required, cooprwire.CapabilityComponentLoad, cooprwire.CapabilityComponentLoadName)
-		case "image":
-			required = append(required, cooprwire.CapabilityExecute)
-		case "host":
-			hostSources[name] = true
-		}
+	if len(options.ciCacheOnly) != 0 {
+		required = append(required, cooprwire.CapabilityCacheRequireHit)
 	}
+	hostSources := map[string]bool{}
 	for _, group := range plan.Groups {
 		for _, job := range group.Jobs {
 			if job.Definition.Host != nil {
 				hostSources[job.Name] = true
 			}
-			if request != nil && options.ciRequiredOutputs != nil {
-				if slices.Contains(request.Targets, job.Name) || slices.Contains(request.Targets, job.Task) {
-					options.ciRequiredOutputs[job.Name] = true
-				}
-				for name := range artifactResults(job.Definition, nil) {
-					options.ciRequiredOutputs[name] = true
-				}
-			}
+
 		}
 	}
 	for _, group := range plan.Groups {
@@ -175,9 +161,6 @@ func RequiredCapabilities(plan *workflow.ExecutionPlan, request *CIRequest, opti
 			}
 			if task.Publish != nil {
 				required = append(required, cooprwire.CapabilityPublish)
-				if input, imported := options.ciImports[task.Publish.From]; imported && input.Kind == "image" {
-					required = append(required, cooprwire.CapabilityPublishOCILayout)
-				}
 				continue
 			}
 			capability := cooprwire.CapabilityExecute
@@ -198,16 +181,23 @@ func RequiredCapabilities(plan *workflow.ExecutionPlan, request *CIRequest, opti
 			if options.Network != "" {
 				required = append(required, cooprwire.CapabilityRunNetwork)
 			}
-			if len(options.CacheFrom) != 0 || len(options.CacheTo) != 0 && !omitOCI {
+			cacheFrom, cacheTo := jobRegistryCaches(job, options)
+			// An unlowered environment adds an outputful native build, even
+			// when its consumer omits OCI. Runtime sees that producer directly.
+			if len(cacheFrom) != 0 || len(cacheTo) != 0 || (task.Environment != nil && len(options.CacheTo) != 0) {
 				required = append(required, cooprwire.CapabilityRegistryCache)
 			}
 			if len(task.AllMounts()) != 0 {
 				required = append(required, cooprwire.CapabilityRunMounts)
 			}
-			if len(task.FileExports()) != 0 {
+			if !options.ciCacheOnly[job.Name] && len(task.FileExports()) != 0 {
 				required = append(required, cooprwire.CapabilitySelectedFileExports)
 			}
 			named := len(task.Contexts) != 0 || task.ComponentDir != ""
+			if task.HasScripts() {
+				required = append(required, cooprwire.CapabilityRunMounts)
+				named = true
+			}
 			for name := range artifactResults(task, nil) {
 				named = named || hostSources[name]
 			}
@@ -227,9 +217,19 @@ func RequiredCapabilities(plan *workflow.ExecutionPlan, request *CIRequest, opti
 	return slices.Compact(required), nil
 }
 
+func jobRegistryCaches(job workflow.Job, options Options) (from, to []string) {
+	if job.Definition.Publish != nil {
+		return nil, nil
+	}
+	if options.ciCacheOnly[job.Name] || omitCIImageOutput(job, options) {
+		return options.CacheFrom, nil
+	}
+	return options.CacheFrom, options.CacheTo
+}
+
 func validateCapabilities(ctx context.Context, plan *workflow.ExecutionPlan, client *coopr.Client, options Options) error {
 	// Negotiate the entire selected plan before any task can have side effects.
-	required, err := RequiredCapabilities(plan, nil, options)
+	required, err := RequiredCapabilities(nil, plan, nil, options)
 	if err != nil {
 		return err
 	}
@@ -251,6 +251,7 @@ func prepare(ctx context.Context, w *workflow.Workflow, targets []string, option
 	if err := ctx.Err(); err != nil {
 		return nil, options, err
 	}
+	options.CacheFrom, options.CacheTo = w.CacheRepositories(options.CacheFrom, options.CacheTo)
 	plan, err := w.Expand(targets)
 	if err != nil {
 		return nil, options, err
@@ -259,7 +260,8 @@ func prepare(ctx context.Context, w *workflow.Workflow, targets []string, option
 	if err != nil {
 		return nil, options, err
 	}
-	if err := admitFileExports(plan, options.ContextDir); err != nil {
+	options.priorFileExports = map[string]bool{}
+	if err := admitFileExports(plan, options.ContextDir, options.priorFileExports, nil); err != nil {
 		return nil, options, err
 	}
 	return plan, options, nil
@@ -283,10 +285,8 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 			}
 			job := &plan.Groups[gi].Jobs[ji]
 			if job.Definition.Host != nil {
-				if options.hostSelections == nil || options.hostSelections[job.Name] {
-					if err := validateHostExecution(job.Definition, options); err != nil {
-						return nil, options, fmt.Errorf("task %q: %w", job.Task, err)
-					}
+				if err := validateHostExecution(job.Definition, options); err != nil {
+					return nil, options, fmt.Errorf("task %q: %w", job.Task, err)
 				}
 				continue
 			}
@@ -294,6 +294,9 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 				return nil, options, fmt.Errorf("task %q platform: %w", job.Task, err)
 			}
 			if err := resolveTaskMounts(&job.Definition, options.ContextDir); err != nil {
+				return nil, options, fmt.Errorf("task %q: %w", job.Task, err)
+			}
+			if err := validateMountIsolation(job.Definition, options); err != nil {
 				return nil, options, fmt.Errorf("task %q: %w", job.Task, err)
 			}
 			if err := source.ValidateComponentContext(job.Definition.ComponentDir, options.ContextDir); err != nil {
@@ -305,16 +308,17 @@ func preparePlan(ctx context.Context, plan *workflow.ExecutionPlan, options Opti
 				}
 			}
 			if build := job.Definition.Coopr; build != nil {
-				build.Files, err = source.DefinitionFilesForTask(job.Definition, options.ContextDir)
+				job.Definition.Coopr, err = source.ResolveDefinitionBuild(job.Definition, options.ContextDir)
 				if err != nil {
 					return nil, options, fmt.Errorf("task %q definition files: %w", job.Task, err)
 				}
 			}
 			if environment := job.Definition.Environment; environment != nil {
-				environment.Files, err = source.DefinitionFilesForTask(job.Definition, options.ContextDir)
+				resolved, err := source.ResolveDefinitionBuild(job.Definition, options.ContextDir)
 				if err != nil {
-					return nil, options, fmt.Errorf("task %q environment files: %w", job.Task, err)
+					return nil, options, fmt.Errorf("task %q build files: %w", job.Task, err)
 				}
+				job.Definition.Environment = (*workflow.Build)(resolved)
 			}
 		}
 	}
@@ -385,7 +389,7 @@ func runPrepared(ctx context.Context, w *workflow.Workflow, plan *workflow.Execu
 	}
 	defer func() {
 		if report != nil {
-			retErr = persistReport(report, retErr)
+			retErr = FinalizeReport(report, retErr)
 		}
 	}()
 	// Coopr locks portable-cache operations and persistent volumes. Native
@@ -398,10 +402,10 @@ func runPrepared(ctx context.Context, w *workflow.Workflow, plan *workflow.Execu
 	if output == "" {
 		output = filepath.Join(dir, "outputs")
 	}
+	report = &Report{Status: "running", Directory: dir, Output: output, Tasks: skippedTasks(plan, options)}
 	if err := os.Mkdir(output, 0700); err != nil {
-		return nil, err
+		return report, err
 	}
-	report = &Report{Status: "running", Directory: dir, Output: output, Tasks: []TaskResult{}}
 	options.hostContextDir, err = snapshotHostContext(ctx, plan, options.ContextDir, dir)
 	if options.hostContextDir != "" {
 		defer func() {
@@ -413,18 +417,13 @@ func runPrepared(ctx context.Context, w *workflow.Workflow, plan *workflow.Execu
 	if err != nil {
 		return report, err
 	}
-	var imported map[string]coopr.Result
-	if len(options.ciImports) != 0 {
-		imported, err = loadCIImports(ctx, options.ciImports, options, dir, engine)
-		if err != nil {
-			return report, err
-		}
-	}
-	report.Tasks, err = scheduleImported(ctx, w, plan, options, dir, output, engine, imported)
+	report.Tasks, err = schedule(ctx, w, plan, options, dir, output, engine)
 	return report, err
 }
 
-func persistReport(report *Report, runErr error) error {
+// FinalizeReport records the invocation outcome after execution and caller-owned cleanup.
+// Task outcomes remain the observed execution results.
+func FinalizeReport(report *Report, runErr error) error {
 	report.Status, report.Error = "passed", ""
 	if runErr != nil {
 		report.Status, report.Error = "failed", runErr.Error()
@@ -473,12 +472,13 @@ func synchronize(out io.Writer, mu *sync.Mutex) io.Writer {
 }
 
 func executeJob(ctx context.Context, job workflow.Job, options Options, dir, output string, previous map[string]coopr.Result, engine backend) (result coopr.Result, retErr error) {
-	flushLogs := labelTaskLogs(&options, job.Name)
+	flushLogs := labelTaskLogs(&options, job.Label())
 	defer func() { retErr = errors.Join(retErr, flushLogs()) }()
 	var observedBuild *CDEvents
+	restore := options.ciCacheOnly[job.Name]
 	defer func() { observedBuild.BuildFinished(job, result, retErr) }()
 	defer func() {
-		if len(job.Definition.FileExports()) != 0 && len(result.Exports) == 0 {
+		if !restore && len(job.Definition.FileExports()) != 0 && len(result.Exports) == 0 {
 			result.Exports = skippedJobFileExports(job, options.ContextDir, "task did not produce selected files")
 		}
 	}()
@@ -526,22 +526,27 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 			}
 		}
 	}
-	if job.Definition.Publish == nil {
-		opts.Cache.RegistryFrom = slices.Clone(options.CacheFrom)
-		opts.Cache.RegistryTo = slices.Clone(options.CacheTo)
-	}
-	if !job.Definition.FilesystemEnabled() {
+	cacheFrom, cacheTo := jobRegistryCaches(job, options)
+	opts.Cache.RegistryFrom = slices.Clone(cacheFrom)
+	opts.Cache.RegistryTo = slices.Clone(cacheTo)
+	if restore || !job.Definition.FilesystemEnabled() {
 		opts.Output.Filesystem = ""
+	}
+	if restore {
+		opts.Cache.RequireHit = true
 	}
 	omitOCI := omitCIImageOutput(job, options)
 	if omitOCI {
 		opts.Output.OCI = ""
 		opts.Cache.LocalDir = ""
-		opts.Cache.RegistryTo = nil
 	}
-	staging, exports, err := stageJobFileExports(job, options.ContextDir)
-	if err != nil {
-		return coopr.Result{}, err
+	var staging string
+	var exports []cooprwire.FileExport
+	if !restore {
+		staging, exports, err = stageJobFileExports(job, options.ContextDir)
+		if err != nil {
+			return coopr.Result{}, err
+		}
 	}
 	opts.Output.Exports = exports
 	if staging != "" {
@@ -554,11 +559,18 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 		}()
 	}
 	if options.Stderr != nil {
-		_, _ = fmt.Fprintf(options.Stderr, "==> %s (cache=%t)\n", job.Name, !opts.Cache.NoCache)
+		if restore {
+			_, _ = fmt.Fprintf(options.Stderr, "==> %s (cache-only)\n", job.Name)
+		} else {
+			_, _ = fmt.Fprintf(options.Stderr, "==> %s (cache=%t)\n", job.Name, !opts.Cache.NoCache)
+		}
 	}
 	switch {
 	case job.Definition.Coopr != nil:
 		build := job.Definition.Coopr
+		if build.Context != "" {
+			opts.ContextDir = build.Context
+		}
 		args := make(map[string]string, len(build.Args))
 		for name, argument := range build.Args {
 			if argument.From != "" {
@@ -579,7 +591,7 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 		if component {
 			opts.Output.OCI = filepath.Join(taskDir, "component.oci.tar")
 		}
-		if opts.Output.OCI != "" {
+		if !restore && opts.Output.OCI != "" {
 			observedBuild = options.Events
 			observedBuild.BuildStarted(job)
 		}
@@ -595,22 +607,27 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 			kind = "image"
 			value = previous[publication.From].ImageID
 		}
-		sourceDigest := ""
-		if imported := previous[publication.From]; kind == "image" && imported.CanonicalReference != "" {
-			_, sourceDigest, _ = strings.Cut(imported.CanonicalReference, "@")
-			if imported.CanonicalOCI == "" || validateCIDigest(sourceDigest) != nil {
-				return coopr.Result{}, errors.New("exact imported image publication requires its verified original OCI layout and digest")
-			}
-			value = "oci:" + imported.CanonicalOCI
-		}
+
 		opts.Output = coopr.Output{}
-		result, err = engine.Publish(ctx, cooprwire.Publish{Artifact: kind, Source: value, SourceDigest: sourceDigest, Destinations: publication.Destinations, ComponentStoreDir: filepath.Join(dir, "components")}, opts)
+		result, err = engine.Publish(ctx, cooprwire.Publish{Artifact: kind, Source: value, Destinations: publication.Destinations, ComponentStoreDir: filepath.Join(dir, "components")}, opts)
 	default:
+		if job.Definition.HasScripts() {
+			scriptDir := filepath.Join(taskDir, "scripts")
+			defer func() {
+				if !errors.Is(retErr, coopr.ErrCleanupFailed) {
+					retErr = errors.Join(retErr, os.RemoveAll(scriptDir))
+				}
+			}()
+			if err := stageTaskScripts(job.Definition, scriptDir); err != nil {
+				return coopr.Result{}, err
+			}
+			opts.Contexts[workflow.ScriptContext] = scriptDir
+		}
 		program, compileErr := compile(job.Name, job.Definition, previous)
 		if compileErr != nil {
 			return coopr.Result{}, compileErr
 		}
-		if opts.Output.OCI != "" {
+		if !restore && opts.Output.OCI != "" {
 			observedBuild = options.Events
 			observedBuild.BuildStarted(job)
 		}
@@ -631,7 +648,7 @@ func executeJob(ctx context.Context, job workflow.Job, options Options, dir, out
 		_, _ = fmt.Fprintf(options.Stderr, "    %s: cache hits=%d misses=%d stored=%d skipped=%d errors=%d\n", job.Name, result.Cache.Hits, result.Cache.Misses, result.Cache.Stored, result.Cache.Skipped, result.Cache.Errors)
 	}
 	var exportErr error
-	result.Exports, exportErr = publishJobFileExports(ctx, job, options.ContextDir, staging, exports, result.Exports, err)
+	result.Exports, exportErr = publishJobFileExports(ctx, job, options.ContextDir, staging, exports, result.Exports, options.priorFileExports, err)
 	if omitOCI {
 		result.OCI, result.ManifestDigest = "", ""
 	}
@@ -642,9 +659,7 @@ func imageSource(result coopr.Result) string {
 	if result.ImageID != "" {
 		return "containers-storage:" + result.ImageID
 	}
-	if result.Reference != "" && result.Reference == result.CanonicalReference && result.ManifestDigest != "" && result.OCI == "" && result.Filesystem == "" {
-		return result.Reference
-	}
+
 	return ""
 }
 
@@ -708,6 +723,12 @@ func compile(name string, task workflow.Task, results map[string]coopr.Result) (
 			state.Operations = append(state.Operations, copyOp)
 		} else {
 			run := coopr.Operation{Kind: "run", Args: step.Run}
+			if step.Script != "" {
+				name := scriptName(step.Script)
+				target := workflow.ScriptMountRoot + "/" + name
+				run.Args = []string{target}
+				run.Mounts = append(run.Mounts, coopr.Mount{Type: "bind", Target: target, Source: name, From: coopr.Source{Context: workflow.ScriptContext}, ReadOnly: true})
+			}
 			for _, mount := range append(slices.Clone(task.Mounts), step.Mounts...) {
 				run.Mounts = append(run.Mounts, compileMount(mount, results))
 			}

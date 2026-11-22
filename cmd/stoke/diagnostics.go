@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/strio-dev/stoke/internal/runner"
+	"github.com/strio-dev/stoke/internal/workflow"
 )
 
 // Use the retained report for human diagnostics; stdout remains the JSON result.
@@ -21,7 +22,7 @@ func printFailureSummary(out io.Writer, report *runner.Report, targets []string,
 	failed, exports := []string{}, []string{}
 	for _, task := range report.Tasks {
 		if task.Status == "failed" {
-			failed = append(failed, task.Name)
+			failed = append(failed, workflow.Job{Name: task.Name, Task: task.Task, Matrix: task.Matrix}.Label())
 		}
 		for _, export := range task.Exports {
 			if export.Destination != "" && !slices.Contains(exports, export.Destination) {
@@ -37,11 +38,11 @@ func printFailureSummary(out io.Writer, report *runner.Report, targets []string,
 	fmt.Fprintf(&text, "Report: %s\n", filepath.Join(report.Directory, "run.json"))
 	if nativeCI {
 		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			text.WriteString("Retry with GitHub's Re-run job, preserving this invocation's scope and inherited producer inputs.\n")
+			text.WriteString("Use GitHub's Re-run job to retry with its native prerequisites.\n")
 		} else {
-			text.WriteString("Retry through the CI provider, preserving this invocation's scope and inherited producer inputs.\n")
+			text.WriteString("Retry through the CI provider with the original success gates.\n")
 		}
-		text.WriteString("If partial-retry metadata is unavailable or a producer changes, rerun that producer and its dependent gates, or the whole invocation.\n")
+		text.WriteString("If inputs or prerequisites changed, rerun the workflow and its gates.\n")
 		text.WriteString("Do not invoke a CI task directly to bypass native success gates.\n")
 		text.WriteString("Use a fresh job workspace or preserve existing output/event/export destinations elsewhere before retrying.\n")
 	} else {
@@ -59,7 +60,11 @@ func printFailureSummary(out io.Writer, report *runner.Report, targets []string,
 		fmt.Fprintf(&text, "Choose a fresh --events file instead of %q.\n", options.EventPath)
 	}
 	for _, path := range exports {
-		fmt.Fprintf(&text, "Selected export destination must be absent before retry; preserve existing files elsewhere: %q.\n", path)
+		if nativeCI {
+			fmt.Fprintf(&text, "Selected export destination must be absent before retry. Preserve existing files elsewhere: %q.\n", path)
+		} else {
+			fmt.Fprintf(&text, "A retry can update the selected export at %q. Move it aside to keep the earlier result.\n", path)
+		}
 	}
 	_, _ = io.WriteString(out, text.String())
 	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("GITHUB_STEP_SUMMARY") != "" {

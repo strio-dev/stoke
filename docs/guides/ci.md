@@ -2,12 +2,11 @@
 
 Invoke the same `stoke run` command locally and as a step inside a GitHub Actions, Jenkins, GitLab CI or Tekton job. Stoke carries the reusable build, test and artifact workflow; the CI platform runs that command in its chosen environment.
 
-For separate GitHub jobs and matrices derived from your Stoke dependencies, use
-[CI configuration generation](ci-generation.md). It generates a separate reusable
-workflow and plan while preserving your handwritten jobs. The examples below
-remain the direct, single-job invocation path.
+Use [CI stage generation](ci-generation.md) to render standalone callable stages
+from a template. Your handwritten CI configuration owns the surrounding jobs,
+ordering and success gates. The examples below use direct, single-job invocation.
 
-Keep triggers, checkout, agent/machine selection, credentials, approvals, status reporting and artifact retention in the CI configuration. In the direct invocation below, Stoke resolves its own workflow dependencies and delegates container builds and caching to Coopr within the selected job. These are separate graphs: a Stoke matrix expands work inside that invocation, while a CI matrix can allocate separate jobs or machines. The optional generator maps those dependencies to provider jobs; the platform still owns their scheduling. Neither path adds a Stoke CI worker or control plane.
+Keep triggers, checkout, agent/machine selection, credentials, approvals, status reporting and artifact retention in the CI configuration. In the direct invocation below, Stoke resolves its own workflow dependencies and delegates container builds and caching to Coopr within the selected job. These are separate graphs: a Stoke matrix expands work inside that invocation, while a CI matrix can allocate separate jobs or machines. Generated stages use the same execution path inside caller-owned provider jobs; the platform owns their scheduling and success gates. Neither path adds a Stoke CI worker or control plane.
 
 The examples assume `stoke` is already installed on the runner and the project has a `stoke.yaml` task named `test`. Provision Stoke from your reviewed source/Nix build; no public download URL is assumed. Configure rootless UID/GID mappings, mapping helpers, runtime, storage and signature policy before running a job. A generic hosted runner is not automatically a verified rootless environment.
 
@@ -146,7 +145,8 @@ the declared test reports available while blocking packaging. Each invocation
 needs fresh destinations. A native CI step can execute the binary or collect
 those paths after Stoke returns; use the provider's failure-retention condition
 for reports without masking Stoke's nonzero status. Stoke does not upload them
-automatically, and generated reusable jobs do not accept caller poststeps.
+automatically. Add collection or consumption steps around a generated stage in
+your handwritten job.
 
 See [caching](caching.md) for test-result policy and [runtime and security](security.md) for trust boundaries.
 
@@ -170,7 +170,8 @@ Native Coopr definition tasks use the same runner and an explicit caller
 context. Install Coopr `0.6.0` on that runner. Use the component file scope when
 selecting declared helpers and definitions from a template. A separate trusted
 CI job can select a YAML publication target after its required gates. Running
-without targets selects every root task, including publication. Use
+without targets uses the optional `default-run` group, or selects every root
+task, including publication, when that default is absent. Use
 `stoke publish` for reusable workflow YAML and its declared component files.
 Use YAML publication tasks to deliver built images. See
 [native builds and publication](native-coopr.md).

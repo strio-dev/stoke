@@ -44,21 +44,69 @@ func ValidateComponentContext(componentDir, callerDir string) error {
 // DefinitionFilesForTask resolves definitions from the caller or the owning
 // component, independently from the native build's primary caller context.
 func DefinitionFilesForTask(task workflow.Task, caller string) ([]string, error) {
+	build, err := ResolveDefinitionBuild(task, caller)
+	if err != nil {
+		return nil, err
+	}
+	return build.Files, nil
+}
+
+// ResolveDefinitionBuild returns an execution copy. Context scopes only the
+// native build; caller/component ownership and the later task context stay put.
+func ResolveDefinitionBuild(task workflow.Task, caller string) (*workflow.CooprBuild, error) {
 	build := task.Coopr
 	if build == nil {
-		build = task.Environment
+		build = task.Environment.Native()
 	}
 	if build == nil {
 		return nil, errors.New("task has no native definition files")
 	}
-	directory := caller
+	root, err := filepath.Abs(caller)
+	if err != nil {
+		return nil, err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	context := root
+	if build.Context != "" {
+		if !filepath.IsLocal(build.Context) {
+			return nil, errors.New("build context must stay inside the caller workflow root")
+		}
+		context, err = filepath.EvalSymlinks(filepath.Join(root, build.Context))
+		if err != nil {
+			return nil, fmt.Errorf("build context %q: %w", build.Context, err)
+		}
+		relative, err := filepath.Rel(root, context)
+		if err != nil || !filepath.IsLocal(relative) {
+			return nil, errors.New("build context resolves outside the caller workflow root")
+		}
+	}
+	info, err := os.Stat(context)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, errors.New("build context must be a directory")
+	}
+	directory := context
 	if build.FilesFrom == "component" {
 		if task.ComponentDir == "" {
 			return nil, errors.New("component definition files must be resolved before execution")
 		}
 		directory = task.ComponentDir
 	}
-	return DefinitionFiles(directory, build.Files)
+	resolved := *build
+	resolved.Files, err = DefinitionFiles(directory, build.Files)
+	if err != nil {
+		return nil, err
+	}
+	resolved.Context = ""
+	if context != root {
+		resolved.Context = context
+	}
+	return &resolved, nil
 }
 
 // DefinitionFiles resolves caller-provided native definition files inside the

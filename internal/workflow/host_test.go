@@ -128,7 +128,7 @@ func TestHostProducerCannotMasqueradeAsAnImageOrNativeArgument(t *testing.T) {
 	for _, consumer := range []Task{
 		{From: "produce"},
 		{Coopr: &CooprBuild{Files: []string{"image.coopr"}, Args: map[string]Argument{"BASE": {From: "produce"}}}},
-		{Environment: &CooprBuild{Files: []string{"image.coopr"}, Args: map[string]Argument{"BASE": {From: "produce"}}}},
+		{Environment: &Build{Files: []string{"image.coopr"}, Args: map[string]Argument{"BASE": {From: "produce"}}}},
 		{Publish: &Publish{From: "produce", Destinations: []string{"registry.test/result:latest"}}},
 		{Image: "scratch", Mounts: []Mount{{Type: "stage", From: "produce", Target: "/out"}}, Steps: []Step{{Run: []string{"true"}}}},
 	} {

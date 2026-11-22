@@ -1,0 +1,19 @@
+version: 1
+ci-template: github
+cache-from: [registry.example.com/team/build-cache]
+cache-to: [registry.example.com/team/build-cache]
+tasks:
+  build:
+    image: docker.io/library/busybox:1.37@sha256:a7dbc319b1438115a207e11930dc4bb3e643dcb3ec0bdd694bb36cd8fad289ec
+    steps:
+      - run: printf '%s' hello | tr a-z A-Z > /message
+  test:
+    from: build
+    cache: false
+    steps:
+      - run: test "$(cat /message)" = HELLO
+  publish:
+    needs: [test]
+    publish:
+      from: build
+      destinations: [registry.example.com/team/demo:verified]

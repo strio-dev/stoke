@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -107,25 +108,17 @@ func (f *ciRegistryFixture) configureRealCIExecution() *realCIExecution {
 	}
 	if config.driver != "" || config.users != nil {
 		f.prepareCommand = func(label, caller string, command *exec.Cmd) {
-			args := command.Args[1:]
-			runtimeCall := len(args) > 0 && args[0] == "run" || len(args) > 1 && args[0] == "ci" && args[1] == "run"
-			if !runtimeCall {
+			if len(command.Args) < 2 || command.Args[1] != "run" {
 				return
 			}
 			if config.driver != "" {
-				position := 2
-				if args[0] == "ci" {
-					position = 3
-				}
-				selected := append([]string{}, command.Args[:position]...)
-				selected = append(selected, "--storage-driver", config.driver)
-				command.Args = append(selected, command.Args[position:]...)
+				command.Args = slices.Insert(command.Args, 2, "--storage-driver", config.driver)
 			}
 			if config.users == nil {
 				return
 			}
 			role := "local"
-			if strings.HasPrefix(label, "real-provider-") || strings.HasPrefix(label, "real-fresh-") {
+			if strings.HasPrefix(label, "real-fresh-") {
 				role = "ci"
 			}
 			if strings.HasPrefix(label, "real-local-return") {
@@ -147,13 +140,6 @@ func (f *ciRegistryFixture) configureRealCIExecution() *realCIExecution {
 			}
 			if err := os.Chown(temporary, int(selected.UID), int(selected.GID)); err != nil {
 				f.t.Fatal(err)
-			}
-			for i, arg := range command.Args {
-				if arg == "--github-output" && i+1 < len(command.Args) {
-					if err := os.Chown(command.Args[i+1], int(selected.UID), int(selected.GID)); err != nil {
-						f.t.Fatal(err)
-					}
-				}
 			}
 			command.Dir = caller
 			command.Env = append(command.Env, "USER="+selected.Name, "LOGNAME="+selected.Name, "XDG_RUNTIME_DIR=/run/user/"+strconv.FormatUint(uint64(selected.UID), 10), "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/"+strconv.FormatUint(uint64(selected.UID), 10)+"/bus", "TMPDIR="+temporary)
@@ -313,6 +299,12 @@ func (f *ciRegistryFixture) copyRealCheckout(source, destination string, shared,
 	f.write(filepath.Join(f.work, filepath.Base(destination)+"-source-manifest.json"), f.encode(map[string]any{"source": source, "destination": destination, "completeCopy": true, "sourceEntriesBeforeAccessNormalization": entries, "sharedReadOnlyRootOwned": shared, "freshTimestampProbe": fresh, "freshTimestamp": timestamp}), 0600)
 }
 
+func (f *ciRegistryFixture) generatedCommand(label, caller string, args []string) *exec.Cmd {
+	command := f.commandFor(label, caller, args)
+	command.Dir = caller
+	return command
+}
+
 func TestRealDriverSelectionPrecedesTargetsAndPreservesGeneratedArguments(t *testing.T) {
 	t.Setenv("STOKE_REAL_CI_USERS", "")
 	t.Setenv("STOKE_REAL_CI_STORAGE_DRIVER", "overlay")
@@ -323,11 +315,11 @@ func TestRealDriverSelectionPrecedesTargetsAndPreservesGeneratedArguments(t *tes
 	if ordinary.Args[1] != "run" || ordinary.Args[2] != "--storage-driver" || ordinary.Args[3] != "overlay" || ordinary.Args[len(ordinary.Args)-1] != "build" || ordinary.Dir != "" {
 		t.Fatalf("runtime driver selection changed command semantics: %#v", ordinary)
 	}
-	generated := f.generatedCommand("real-provider-build", work, []string{"ci", "run", "--plan", "plan.json", "--job", "build"})
-	if strings.Join(generated.Args[1:], " ") != "ci run --storage-driver overlay --plan plan.json --job build" || generated.Dir != work {
+	generated := f.generatedCommand("real-fresh-build", work, []string{"run", "--ci", "build"})
+	if strings.Join(generated.Args[1:], " ") != "run --storage-driver overlay --ci build" || generated.Dir != work {
 		t.Fatalf("generated command discarded runtime setup: %#v", generated)
 	}
-	plan := f.generatedCommand("real-ci-generate", work, []string{"ci", "generate", "--context", "."})
+	plan := f.generatedCommand("real-ci-generate", work, []string{"ci", "generate", "github", "--context", "."})
 	if strings.Contains(strings.Join(plan.Args, " "), "--storage-driver") {
 		t.Fatal("runtime-only driver option escaped into generation")
 	}

@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"go.yaml.in/yaml/v3"
 )
@@ -32,6 +34,29 @@ type Job struct {
 	Matrix     map[string]string
 	Definition Task
 }
+
+// Label is human presentation only; Name remains the execution/binding identity.
+func (j Job) Label() string {
+	if len(j.Matrix) == 0 {
+		return j.Name
+	}
+	name := j.Task
+	if name == "" {
+		name = j.Name
+	}
+	values := make([]string, 0, len(j.Matrix))
+	for _, key := range slices.Sorted(maps.Keys(j.Matrix)) {
+		value := j.Matrix[key]
+		if value == "" || strings.IndexFunc(value, func(r rune) bool {
+			return unicode.IsSpace(r) || !strconv.IsPrint(r) || strings.ContainsRune(",[]=\\\"", r)
+		}) >= 0 {
+			value = strconv.Quote(value)
+		}
+		values = append(values, key+"="+value)
+	}
+	return name + "[" + strings.Join(values, ",") + "]"
+}
+
 type Group struct {
 	Name        string
 	Jobs        []Job
@@ -367,22 +392,8 @@ func (t Task) Clone() Task {
 		value := *t.Cache
 		t.Cache = &value
 	}
-	for _, slot := range []**CooprBuild{&t.Coopr, &t.Environment} {
-		if *slot == nil {
-			continue
-		}
-		build := **slot
-		build.Files = slices.Clone(build.Files)
-		build.Args = maps.Clone(build.Args)
-		for name, argument := range build.Args {
-			if argument.Value != nil {
-				value := *argument.Value
-				argument.Value = &value
-				build.Args[name] = argument
-			}
-		}
-		*slot = &build
-	}
+	t.Coopr = cloneCooprBuild(t.Coopr)
+	t.Environment = (*Build)(cloneCooprBuild(t.Environment.Native()))
 	if t.Outputs != nil {
 		outputs := *t.Outputs
 		if outputs.Filesystem != nil {
@@ -415,6 +426,23 @@ func (t Task) Clone() Task {
 		t.Strategy = &strategy
 	}
 	return t
+}
+
+func cloneCooprBuild(original *CooprBuild) *CooprBuild {
+	if original == nil {
+		return nil
+	}
+	build := *original
+	build.Files = slices.Clone(build.Files)
+	build.Args = maps.Clone(build.Args)
+	for name, argument := range build.Args {
+		if argument.Value != nil {
+			value := *argument.Value
+			argument.Value = &value
+			build.Args[name] = argument
+		}
+	}
+	return &build
 }
 
 func cloneEntries(entries []map[string]string) []map[string]string {
@@ -526,7 +554,7 @@ func (w *Workflow) Expand(targets []string) (*ExecutionPlan, error) {
 					}
 				}
 			}
-			for _, build := range []*CooprBuild{def.Coopr, def.Environment} {
+			for _, build := range []*CooprBuild{def.Coopr, def.Environment.Native()} {
 				if build == nil {
 					continue
 				}
@@ -555,6 +583,9 @@ func (w *Workflow) Expand(targets []string) (*ExecutionPlan, error) {
 				if err != nil {
 					return nil, err
 				}
+			}
+			if len(id) > MaxJobNameBytes {
+				return nil, fmt.Errorf("expanded job name %q exceeds %d bytes", id, MaxJobNameBytes)
 			}
 			if ids[id] {
 				return nil, fmt.Errorf("duplicate expanded job %q", id)

@@ -15,6 +15,7 @@ import (
 	"github.com/strio-dev/stoke/internal/artifact"
 	"github.com/strio-dev/stoke/internal/assets"
 	"github.com/strio-dev/stoke/internal/workflow"
+	"oras.land/oras-go/v2/registry"
 )
 
 type Loader struct {
@@ -96,6 +97,7 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 	}
 	var document *artifact.Document
 	var contextDir, localDir string
+	var localRoot *os.Root
 	remote := strings.HasPrefix(location, "oci://")
 	if remote {
 		var err error
@@ -119,18 +121,30 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 			return nil, err
 		}
 		contextDir = filepath.Dir(absolute)
-		localDir = contextDir
 		data, err := workflow.ReadFile(ctx, absolute)
 		if err != nil {
 			return nil, err
 		}
 		document = &artifact.Document{Data: data, Reference: absolute}
+		directory, err := filepath.EvalSymlinks(contextDir)
+		if err != nil {
+			return nil, err
+		}
+		localRoot, err = os.OpenRoot(directory)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { retErr = errors.Join(retErr, localRoot.Close()) }()
+		localDir = "."
 	}
 	active := map[string]bool{}
 	if remote {
 		active[strings.TrimPrefix(location, "oci://")] = true
 		active[document.Reference] = true
+	} else if rootPath, err := localWorkflowPath(localRoot, ".", "./"+filepath.Base(document.Reference)); err == nil {
+		active["local:"+filepath.ToSlash(rootPath)] = true
 	}
+	localDocuments := map[string]*artifact.Document{}
 	materialized := map[string]string{}
 	documents := 1
 	declaredTasks := 0
@@ -151,8 +165,13 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 			return nil, errors.New("loaded workflow declarations exceed 1024 tasks")
 		}
 		files := document.Files
-		if localDir != "" {
-			files, err = assets.Collect(localDir, w.Assets)
+		if localDir != "" && len(w.Assets) != 0 {
+			assetRoot, openErr := localRoot.OpenRoot(localDir)
+			if openErr != nil {
+				return nil, fmt.Errorf("component assets: %w", openErr)
+			}
+			files, err = assets.CollectRoot(assetRoot, w.Assets)
+			err = errors.Join(err, assetRoot.Close())
 			if err != nil {
 				return nil, fmt.Errorf("component assets: %w", err)
 			}
@@ -175,15 +194,45 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 		c := &component{document: document, workflow: w, directory: componentDir, imports: map[string]*component{}}
 		for _, alias := range sortedKeys(w.Imports) {
 			authored := w.Imports[alias]
-			ref := RelocatedReference(authored, document.Dependencies)
-			if active[ref] || active[authored] {
-				return nil, fmt.Errorf("workflow import cycle at %q", ref)
-			}
 			documents++
 			if documents > 64 {
 				return nil, errors.New("workflow import count exceeds 64")
 			}
-			child, err := fetch(ctx, ref)
+			var child *artifact.Document
+			var childDir string
+			var keys []string
+			if workflow.IsLocalImport(authored) {
+				if localDir == "" {
+					return nil, errors.New("OCI workflows cannot import local YAML; publish the dependency to OCI and use its digest-pinned reference")
+				}
+				name, pathErr := localWorkflowPath(localRoot, localDir, authored)
+				if pathErr != nil {
+					return nil, fmt.Errorf("import %q: %w", alias, pathErr)
+				}
+				child = localDocuments[name]
+				if child == nil {
+					data, readErr := workflow.ReadFileAt(ctx, localRoot, name)
+					if readErr != nil {
+						return nil, fmt.Errorf("import %q: %w", alias, readErr)
+					}
+					child = &artifact.Document{Data: data, Reference: "local:" + filepath.ToSlash(name)}
+					localDocuments[name] = child
+				}
+				childDir, keys = filepath.Dir(name), []string{child.Reference}
+			} else {
+				ref := RelocatedReference(authored, document.Dependencies)
+				if workflow.IsLocalImport(ref) {
+					return nil, errors.New("relocated OCI workflow imports cannot use local paths")
+				}
+				if _, err := registry.ParseReference(ref); err != nil {
+					return nil, errors.New("relocated OCI workflow imports require a registry reference")
+				}
+				if active[ref] || active[authored] {
+					return nil, fmt.Errorf("workflow import cycle at %q", ref)
+				}
+				child, err = fetch(ctx, ref)
+				keys = []string{authored, ref}
+			}
 			if err != nil {
 				return nil, fmt.Errorf("import %q: %w", alias, err)
 			}
@@ -197,11 +246,11 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 			if active[canonical] {
 				return nil, fmt.Errorf("workflow import cycle at %q", canonical)
 			}
-			keys := []string{authored, ref, canonical}
+			keys = append(keys, canonical)
 			for _, key := range keys {
 				active[key] = true
 			}
-			c.imports[alias], err = load(child, "", depth+1)
+			c.imports[alias], err = load(child, childDir, depth+1)
 			for _, key := range keys {
 				delete(active, key)
 			}
@@ -219,6 +268,7 @@ func (l Loader) Load(ctx context.Context, location string) (_ *Result, retErr er
 		return nil, err
 	}
 	expanded := &workflow.Workflow{Version: 1, Tasks: map[string]workflow.Task{}}
+	expanded.CacheFrom, expanded.CacheTo = root.workflow.CacheRepositories(nil, nil)
 	instance, err := newInstance(ctx, root, l.Inputs, "", expanded)
 	if err != nil {
 		return nil, err
@@ -260,11 +310,13 @@ func ValidateAssets(w *workflow.Workflow, files map[string]assets.File) error {
 // inputs. Component file content, literal arguments and destinations stay literal.
 func RewriteReferences(w *workflow.Workflow, mappings map[string]string) {
 	for name, reference := range w.Imports {
-		w.Imports[name] = RelocatedReference(reference, mappings)
+		if !workflow.IsLocalImport(reference) {
+			w.Imports[name] = RelocatedReference(reference, mappings)
+		}
 	}
 	for name, task := range w.Tasks {
 		task.Image = RelocatedReference(task.Image, mappings)
-		for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment} {
+		for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment.Native()} {
 			if build == nil {
 				continue
 			}
@@ -309,10 +361,12 @@ func Dependencies(w *workflow.Workflow) []string {
 		return refs
 	}
 	for _, ref := range w.Imports {
-		refs = append(refs, strings.TrimPrefix(ref, "docker://"))
+		if !workflow.IsLocalImport(ref) {
+			refs = append(refs, strings.TrimPrefix(ref, "docker://"))
+		}
 	}
 	for _, task := range w.Tasks {
-		for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment} {
+		for _, build := range []*workflow.CooprBuild{task.Coopr, task.Environment.Native()} {
 			if build == nil {
 				continue
 			}

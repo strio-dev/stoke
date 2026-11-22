@@ -97,7 +97,17 @@ func (t Task) validateMounts(w *Workflow) error {
 	}
 	hasRun := false
 	for index, step := range t.Steps {
-		if step.Run == nil {
+		if step.Script != "" {
+			if _, exists := t.Contexts[ScriptContext]; exists {
+				return fmt.Errorf("shebang scripts reserve named context %q", ScriptContext)
+			}
+			for _, mount := range append(append([]Mount(nil), t.Mounts...), step.Mounts...) {
+				if mount.Target == "/" || mount.Target == ScriptMountRoot || strings.HasPrefix(mount.Target, ScriptMountRoot+"/") {
+					return fmt.Errorf("shebang scripts reserve mount path %q", ScriptMountRoot)
+				}
+			}
+		}
+		if !step.IsRun() {
 			if len(step.Mounts) != 0 {
 				return fmt.Errorf("step %d: mounts require run", index+1)
 			}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -35,15 +36,40 @@ Commands:
   check     Validate YAML and resolve shared workflow imports
   plan      Show selected tasks in dependency order
   run       Run workflow tasks locally or inside an existing CI job
-  ci        Plan, generate and run jobs in existing CI
+  ci        Generate workflows for existing CI and integrate with providers
+  registry  Manage OCI registry authentication
   publish   Publish a workflow and Bale dependency metadata to OCI
   pull      Download an OCI workflow as YAML
   version   Print the version
   help      Show this help
 
-Use stoke <command> --help for options. Options precede targets.
+Use stoke <command> --help for options, or stoke help run. Options precede targets.
 Workflow defaults to stoke.yaml. Container execution requires Linux and rootless
 runtime setup. Host execution requires --allow-host and provisioned tools.`
+
+const runHelp = `Usage: stoke run [options] [targets...]
+
+Example
+  stoke run --output ../stoke-test-results test
+  stoke run --ci test
+
+Options precede targets. With no targets, Stoke selects all root tasks,
+including publication tasks, unless default-run selects a task group.
+Use a fresh directory outside the input context for --output. Local file exports update matching files and merge directories
+in the workspace. --output leaves those destinations in place.
+
+Registry credentials use --authfile, then REGISTRY_AUTH_FILE, then an existing
+$DOCKER_CONFIG/config.json, then native defaults. Keep credentials outside the
+workflow. Registry cache reads and writes each use CLI flags, then
+STOKE_CACHE_FROM or STOKE_CACHE_TO, then root YAML, then local-only defaults.
+An empty flag or variable clears its direction.
+
+--ci needs explicit targets. Image prerequisites outside the selection must
+restore from cache. The caller supplies ordering and success gates.
+
+Options:`
+
+const nativeTLSHelp = "verify TLS for Coopr image, component and cache registries (false for isolated tests only)"
 
 func run(args []string, out, errOut io.Writer) int {
 	return runContext(context.Background(), args, out, errOut)
@@ -62,9 +88,15 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		}
 		return 0
 	}
+	if len(args) == 2 && args[0] == "help" && (args[1] == "run" || args[1] == "registry") {
+		args = []string{args[1], "--help"}
+	}
 	command := args[0]
 	if command == "ci" {
 		return runCI(ctx, args[1:], out, errOut)
+	}
+	if command == "registry" {
+		return runRegistry(ctx, args[1:], out, errOut)
 	}
 	switch command {
 	case "check", "plan", "run", "publish", "pull":
@@ -75,14 +107,19 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 	fs := flag.NewFlagSet(command, flag.ContinueOnError)
 	fs.SetOutput(errOut)
 	client := artifact.Client{}
-	fs.BoolVar(&client.PlainHTTP, "plain-http", false, "use HTTP for OCI workflow registries (local development only)")
-	fs.StringVar(&client.AuthFile, "authfile", "", "Docker-compatible registry authentication file")
+	httpScope := "OCI workflow artifacts and imports"
+	if command == "run" {
+		httpScope = "OCI workflows and host-file caches"
+	}
+	fs.BoolVar(&client.PlainHTTP, "plain-http", false, "use HTTP for "+httpScope+" (isolated tests only)")
+	fs.StringVar(&client.AuthFile, "authfile", "", "registry credential file (overrides REGISTRY_AUTH_FILE and DOCKER_CONFIG)")
 	location := "stoke.yaml"
 	if command != "pull" {
 		fs.StringVar(&location, "f", location, "workflow YAML path or oci://reference")
 	}
 	var options runner.Options
 	var eventsPath string
+	var ciMode bool
 	inputs := map[string]string{}
 	if command == "check" || command == "plan" || command == "run" {
 		fs.Func("input", "workflow input NAME=VALUE (repeat for multiple inputs)", func(argument string) error {
@@ -108,21 +145,14 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&directory, "directory", "", "write YAML and packaged files to a fresh directory")
 	}
 	if command == "run" {
-		fs.StringVar(&eventsPath, "events", "", "write CDEvents JSONL to a fresh private file outside the input context")
-		hostExecutionFlags(fs, &options)
-		for _, cache := range []struct {
-			name         string
-			action       string
-			repositories *[]string
-		}{{"cache-from", "read", &options.CacheFrom}, {"cache-to", "write", &options.CacheTo}} {
-			fs.Func(cache.name, cache.action+" cached results through an explicit registry repository (repeatable, no tag or digest)", func(repository string) error {
-				if err := engine.ValidateCacheRepository(repository); err != nil {
-					return err
-				}
-				*cache.repositories = append(*cache.repositories, repository)
-				return nil
-			})
+		fs.Usage = func() {
+			_, _ = fmt.Fprintln(fs.Output(), runHelp)
+			fs.PrintDefaults()
 		}
+		fs.StringVar(&eventsPath, "events", "", "write CDEvents JSONL to a fresh private file outside the input context")
+		fs.BoolVar(&ciMode, "ci", false, "require cache hits for image prerequisites outside the selected tasks")
+		hostExecutionFlags(fs, &options)
+		cacheFlags(fs, &options)
 		fs.StringVar(&options.CooprBinary, "coopr-binary", os.Getenv("STOKE_COOPR_BINARY"), "Coopr executable supporting API v1 (default: coopr on PATH)")
 		fs.StringVar(&options.OutputDir, "output", "", "fresh output directory outside the input context")
 		fs.StringVar(&options.CacheDir, "cache-dir", "", "result cache and disposable mount volumes (default: user cache/stoke)")
@@ -131,7 +161,7 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 		fs.StringVar(&options.Network, "network", "", "container RUN network default; explicit native RUN choices still apply")
 		fs.StringVar(&options.StorageDriver, "storage-driver", "vfs", "containers/storage driver")
 		fs.StringVar(&options.SignaturePolicy, "signature-policy", "", "containers/image signature policy file")
-		fs.BoolVar(&tlsVerify, "tls-verify", true, "verify native image/component registry TLS")
+		fs.BoolVar(&tlsVerify, "tls-verify", true, nativeTLSHelp)
 	}
 	if err := fs.Parse(args[1:]); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -177,6 +207,9 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			var w *workflow.Workflow
 			w, err = workflow.Decode(bytes.NewReader(data))
 			if err == nil {
+				err = w.ValidatePortableImports()
+			}
+			if err == nil {
 				var files map[string]assets.File
 				var absolute string
 				absolute, err = filepath.Abs(location)
@@ -202,6 +235,11 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			break
 		}
 		defer func() { _ = cleanupExecutionInputs(executionErr, loaded.Close) }()
+		if command == "run" {
+			if err = cacheEnvironment(&options); err != nil {
+				break
+			}
+		}
 		if command == "check" || command == "run" {
 			if options.ContextDir == "" {
 				options.ContextDir = loaded.ContextDir
@@ -211,9 +249,18 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			}
 		}
 		targets := fs.Args()
-		if len(targets) == 0 {
-			targets = loaded.Targets
+		if ciMode && len(targets) == 0 {
+			err = errors.New("--ci requires at least one explicit task")
+			break
 		}
+		if len(targets) == 0 {
+			if command == "run" && loaded.RootWorkflow.DefaultRun != "" {
+				targets = []string{loaded.RootWorkflow.DefaultRun}
+			} else {
+				targets = loaded.Targets
+			}
+		}
+		targets = loaded.RootWorkflow.ExpandGroups(targets)
 		var plan *workflow.ExecutionPlan
 		if command != "run" {
 			plan, err = loaded.Workflow.Expand(targets)
@@ -267,7 +314,10 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 					} else if job.Definition.Coopr != nil {
 						line += fmt.Sprintf("\tkind=coopr-%s\tfiles=%s", job.Definition.OutputKind(), strings.Join(job.Definition.Coopr.Files, ","))
 					} else if job.Definition.Environment != nil {
-						line += fmt.Sprintf("\tkind=environment\tfiles=%s\ttarget=%s", strings.Join(job.Definition.Environment.Files, ","), job.Definition.Environment.Target)
+						line += fmt.Sprintf("\tkind=build\tcoopr=%s\ttarget=%s", strings.Join(job.Definition.Environment.Files, ","), job.Definition.Environment.Target)
+						if job.Definition.Environment.Context != "" {
+							line += "\tcontext=" + job.Definition.Environment.Context
+						}
 					} else if job.Definition.Publish != nil {
 						line += fmt.Sprintf("\tkind=publish\tdestinations=%s", strings.Join(job.Definition.Publish.Destinations, ","))
 					}
@@ -303,7 +353,23 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			if eventFile != nil {
 				options.EventPath = eventFile.name
 			}
-			runReport, err = runner.Run(ctx, loaded.Workflow, targets, options)
+			if ciMode {
+				var request runner.CIRequest
+				request, err = runner.SelectCI(loaded.Workflow, targets)
+				if err == nil {
+					attempt := 1
+					// This is observability metadata only. --ci selects the execution mode.
+					if value := os.Getenv("GITHUB_RUN_ATTEMPT"); options.Events != nil && value != "" {
+						attempt, _ = strconv.Atoi(value)
+					}
+					err = options.Events.ConfigureCI(strings.Join(targets, "+"), attempt)
+				}
+				if err == nil {
+					runReport, err = runner.RunCI(ctx, loaded.Workflow, request, options)
+				}
+			} else {
+				runReport, err = runner.Run(ctx, loaded.Workflow, targets, options)
+			}
 			executionErr = err
 		}
 	}
@@ -318,12 +384,15 @@ func runContext(ctx context.Context, args []string, out, errOut io.Writer) int {
 			err = errors.Join(err, eventFile.Close())
 		}
 		if runReport != nil {
+			if err != nil {
+				err = runner.FinalizeReport(runReport, err)
+			}
 			err = errors.Join(err, json.NewEncoder(out).Encode(runReport))
 		}
 	}
 	if err != nil {
 		if command == "run" {
-			printFailureSummary(errOut, runReport, runTargets, options, false)
+			printFailureSummary(errOut, runReport, runTargets, options, ciMode)
 		}
 		_, _ = fmt.Fprintln(errOut, "stoke:", err)
 		return 1

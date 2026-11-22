@@ -24,6 +24,14 @@ func TestCLI(t *testing.T) {
 		{"version", []string{"version"}, 0, "stoke dev"},
 		{"unknown command", []string{"unknown"}, 2, "unknown command"},
 		{"run help", []string{"run", "--help"}, 0, "signature-policy"},
+		{"run help alias", []string{"help", "run"}, 0, "Usage: stoke run [options] [targets...]"},
+		{"registry help", []string{"registry", "--help"}, 0, "stoke registry login --help"},
+		{"registry unknown command", []string{"registry", "unknown"}, 2, "stoke registry: unknown command"},
+		{"registry login help", []string{"registry", "login", "--help"}, 0, "Usage: stoke registry login [options] REGISTRY"},
+		{"registry login missing host", []string{"registry", "login"}, 2, "requires one registry host"},
+		{"registry login rejects password flag", []string{"registry", "login", "--password", "unused", "registry.example.com"}, 2, "flag provided but not defined: -password"},
+		{"top-level login rejected", []string{"login"}, 2, `unknown command "login"`},
+		{"CI help", []string{"ci", "--help"}, 0, "Render standalone stage files"},
 		{"publish missing destination", []string{"publish"}, 2, "requires one destination"},
 		{"pull missing reference", []string{"pull"}, 2, "requires one OCI"},
 	} {
@@ -37,6 +45,25 @@ func TestCLI(t *testing.T) {
 				t.Fatal("failure wrote to stdout")
 			}
 		})
+	}
+}
+
+func TestLoginKeepsConfiguredHelperPolicy(t *testing.T) {
+	const host = "registry.example.com"
+	path := filepath.Join(t.TempDir(), "auth.json")
+	for _, entry := range []struct {
+		config string
+		allow  bool
+	}{
+		{`{"credsStore":"fixture"}`, false},
+		{`{"credsStore":"fixture","credHelpers":{"registry.example.com":"registry-fixture"}}`, true},
+	} {
+		if err := os.WriteFile(path, []byte(entry.config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkLoginStore(path, host); (err == nil) != entry.allow {
+			t.Fatalf("unexpected login store selection: %v", err)
+		}
 	}
 }
 

@@ -12,16 +12,15 @@ import (
 	"strings"
 
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/oras-project/oras-go/v3"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/memory"
+	"github.com/oras-project/oras-go/v3/errdef"
+	"github.com/oras-project/oras-go/v3/registry/remote"
+	"github.com/oras-project/oras-go/v3/registry/remote/auth"
 	"github.com/strio-dev/bale"
 	"github.com/strio-dev/stoke/internal/assets"
-	"oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
-	"oras.land/oras-go/v2/errdef"
 	"oras.land/oras-go/v2/registry"
-	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
-	"oras.land/oras-go/v2/registry/remote/credentials"
 )
 
 const (
@@ -35,7 +34,6 @@ const (
 type Client struct {
 	PlainHTTP bool
 	AuthFile  string
-	ciRead    *ciReadSession
 }
 type Document struct {
 	Data         []byte
@@ -52,23 +50,22 @@ func (c Client) clients(reference string) (*remote.Repository, *bale.Client, str
 	if err != nil {
 		return nil, nil, "", err
 	}
-	var store credentials.Store
-	if c.AuthFile == "" {
-		store, err = credentials.NewStoreFromDocker(credentials.StoreOptions{})
-	} else {
-		store, err = credentials.NewStore(c.AuthFile, credentials.StoreOptions{})
-	}
+	credential, err := registryCredential(c.AuthFile, ref)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	credential := credentials.Credential(store)
 	repo, err := remote.NewRepository(ref.Registry + "/" + ref.Repository)
 	if err != nil {
 		return nil, nil, "", err
 	}
-	repo.PlainHTTP = c.PlainHTTP
-	repo.Client = &auth.Client{Client: auth.DefaultClient.Client, Cache: auth.NewCache(), Credential: credential}
-	opts := bale.ClientOptions{Credentials: credential}
+	repo.Registry.PlainHTTP = c.PlainHTTP
+	httpClient := auth.DefaultClient.Client
+	client := &auth.Client{
+		Client: httpClient, Cache: auth.NewCache(), CredentialFunc: credential,
+		TokenFetcher: auth.NewCompositeTokenFetcher(httpClient, nil, "", true),
+	}
+	repo.Registry.Client = client
+	opts := bale.ClientOptions{AuthenticatedClient: client}
 	if c.PlainHTTP {
 		opts.PlainHTTPRegistries = []string{ref.Registry}
 	}
@@ -143,8 +140,9 @@ func (c Client) Push(ctx context.Context, reference string, data []byte, depende
 	if err != nil {
 		return "", err
 	}
-	pinned := repo.Reference.Registry + "/" + repo.Reference.Repository + "@" + published.Digest.String()
-	request, err := bale.PrepareDependencyDeclaration(ctx, bale.Root{Repository: repo.Reference.Registry + "/" + repo.Reference.Repository, Descriptor: published}, declaration)
+	repository := repo.Reference().Registry + "/" + repo.RepositoryName
+	pinned := repository + "@" + published.Digest.String()
+	request, err := bale.PrepareDependencyDeclaration(ctx, bale.Root{Repository: repository, Descriptor: published}, declaration)
 	if err != nil {
 		return "", fmt.Errorf("workflow published as %s; prepare dependencies: %w", pinned, err)
 	}
@@ -199,7 +197,7 @@ func (c Client) Pull(ctx context.Context, reference string) (*Document, error) {
 	if err != nil {
 		return nil, err
 	}
-	pinned := repo.Reference.Registry + "/" + repo.Reference.Repository + "@" + descriptor.Digest.String()
+	pinned := repo.Reference().Registry + "/" + repo.RepositoryName + "@" + descriptor.Digest.String()
 	records, err := b.InspectDestinationsWithOptions(ctx, pinned, bale.DestinationInspectionOptions{MaxMetadataBytes: 8 * MaxBytes, MaxReferrers: 128})
 	if err != nil {
 		return nil, fmt.Errorf("inspect workflow delivery metadata: %w", err)

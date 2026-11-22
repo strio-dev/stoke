@@ -24,41 +24,41 @@ func TestSharedEnvironmentConsumersUsesResolvedLoweringIdentity(t *testing.T) {
 tasks:
   first:
     cache: false
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     contexts: {assets: inputs}
     mounts: [{type: host, source: inputs, target: /host}]
     steps: [{run: [check], mounts: [{type: host, source: inputs, target: /step}]}]
   second:
     cache: false
-    environment: {files: [alias.coopr]}
+    build: {coopr: [alias.coopr]}
     contexts: {assets: alias-inputs}
     steps: [{run: [other]}]
   gate: {image: scratch}
   gated:
     cache: false
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     contexts: {assets: inputs}
     needs: [gate]
     steps: [{run: [check]}]
   platform:
     cache: false
     platform: linux/arm64
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     contexts: {assets: inputs}
     steps: [{run: [check]}]
   cached:
     cache: true
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     contexts: {assets: inputs}
     steps: [{run: [check]}]
   data:
     cache: false
-    environment: {files: [image.coopr], args: {BASE: {from: gate}}}
+    build: {coopr: [image.coopr], args: {BASE: {from: gate}}}
     contexts: {assets: inputs}
     steps: [{run: [check]}]
   target:
     cache: false
-    environment: {files: [image.coopr], target: other}
+    build: {coopr: [image.coopr], target: other}
     contexts: {assets: inputs}
     steps: [{run: [check]}]
 `)
@@ -91,7 +91,7 @@ func TestSharedEnvironmentConsumersMatrixConcreteNames(t *testing.T) {
 tasks:
   check:
     cache: false
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     strategy: {matrix: {mode: [one, two]}}
     steps: [{run: [check]}]
 `)
@@ -120,16 +120,16 @@ tasks:
 func TestSharedEnvironmentConsumersMissingSelectedFiles(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
-  selected: {environment: {files: [missing.coopr]}, steps: [{run: [check]}]}
-  available: {environment: {files: [image.coopr]}, steps: [{run: [check]}]}
-  unselected: {environment: {files: [also-missing.coopr]}, steps: [{run: [check]}]}
+  selected: {build: {coopr: [missing.coopr]}, steps: [{run: [check]}]}
+  available: {build: {coopr: [image.coopr]}, steps: [{run: [check]}]}
+  unselected: {build: {coopr: [also-missing.coopr]}, steps: [{run: [check]}]}
 `)
 	plan, err := w.Expand([]string{"selected"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = SharedEnvironmentConsumers(plan, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), `task "selected" environment files`) || !strings.Contains(err.Error(), "missing.coopr") {
+	if err == nil || !strings.Contains(err.Error(), `task "selected" build files`) || !strings.Contains(err.Error(), "missing.coopr") {
 		t.Fatalf("missing file error: %v", err)
 	}
 }
@@ -137,8 +137,8 @@ tasks:
 func TestSharedEnvironmentConsumersIgnoresUnselectedDefinitions(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
-  selected: {environment: {files: [image.coopr]}, steps: [{run: [check]}]}
-  unselected: {environment: {files: [missing.coopr]}, steps: [{run: [check]}]}
+  selected: {build: {coopr: [image.coopr]}, steps: [{run: [check]}]}
+  unselected: {build: {coopr: [missing.coopr]}, steps: [{run: [check]}]}
 `)
 	plan, err := w.Expand([]string{"selected"})
 	if err != nil {

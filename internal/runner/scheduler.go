@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"maps"
 
 	coopr "github.com/strio-dev/stoke/internal/engine"
 	"github.com/strio-dev/stoke/internal/workflow"
@@ -37,28 +36,36 @@ type jobCompletion struct {
 	err        error
 }
 
+func skippedTasks(plan *workflow.ExecutionPlan, options Options) []TaskResult {
+	items := []TaskResult{}
+	for _, group := range plan.Groups {
+		for _, job := range group.Jobs {
+			item := jobResult(job, coopr.Result{}, nil)
+			item.Status, item.Error = "skipped", "workflow stopped before job started"
+			if !options.ciCacheOnly[job.Name] {
+				item.Exports = skippedJobFileExports(job, options.ContextDir, item.Error)
+			}
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 // schedule owns all mutable scheduling and result state. Workers receive a
 // snapshot, and no dependency becomes ready before its entire group succeeds.
 func schedule(ctx context.Context, w *workflow.Workflow, plan *workflow.ExecutionPlan, options Options, dir, output string, engine backend) ([]TaskResult, error) {
-	return scheduleImported(ctx, w, plan, options, dir, output, engine, nil)
-}
-
-// Imported entries are verified data identities, never successful task records.
-func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.ExecutionPlan, options Options, dir, output string, engine backend, imported map[string]coopr.Result) ([]TaskResult, error) {
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	groups := make([]scheduledGroup, len(plan.Groups))
 	indices := map[string]int{}
-	items := []TaskResult{}
+	items := skippedTasks(plan, options)
+	offset := 0
 	for index, group := range plan.Groups {
 		indices[group.Name] = index
-		groups[index] = scheduledGroup{group: group, offset: len(items)}
+		groups[index] = scheduledGroup{group: group, offset: offset}
+		offset += len(group.Jobs)
 		for _, job := range group.Jobs {
 			indices[job.Name] = index
-			item := jobResult(job, coopr.Result{}, nil)
-			item.Status, item.Error = "skipped", "workflow stopped before job started"
-			item.Exports = skippedJobFileExports(job, options.ContextDir, item.Error)
-			items = append(items, item)
 		}
 	}
 	for index := range groups {
@@ -67,9 +74,6 @@ func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.
 			for _, name := range job.Definition.Dependencies() {
 				dependency, ok := indices[name]
 				if !ok {
-					if _, exactData := imported[name]; exactData {
-						continue
-					}
 					return items, fmt.Errorf("task %q: dependency %q is absent from the execution plan", groups[index].group.Name, name)
 				}
 				if !seen[dependency] {
@@ -80,10 +84,7 @@ func scheduleImported(ctx context.Context, w *workflow.Workflow, plan *workflow.
 		}
 	}
 	completed := make(chan jobCompletion, len(items))
-	results := maps.Clone(imported)
-	if results == nil {
-		results = map[string]coopr.Result{}
-	}
+	results := map[string]coopr.Result{}
 	jobErrors := make([]error, len(items))
 	active, finished := 0, 0
 	cursor := 0

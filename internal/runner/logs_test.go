@@ -55,7 +55,7 @@ func TestOverlappingVariantLogsKeepFragmentIdentity(t *testing.T) {
 	}
 	for _, job := range plan.Groups[0].Jobs {
 		for _, line := range []string{"part", "next", "last", "err-done", "tail"} {
-			if strings.Count(log.String(), "["+job.Name+"] "+line+"\n") != 1 {
+			if strings.Count(log.String(), "[check[mode="+job.Matrix["mode"]+"]] "+line+"\n") != 1 {
 				t.Fatalf("lost or misattributed %s/%s: %s", job.Name, line, &log)
 			}
 		}

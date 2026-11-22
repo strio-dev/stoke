@@ -43,10 +43,27 @@ See [container platforms](platforms.md).
 
 ## Credentials and CI
 
-Use `--authfile` for registry authentication and protect the file as a credential. Do not bake credentials into workflow YAML, images, exported root filesystems or cache inputs. `--plain-http` enables HTTP for every resolved workflow reference, including imports. Native image/component/cache registry verification is controlled separately by `--tls-verify`; disabling it is intended for isolated development registries. Normal registry access uses TLS.
+Registry credential lookup starts with `--authfile`, then
+`REGISTRY_AUTH_FILE`, then `$DOCKER_CONFIG/config.json` if it exists, then
+the native containers/image search. A selected file isolates the lookup from
+other credential files. For Stoke's direct OCI transfers, the selected file
+supports Docker's `credHelpers` and `credsStore` and matches inline entries
+by repository, then namespace and registry. A configured helper takes
+precedence over inline credentials. For an empty Docker config, Docker's
+default credential helper may be used. An empty file selected by `--authfile`
+or `REGISTRY_AUTH_FILE` means anonymous access. When native lookup finds no
+credentials, Stoke also checks the Docker store. Coopr resolves credentials for its own
+operations.
+Keep credential files private and exclude them from workflow YAML, images,
+exported root filesystems and cache inputs.
 
-`--cache-to` explicitly writes intermediate execution results to its selected
-repository. Give cache write credentials only to runs trusted to publish build
+`--plain-http` enables HTTP for Stoke workflow artifacts, imports and host-file caches where those transfers apply. Coopr's image,
+component and native cache transfers use the native `--tls-verify` setting.
+Use HTTP or disable certificate verification only for isolated test registries.
+
+The resolved `cache-to` policy writes intermediate execution results to its
+selected repositories on local and CI runs. Use `--cache-to=` to clear writes
+for an invocation; omitted flags still inherit environment or root YAML defaults. Give cache write credentials only to runs trusted to publish build
 inputs for later consumers. Intermediate results can contain files removed from
 the final image. Cache descriptors and payload digests are validated for
 integrity, but those checks do not authenticate the cache publisher or establish

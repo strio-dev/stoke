@@ -16,8 +16,8 @@ inputs: {version: {required: true}}
 tasks:
   base: {image: scratch}
   test:
-    environment:
-      files: [ci.coopr]
+    build:
+      coopr: [ci.coopr]
       target: test
       args: {BASE: {from: base}, VERSION: {input: version}}
     contexts: {fixtures: ./fixtures}
@@ -76,13 +76,13 @@ tasks:
 func TestMountAndEnvironmentSchemaRejectsAmbiguity(t *testing.T) {
 	pinned := "registry.test/files@sha256:" + strings.Repeat("a", 64)
 	for _, tc := range []struct{ name, task string }{
-		{"environment image collision", "image: scratch, environment: {files: [ci.coopr]}"},
-		{"environment native collision", "coopr: {files: [ci.coopr]}, environment: {files: [ci.coopr]}"},
-		{"component environment", "environment: {files: [ci.coopr], kind: component}"},
-		{"missing environment file", "environment: {files: []}"},
-		{"escaping environment file", "environment: {files: [../ci.coopr]}"},
-		{"environment input missing", "environment: {files: [ci.coopr], args: {VERSION: {input: absent}}}"},
-		{"environment dependency missing", "environment: {files: [ci.coopr], args: {BASE: {from: absent}}}"},
+		{"environment image collision", "image: scratch, build: {coopr: [ci.coopr]}"},
+		{"environment native collision", "coopr: {files: [ci.coopr]}, build: {coopr: [ci.coopr]}"},
+		{"component environment", "build: {coopr: [ci.coopr], kind: component}"},
+		{"missing environment file", "build: {coopr: []}"},
+		{"escaping environment file", "build: {coopr: [../ci.coopr]}"},
+		{"environment input missing", "build: {coopr: [ci.coopr], args: {VERSION: {input: absent}}}"},
+		{"environment dependency missing", "build: {coopr: [ci.coopr], args: {BASE: {from: absent}}}"},
 		{"unknown mount", "image: scratch, steps: [{run: [check], mounts: [{type: secret, target: /secret}]}]"},
 		{"relative target", "image: scratch, steps: [{run: [check], mounts: [{type: cache, target: cache}]}]"},
 		{"unnormalized target", "image: scratch, steps: [{run: [check], mounts: [{type: cache, target: /a/../cache}]}]"},
@@ -149,7 +149,7 @@ func TestEnvironmentMatrixArgumentsAndOrdinaryEnvironment(t *testing.T) {
 tasks:
   base: {image: scratch}
   task:
-    environment: {files: [ci.coopr], args: {BASE: {from: base}, MODE: {matrix: mode}}}
+    build: {coopr: [ci.coopr], args: {BASE: {from: base}, MODE: {matrix: mode}}}
     strategy: {matrix: {mode: [debug, release]}}
     steps: [{run: [check]}]
 `)

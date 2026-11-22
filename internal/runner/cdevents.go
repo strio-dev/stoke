@@ -2,8 +2,6 @@ package runner
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -34,9 +32,8 @@ type CDEvents struct {
 }
 
 type cdeventsCI struct {
-	ScopeHash string `json:"scopeHash"`
-	Unit      string `json:"unit"`
-	Attempt   int    `json:"attempt"`
+	Unit    string `json:"unit"`
+	Attempt int    `json:"attempt"`
 }
 
 func NewCDEvents(writer io.Writer) (*CDEvents, error) {
@@ -52,14 +49,14 @@ func NewCDEvents(writer io.Writer) (*CDEvents, error) {
 
 // ConfigureCI is called before observation. Each observer keeps its fresh RunID;
 // a CI unit is an isolated execution, not an observation of the host pipeline.
-func (o *CDEvents) ConfigureCI(scopeHash, unit string, attempt int) error {
+func (o *CDEvents) ConfigureCI(unit string, attempt int) error {
 	if o == nil {
 		return nil
 	}
-	if _, err := hex.DecodeString(scopeHash); err != nil || len(scopeHash) != sha256.Size*2 || unit == "" || attempt < 1 {
-		return errors.New("CDEvents CI scope hash, unit and positive attempt are required")
+	if unit == "" || attempt < 1 {
+		return errors.New("CDEvents CI unit and positive attempt are required")
 	}
-	o.ci = &cdeventsCI{ScopeHash: scopeHash, Unit: unit, Attempt: attempt}
+	o.ci = &cdeventsCI{Unit: unit, Attempt: attempt}
 	return nil
 }
 
@@ -312,7 +309,7 @@ func cdeventsResult(report *Report, runErr error, observer *CDEvents) error {
 	if err := observer.Err(); err != nil && !errors.Is(runErr, err) {
 		runErr = errors.Join(runErr, fmt.Errorf("write CDEvents: %w", err))
 		if report != nil {
-			return persistReport(report, runErr)
+			return FinalizeReport(report, runErr)
 		}
 	}
 	return runErr

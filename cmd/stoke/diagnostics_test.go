@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	cooprwire "github.com/strio-dev/coopr/api"
-	"github.com/strio-dev/stoke/internal/ci"
 	"github.com/strio-dev/stoke/internal/runner"
 )
 
@@ -87,13 +86,18 @@ func TestProviderRetryGuidanceAndSelectedDestinationSafety(t *testing.T) {
 	}
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_STEP_SUMMARY", file)
-	report := &runner.Report{Directory: "/retained", Tasks: []runner.TaskResult{{Name: "test[mode=one]", Status: "failed", Exports: []cooprwire.ExportResult{{Destination: "reports/<test>", Status: "passed"}}}}}
+	report := &runner.Report{Directory: "/retained", Tasks: []runner.TaskResult{{Name: "test--matrix-stable-id", Task: "test", Matrix: map[string]string{"mode": "one"}, Status: "failed", Exports: []cooprwire.ExportResult{{Destination: "reports/<test>", Status: "passed"}}}}}
+	before, _ := json.Marshal(report)
 	var out bytes.Buffer
 	printFailureSummary(&out, report, nil, runner.Options{OutputDir: "/prior-output", EventPath: "/prior-events"}, true)
-	for _, text := range []string{"GitHub's Re-run job", "scope and inherited producer inputs", "producer and its dependent gates", "whole invocation", "must be absent", "reports/<test>"} {
+	for _, text := range []string{"Failed tasks: test[mode=one]", "GitHub's Re-run job", "native prerequisites", "rerun the workflow and its gates", "must be absent", "reports/<test>"} {
 		if !strings.Contains(out.String(), text) {
 			t.Fatalf("missing safe native retry guidance %q: %s", text, &out)
 		}
+	}
+	afterJSON, _ := json.Marshal(report)
+	if !bytes.Equal(before, afterJSON) {
+		t.Fatal("human summary mutated machine-readable task identity")
 	}
 	if strings.Contains(out.String(), "ci run --job") || strings.Contains(out.String(), "fresh --output") {
 		t.Fatal("native retry suggested editing invocation/gates")
@@ -118,32 +122,21 @@ func TestProviderRetryGuidanceAndSelectedDestinationSafety(t *testing.T) {
 	}
 }
 
-func TestNativeCIFailureSummaryKeepsScopedJSON(t *testing.T) {
+func TestNativeCIFailureSummaryKeepsReportJSON(t *testing.T) {
 	t.Chdir(t.TempDir())
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", filepath.Join(state, "state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(state, "cache"))
 	writeCIFile(t, "stoke.yaml", fmt.Sprintf("version: 1\ntasks:\n  check:\n    platform: %s/%s\n    host: {tools: [/bin/sh]}\n    steps: [{run: [/bin/sh, -c, 'echo failed; exit 7']}]\n", runtime.GOOS, runtime.GOARCH))
-	if code, _, stderr := invokeCI([]string{"ci", "generate"}); code != 0 {
-		t.Fatal(stderr)
-	}
-	plan, err := ci.Decode(bytes.NewReader(readCIFile(t, ".stoke/ci-plan.json")))
-	if err != nil {
-		t.Fatal(err)
-	}
-	scope, err := json.Marshal(testCIScope(plan.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
 	summary := filepath.Join(t.TempDir(), "summary")
 	if err := os.WriteFile(summary, nil, 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("GITHUB_ACTIONS", "true")
 	t.Setenv("GITHUB_STEP_SUMMARY", summary)
-	code, out, stderr := invokeCI([]string{"ci", "run", "--scope", string(scope), "--attempt", "1", "--job", plan.Groups[0].Jobs[0].ID, "--allow-host"})
-	var report ciRunReport
-	if code != 1 || json.Unmarshal([]byte(out), &report) != nil || report.CI == nil || report.CI.Attempt != 1 || report.CI.Unit != "check" {
+	code, out, stderr := invokeCI([]string{"run", "--ci", "--allow-host", "check"})
+	var report runner.Report
+	if code != 1 || json.Unmarshal([]byte(out), &report) != nil || report.Status != "failed" {
 		t.Fatalf("native CI JSON/exit contract: %d %s %s", code, out, stderr)
 	}
 	data, _ := os.ReadFile(summary)

@@ -15,7 +15,8 @@ import (
 // This opt-in dogfood runs the authored example unchanged, including its real
 // Go build and fresh test/vet matrix. Registry/image/module downloads need the
 // runner's ordinary network access; only the process-owned cache registry is
-// written. Hosted provider admission is simulated by the successful-needs loop.
+// written. Every phase uses ordinary stoke run; generated-stage execution and
+// provider success gates require separate qualification.
 func TestCIRealWorkflowRegistryWithCoopr(t *testing.T) {
 	f := newCIRegistryFixture(t)
 	source := os.Getenv("STOKE_REAL_CI_SOURCE_DIR")
@@ -41,106 +42,15 @@ func TestCIRealWorkflowRegistryWithCoopr(t *testing.T) {
 	}
 	workflow := filepath.Join(caller, "examples/ci/stoke.yaml")
 	repository := f.registry + "/cache/real-stoke"
-	t.Log("real workflow: initial local producer, fresh tests and package")
+	t.Log("ordinary workflow: initial local producer, fresh tests and package")
 	local, localLog := f.run("real-local-producer", caller, workflow, append(slices.Clone(networkFlags), "--cache-from", repository, "--cache-to", repository), true)
 	checksum := f.requireRealPackage(local)
 	f.requireRealChecks(local, localLog, checksum)
 	f.requireRealBuildBinary(local, checksum)
 	f.pruneRealNative("real-local-producer", local, execution)
-	plan := f.generateExactPlan("real-ci", caller, "examples/ci/stoke.yaml", repository, f.registry+"/results/real-stoke", networkFlags, []string{"package"})
-	if plan.Version != 3 || !plan.RequiresResults || len(plan.Groups) != 4 || len(plan.Environments) != 1 {
-		t.Fatalf("real workflow did not expose build/environment/checks/package jobs: %+v", plan)
-	}
-	checks := plan.group(t, "checks")
-	if !checks.Matrix || len(checks.Jobs) != 2 || checks.Jobs[0].OutputKey == checks.Jobs[1].OutputKey {
-		t.Fatal("real checks lost native matrix/output isolation")
-	}
-	scope := f.exactScope("real-ci", caller, plan)
-	records := map[string]*exactNativeMetadata{}
-	completed := map[string]bool{}
-	checkCount, producerCount := 0, 0
-	buildEnvelope := ""
-	type pendingJob struct {
-		job        generatedRegistryJob
-		invocation *exactInvocation
-		err        error
-	}
-	for _, group := range plan.Groups {
-		for _, need := range group.Needs {
-			if !completed[need] {
-				t.Fatalf("provider admitted %s before %s", group.ID, need)
-			}
-		}
-		pending := make([]pendingJob, 0, len(group.Jobs))
-		for _, job := range group.Jobs {
-			jobCaller := filepath.Join(f.work, "checkout-"+job.ID)
-			f.copyRealCheckout(caller, jobCaller, shared, false)
-			invocation := f.newExactInvocation("real-provider-"+job.ID, jobCaller, "real-ci.plan.json", plan, job, scope, 1, plan.needs(t, job, records), nil)
-			t.Logf("real workflow: admit visible job %s after native needs %v", job.ID, group.Needs)
-			if err := invocation.command.Start(); err != nil {
-				for _, started := range pending {
-					_ = started.invocation.command.Process.Kill()
-					_ = started.invocation.command.Wait()
-				}
-				t.Fatal(err)
-			}
-			pending = append(pending, pendingJob{job: job, invocation: invocation})
-		}
-		// A native matrix is concurrent. Drain all admitted siblings before reporting
-		// a failure; no dependent group is admitted until the complete group passes.
-		for i := range pending {
-			pending[i].err = pending[i].invocation.command.Wait()
-		}
-		for _, selected := range pending {
-			job := selected.job
-			report, log := selected.invocation.finish(selected.err, true)
-			records[job.ID] = report.CI
-			if slices.Contains(job.Execute, "build") {
-				producerCount++
-				f.requireRealBuildRestored(log)
-				f.requireRealBuildBinary(report.ciRegistryReport, checksum)
-			} else if bytes.Contains(log, []byte("go build -mod=readonly -trimpath -o /stoke ./cmd/stoke")) {
-				t.Fatal("exact-result consumer replayed the authored Go producer")
-			}
-			inputs, err := (Client{PlainHTTP: true}).ReadCIInputSet(f.ctx, plan.Config.ResultsRepository, report.CI.Inputs, scope)
-			if err != nil {
-				t.Fatal(err)
-			}
-			selectedBuild := inputs.Bindings["build"]
-			if selectedBuild == "" {
-				t.Fatal("visible job lost its selected build execution")
-			}
-			if buildEnvelope == "" {
-				buildEnvelope = selectedBuild
-			} else if buildEnvelope != selectedBuild {
-				t.Fatal("test/package selected a different producer execution")
-			}
-			for _, name := range job.Execute {
-				if strings.HasPrefix(name, "checks--matrix-") {
-					checkCount++
-					task := f.task(report.ciRegistryReport, name)
-					if task.Status != "passed" || task.Cache != nil && task.Cache.Hits != 0 {
-						t.Fatalf("real fresh check not executed: %+v", task)
-					}
-					f.requireRealMountedBinary(log, checksum, 1)
-					if job.Matrix["check"] == "test" && !bytes.Contains(log, []byte("github.com/strio-dev/stoke/")) {
-						t.Fatal("real fresh Go test output missing")
-					}
-				}
-				if name == "package" && f.requireRealPackage(report.ciRegistryReport) != checksum {
-					t.Fatal("CI package binary differs from the tested producer")
-				}
-			}
-			f.pruneRealNative(selected.invocation.label, report.ciRegistryReport, execution)
-		}
-		completed[group.ID] = true
-	}
-	if checkCount != 2 || producerCount != 1 {
-		t.Fatalf("real jobs executed checks=%d producer=%d", checkCount, producerCount)
-	}
 	returnedCaller := filepath.Join(f.work, "checkout-local-return")
 	f.copyRealCheckout(caller, returnedCaller, shared, false)
-	t.Log("real workflow: ordinary local return using registry cache and fresh tests")
+	t.Log("ordinary workflow: local return using registry cache and fresh tests")
 	returned, returnLog := f.run("real-local-return", returnedCaller, filepath.Join(returnedCaller, "examples/ci/stoke.yaml"), append(slices.Clone(networkFlags), "--cache-from", repository), true)
 	f.requireRealBuildRestored(returnLog)
 	f.requireRealChecks(returned, returnLog, checksum)
@@ -158,9 +68,9 @@ func TestCIRealWorkflowRegistryWithCoopr(t *testing.T) {
 	f.requireRealBuildBinary(fresh, checksum)
 	f.pruneRealNative("real-fresh-checkout-build-probe", fresh, execution)
 	f.write(filepath.Join(f.work, "real-workflow-proof.json"), f.encode(map[string]any{
-		"binarySHA256": checksum, "buildExecution": buildEnvelope, "visibleExecutionJobs": 5, "freshChecksPerFullRun": 2, "equivalentInputBuildRUNRestored": true, "freshTimestampBuildRUNRestored": realBuildRestored(freshLog), "freshTimestampProbeUsesCompleteCheckout": true, "sourceOwnershipNormalization": shared, "coordinatorUID": os.Geteuid(), "storageDriver": execution.driver, "network": execution.network, "pruneNative": execution.pruneNative,
+		"binarySHA256": checksum, "freshChecksPerFullRun": 2, "equivalentInputBuildRUNRestored": true, "freshTimestampBuildRUNRestored": realBuildRestored(freshLog), "freshTimestampProbeUsesCompleteCheckout": true, "sourceOwnershipNormalization": shared, "coordinatorUID": os.Geteuid(), "storageDriver": execution.driver, "network": execution.network, "pruneNative": execution.pruneNative,
 	}), 0600)
-	f.checks = append(f.checks, "complete-actual-checkout-real-Go-build-fresh-test-vet-matrix-and-executable-package", "real-workflow-visible-build-promoted-environment-concurrent-native-check-matrix-package", "real-workflow-consumers-import-exact-produced-results-without-producer-replay", "real-workflow-producer-mounted-tests-and-package-binary-hashes-match", "real-workflow-local-CI-local-strict-native-build-RUN-cache-restoration", "fresh-complete-checkout-timestamp-probe-records-conservative-misses", "actual-authored-digest-pinned-base-inputs-no-global-mutable-resolution-lock-claim")
+	f.checks = append(f.checks, "complete-actual-checkout-real-Go-build-fresh-test-vet-matrix-and-executable-package", "real-workflow-producer-mounted-tests-and-package-binary-hashes-match", "real-workflow-independent-invocation-native-build-RUN-cache-restoration", "fresh-complete-checkout-timestamp-probe-records-conservative-misses", "actual-authored-digest-pinned-base-inputs-no-global-mutable-resolution-lock-claim")
 }
 
 func (f *ciRegistryFixture) requireRealChecks(report ciRegistryReport, log []byte, checksum string) {
