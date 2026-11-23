@@ -4,7 +4,7 @@
 Stoke puts reusable container build and test workflows behind one command. Run the same YAML definition on your machine or inside a GitHub Actions, Jenkins, GitLab CI or Tekton job, with Coopr supplying execution and build caching.
 </div>
 
-[Set up development](contributing.md){ .md-button .md-button--primary }
+[Get started](getting-started.md){ .md-button .md-button--primary }
 [CLI reference](reference/cli.md){ .md-button .strio-container-link }
 { .strio-actions }
 
@@ -12,7 +12,7 @@ Your CI platform handles triggers, checkout, job placement, credentials and appr
 
 ## Start with a local workflow
 
-[Get started](getting-started.md) to build Stoke, install Coopr and prepare rootless execution. Then follow the [first-workflow tutorial](tutorials/first-workflow.md) to build, test and package a text artifact.
+[Get started](getting-started.md) with Stoke installation and rootless setup. Then follow the [first-workflow tutorial](tutorials/first-workflow.md) to build, test and export a text file.
 
 ## Reuse and move definitions
 

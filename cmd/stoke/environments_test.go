@@ -18,7 +18,7 @@ func TestCheckAndPlanInlineEnvironmentAndLocalMountAvailability(t *testing.T) {
 	if err := os.WriteFile(workflow, []byte(`version: 1
 tasks:
   test:
-    environment: {files: [environment.coopr], target: tools}
+    build: {coopr: [environment.coopr], target: tools}
     contexts: {data: ./missing}
     steps: [{run: [check], mounts: [{type: context, context: data, target: /input}]}]
 `), 0600); err != nil {
@@ -38,7 +38,7 @@ tasks:
 	}
 	out.Reset()
 	diagnostics.Reset()
-	if code := run([]string{"plan", "-f", workflow}, &out, &diagnostics); code != 0 || !strings.Contains(out.String(), "kind=environment") || !strings.Contains(out.String(), "target=tools") || !strings.Contains(out.String(), "mounts=1") {
+	if code := run([]string{"plan", "-f", workflow}, &out, &diagnostics); code != 0 || !strings.Contains(out.String(), "kind=build") || !strings.Contains(out.String(), "target=tools") || !strings.Contains(out.String(), "mounts=1") {
 		t.Fatalf("environment plan: exit=%d stdout=%s stderr=%s", code, &out, &diagnostics)
 	}
 	if err := os.Remove(definition); err != nil {

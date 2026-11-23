@@ -20,8 +20,8 @@ import (
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/memory"
 )
 
 type ciRegistryTask struct {
@@ -92,16 +92,26 @@ from "${BASE}" {
 	workflow := filepath.Join(f.work, "workflow.json")
 	f.setWorkflow(workflow, "one")
 	source, mirror := f.registry+"/cache/chain", f.registry+"/cache/return"
+	const (
+		fromRan      = "[from] CI_FROM_RAN"
+		copyRan      = "[copied] CI_COPY_RAN"
+		stageRan     = "[mounted] CI_STAGE_RAN"
+		nativeRan    = "[native] CI_NATIVE_IMAGE_RAN"
+		componentRan = "[component-image] CI_COMPONENT_IMAGE_RAN"
+		freshRan     = "[fresh] CI_FRESH_RAN"
+	)
+	cacheableMarkers := []string{fromRan, copyRan, stageRan, nativeRan, componentRan}
+	coldMarkers := append(cacheableMarkers, freshRan)
 	producer, producerLog := f.run("local-producer", caller, workflow, []string{"--cache-to", source}, true)
 	f.requireResults(producer, "tracked-one\n")
-	f.requireMarkers(producerLog, []string{"CI_FROM_RAN", "CI_COPY_RAN", "CI_STAGE_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN", "CI_FRESH_RAN"}, true)
+	f.requireMarkers(producerLog, coldMarkers, true)
 	f.checks = append(f.checks, "local-input-keyed-producer-exports-to-test-registry")
 	ciCaller := filepath.Join(f.work, "unrelated-ci-checkout-root")
 	f.copyCheckout(caller, ciCaller)
 	consumer, consumerLog := f.run("ci-consumer", ciCaller, workflow, []string{"--cache-from", source, "--cache-to", mirror}, true)
 	f.requireResults(consumer, "tracked-one\n")
-	f.requireMarkers(consumerLog, []string{"CI_FROM_RAN", "CI_COPY_RAN", "CI_STAGE_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN"}, false)
-	f.requireMarkers(consumerLog, []string{"CI_FRESH_RAN"}, true)
+	f.requireMarkers(consumerLog, cacheableMarkers, false)
+	f.requireMarkers(consumerLog, []string{freshRan}, true)
 	f.requireHits(consumer, "from", "copied", "mounted")
 	f.checks = append(f.checks, "fresh-ci-store-and-different-checkout-root-restore-data-edges-from-registry")
 	returnCaller := filepath.Join(f.work, "another-local-checkout-root")
@@ -109,8 +119,8 @@ from "${BASE}" {
 	returned, returnLog := f.run("local-return", returnCaller, workflow, []string{"--cache-from", mirror}, true)
 	f.requireResults(returned, "tracked-one\n")
 	f.requireHits(returned, "from", "copied", "mounted")
-	f.requireMarkers(returnLog, []string{"CI_FROM_RAN", "CI_COPY_RAN", "CI_STAGE_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN"}, false)
-	f.requireMarkers(returnLog, []string{"CI_FRESH_RAN"}, true)
+	f.requireMarkers(returnLog, cacheableMarkers, false)
+	f.requireMarkers(returnLog, []string{freshRan}, true)
 	f.checks = append(f.checks, "ci-registry-writes-reused-by-another-fresh-local-store")
 	// Configuration changes intentionally produce different native image IDs.
 	// COPY and stage mounts consume the same measured filesystem, whereas FROM
@@ -125,8 +135,8 @@ from "${BASE}" {
 	if !reflect.DeepEqual(f.imageConfig(before.OCI).RootFS, f.imageConfig(after.OCI).RootFS) {
 		t.Fatal("configuration-only fixture changed filesystem layer identities")
 	}
-	f.requireMarkers(variantLog, []string{"CI_FROM_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN", "CI_FRESH_RAN"}, true)
-	f.requireMarkers(variantLog, []string{"CI_COPY_RAN", "CI_STAGE_RAN"}, false)
+	f.requireMarkers(variantLog, []string{fromRan, nativeRan, componentRan, freshRan}, true)
+	f.requireMarkers(variantLog, []string{copyRan, stageRan}, false)
 	f.requireHits(variant, "copied", "mounted")
 	f.write(filepath.Join(f.work, "source-identities.json"), f.encode(map[string]any{
 		"original": before, "configurationChanged": after,
@@ -141,12 +151,12 @@ from "${BASE}" {
 	if task := f.task(changed, "copied"); task.Cache == nil || task.Cache.Misses == 0 {
 		t.Fatal("changed input did not report a literal cache miss")
 	}
-	f.requireMarkers(changedLog, []string{"CI_FROM_RAN", "CI_COPY_RAN", "CI_STAGE_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN", "CI_FRESH_RAN"}, true)
+	f.requireMarkers(changedLog, coldMarkers, true)
 	f.checks = append(f.checks, "changed-source-invalidates-dependent-registry-results")
 	// The absence of an entry must execute, not turn into a failed dependency.
 	miss, missLog := f.run("empty-registry", caller, workflow, []string{"--cache-from", f.registry + "/cache/empty"}, true)
 	f.requireResults(miss, "tracked-one\n")
-	f.requireMarkers(missLog, []string{"CI_FROM_RAN", "CI_COPY_RAN", "CI_STAGE_RAN", "CI_NATIVE_IMAGE_RAN", "CI_COMPONENT_IMAGE_RAN", "CI_FRESH_RAN"}, true)
+	f.requireMarkers(missLog, coldMarkers, true)
 	f.checks = append(f.checks, "empty-registry-miss-executes-the-authored-graph")
 	// A failed fresh prerequisite remains a real gate, not cached pass evidence.
 	f.write(workflow, f.encode(map[string]any{"version": 1, "tasks": map[string]any{
@@ -162,9 +172,19 @@ from "${BASE}" {
 	if f.task(failed, "failure").Status != "failed" || f.task(failed, "blocked").Status != "skipped" {
 		t.Fatalf("fresh failure did not gate downstream: %+v", failed)
 	}
-	f.requireMarkers(failedLog, []string{"CI_FAILED_TEST_RAN"}, true)
-	f.requireMarkers(failedLog, []string{"CI_BLOCKED_RAN"}, false)
+	f.requireMarkers(failedLog, []string{"[failure] CI_FAILED_TEST_RAN"}, true)
+	f.requireMarkers(failedLog, []string{"[blocked] CI_BLOCKED_RAN"}, false)
 	f.checks = append(f.checks, "fresh-failure-blocks-downstream-without-success-receipts")
+}
+
+func TestCIRegistryExecutionMarkerRequiresExactTaskLine(t *testing.T) {
+	f := &ciRegistryFixture{t: t}
+	markers := []string{"[from] CI_FROM_RAN"}
+	f.requireMarkers([]byte("[from] CI_FROM_RAN\n"), markers, true)
+	f.requireMarkers([]byte("CI_FROM_RAN\n"+
+		"[other] CI_FROM_RAN\n"+
+		"[from] STEP 2: RUN echo CI_FROM_RAN\n"+
+		"[from] Using cache: CI_FROM_RAN\n"), markers, false)
 }
 
 // TestCIRegistryCacheInputInvalidationWithCoopr keeps image publication confined

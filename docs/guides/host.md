@@ -6,7 +6,7 @@ clients or platform checks that need the provisioned host environment. It is
 not a container or a hermetic sandbox. A command has that user's filesystem,
 network and credential authority.
 
-The caller must pass `--allow-host` to `stoke run` or `stoke ci run`. A workflow
+The caller must pass `--allow-host` to `stoke run` or `stoke run --ci`. A workflow
 or imported component can request host execution but cannot grant this
 permission. Planning or generating a host task does not authorize executing it.
 Review imported host commands and the files/tools they can access before opting
@@ -45,9 +45,11 @@ stoke run -f host.yaml --context . --allow-host --output "$run_dir/output"
 
 The task receives a private workspace containing only its declared input
 snapshots. Relative `workdir` selects a directory inside that workspace; the
-default is its root. `run` is argv, with no implicit shell or interpolation.
-Every step executable must be listed in `tools`. An explicit shell is an
-ordinary provisioned tool, so shell syntax requires an explicit shell command.
+default is its root. `run` accepts literal argv or a shell script. Without a first-line shebang,
+scalar scripts use `sh -eu -c -- SCRIPT`; declare `sh` in `tools` and provision
+it on the runner. A [shebang script](../reference/workflow.md#per-step-shebangs)
+uses its declared installed interpreter instead, with real script-file semantics. Argv lists add no implicit shell or interpolation.
+Every step executable must be listed in `tools`.
 A step's optional `stdout: reports/tool.json` additionally captures its standard
 output to a fresh workspace file while retaining normal logs.
 
@@ -199,20 +201,14 @@ external daemons are outside process-group containment. Host execution remains
 trusted runner execution.
 
 CI generation keeps host stages and matrix variants visible as native jobs.
-Native `needs` owns success gating. Cross-job captured files use the existing
-run/attempt/variant-scoped immutable OCI result exchange. Tests and later
-consumers select the exact producer output; a missing result fails rather than
-silently rebuilding a different producer after tests. Disposable cache entries
-and exact execution results have different purposes. CI artifact uploads or
-success receipts are not required as internal transport.
+Native `needs` owns success gating. Keep host producers and consumers of
+captured files in the same job with `--co-locate`. Each invocation can use
+the ordinary host cache for eligible captured outputs.
 
-Generated reusable workflows default `allow_host` to `false`. A handwritten
-caller must explicitly set `allow_host: true` and, when needed,
-`host_capabilities: '["nix-build"]'`. These are caller authority, not permissions
-in the imported YAML or generated plan. The runner owns triggers, machines,
-credentials, approvals, tools and native architecture. See the checked-in
-`examples/host/README.md` for local use and hosted preparation. No push or hosted
-run is implied by generation.
+The default generated GitHub workflow starts with `allow_host: false`.
+Set `allow_host: true` at dispatch and supply `host_capabilities` when needed,
+for example `["nix-build"]`. An authored base can set these through its workflow
+environment. The runner still needs the declared tools on the native architecture.
 
 ## Actual Nix checks as an ordinary host workflow
 

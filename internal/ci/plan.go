@@ -24,34 +24,20 @@ import (
 	"github.com/strio-dev/stoke/internal/engine"
 	"github.com/strio-dev/stoke/internal/runner"
 	"github.com/strio-dev/stoke/internal/workflow"
-	"oras.land/oras-go/v2/registry"
 )
 
-const Version = 3
+const Version = 5
 const MaxPlanBytes = 4 << 20
 
-// MaxGroups reserves provider jobs for invocation setup and the aggregate result.
-const MaxGroups = 254
-const MaxNativeMetadataBytes = 1536
-const maxNativeOutputBytes = 1 << 20
-const maxWorkflowOutputBytes = 50 << 20
-const maxNativeInputEnvBytes = 1 << 20
-
 type Config struct {
-	JobContainerImage   string            `json:"jobContainerImage,omitempty"`
-	JobContainerOptions string            `json:"jobContainerOptions,omitempty"`
-	GitHubTokenAuth     bool              `json:"githubTokenAuth,omitempty"`
-	Workflow            string            `json:"workflow"`
-	Context             string            `json:"context"`
-	Targets             []string          `json:"targets,omitempty"`
-	Inputs              map[string]string `json:"inputs,omitempty"`
-	Runners             []string          `json:"runners"`
-	TimeoutMinutes      int               `json:"timeoutMinutes"`
-	CacheFrom           []string          `json:"cacheFrom,omitempty"`
-	CacheTo             []string          `json:"cacheTo,omitempty"`
-	ResultsRepository   string            `json:"resultsRepository,omitempty"`
-	CoLocate            []string          `json:"coLocate,omitempty"`
-	Network             string            `json:"network,omitempty"`
+	Workflow  string            `json:"workflow"`
+	Context   string            `json:"context"`
+	Targets   []string          `json:"targets,omitempty"`
+	Inputs    map[string]string `json:"inputs,omitempty"`
+	CacheFrom []string          `json:"cacheFrom,omitzero"`
+	CacheTo   []string          `json:"cacheTo,omitzero"`
+	CoLocate  []string          `json:"coLocate,omitempty"`
+	Network   string            `json:"network,omitempty"`
 }
 
 type Engine struct {
@@ -62,19 +48,15 @@ type Engine struct {
 }
 
 type Plan struct {
-	Version         int                        `json:"version"`
-	GeneratedBy     string                     `json:"generatedBy"`
-	ID              string                     `json:"id"`
-	Config          Config                     `json:"config"`
-	WorkflowDigest  string                     `json:"workflowDigest"`
-	Engine          Engine                     `json:"engine"`
-	Groups          []Group                    `json:"groups"`
-	Limitations     []string                   `json:"limitations"`
-	Environments    map[string]string          `json:"environments,omitempty"`
-	RequiresResults bool                       `json:"requiresResults"`
-	Execution       *workflow.Workflow         `json:"execution,omitempty"`
-	ArtifactOnly    []string                   `json:"artifactOnly,omitempty"`
-	Host            map[string]HostRequirement `json:"host,omitempty"`
+	Version        int                        `json:"version"`
+	GeneratedBy    string                     `json:"generatedBy"`
+	ID             string                     `json:"id"`
+	Config         Config                     `json:"config"`
+	WorkflowDigest string                     `json:"workflowDigest"`
+	Engine         Engine                     `json:"engine"`
+	Groups         []Group                    `json:"groups"`
+	Limitations    []string                   `json:"limitations"`
+	Host           map[string]HostRequirement `json:"host,omitempty"`
 }
 
 // HostRequirement is reviewable provisioning metadata, never execution
@@ -99,34 +81,22 @@ type Group struct {
 }
 
 type Job struct {
-	ID        string            `json:"id"`
-	Task      string            `json:"task"`
-	Matrix    map[string]string `json:"matrix,omitempty"`
-	Data      []string          `json:"data,omitempty"`
-	Execute   []string          `json:"execute"`
-	Imports   []string          `json:"imports,omitempty"`
-	Exports   []string          `json:"exports,omitempty"`
-	OutputKey string            `json:"outputKey"`
+	ID      string            `json:"id"`
+	Task    string            `json:"task"`
+	Matrix  map[string]string `json:"matrix,omitempty"`
+	Execute []string          `json:"execute"`
 }
 
 var limitations = []string{
-	"GitHub owns scheduling: unrelated jobs may continue after another job fails; dependency success gates are preserved, not local workflow-wide cancellation timing.",
+	"The CI provider owns scheduling and success gates; independent jobs may continue after another job fails.",
 	fmt.Sprintf("Runners must already provide Stoke, compatible Coopr API v%d, Linux rootless execution and any required binfmt/QEMU; generation installs nothing.", cooprwire.Version),
-	"GitHub.com reusable workflows only; GitHub Enterprise Server and runner profiles beyond the qualified native AMD64/ARM64 configuration remain unqualified.",
 	"Local workflow/context selectors must be checkout-relative; OCI workflow imports remain supported, but OCI root selectors and live host mounts are not generated.",
-	"Authored stages and matrix variants use separate native CI jobs by default. Cross-job data uses exact immutable OCI results; missing results fail rather than rebuilding producers after gates.",
-	"Stable cross-machine external resolution still requires pinned references. OCI result bindings freeze produced results, not unrelated mutable or undeclared inputs. Coopr retains execution and cache ownership.",
-	"Co-location is explicit. The ordinary scheduler preserves internal gates and matrix policy; shared inline environments spanning jobs become visible producer jobs. Coopr cache volumes remain disposable acceleration.",
-	"The generator reserves native jobs for invocation setup and aggregate gating, with at most 254 execution groups. Unique per-variant native outputs are bounded to GitHub output limits. Missing retry metadata requires rerunning producers and dependent gates.",
+	"Native jobs convey success gates. An external data producer must be restored from matching Coopr cache or the job fails.",
 }
 
 // Build uses the same resolved workflow and Expand implementation as local runs.
 // Provider configuration does not alter task definitions or invent new edges.
 func Build(w *workflow.Workflow, config Config) (*Plan, error) {
-	return build(w, nil, config)
-}
-
-func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 	config, err := normalizeConfig(config)
 	if err != nil {
 		return nil, err
@@ -135,7 +105,7 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := &Plan{Version: Version, GeneratedBy: "stoke-ci", Config: config, Limitations: slices.Clone(limitations), Environments: map[string]string{}}
+	p := &Plan{Version: Version, GeneratedBy: "stoke-ci", Config: config, Limitations: slices.Clone(limitations)}
 	p.Engine = Engine{APIVersion: cooprwire.Version, PinStatus: "Unpinned: supply a compatible explicitly selected executable; production distribution remains separate."}
 	nodes := slices.Clone(expanded.Groups)
 	logical, concrete := map[string]int{}, map[string]int{}
@@ -144,7 +114,7 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 		logical[group.Name] = gi
 		for _, job := range group.Jobs {
 			if len(job.Name) > 512 {
-				return nil, fmt.Errorf("concrete CI producer name exceeds the 512-byte result identity limit")
+				return nil, fmt.Errorf("concrete CI task name exceeds the 512-byte selector limit")
 			}
 			concrete[job.Name], definitions[job.Name] = gi, job.Definition
 		}
@@ -195,66 +165,6 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 			pending = append(pending, adjacent[node]...)
 		}
 	}
-	// Shared hidden producers are real data edges. Promote them instead of hiding
-	// authored stages, using the same path resolution and lowering as local runs.
-	invocation := func(name string) string {
-		gi := concrete[name]
-		root := union.find(gi)
-		merged := false
-		for i := range nodes {
-			if i != gi && union.find(i) == root {
-				merged = true
-				break
-			}
-		}
-		if merged || forced[gi] || len(nodes[gi].Jobs) == 1 {
-			return fmt.Sprintf("unit:%d", root)
-		}
-		return "variant:" + name
-	}
-	for _, consumers := range shared {
-		together := true
-		first := invocation(consumers[0])
-		for _, name := range consumers[1:] {
-			if invocation(name) != first {
-				together = false
-			}
-		}
-		if together {
-			continue
-		}
-		identity, err := digestJSON(consumers)
-		if err != nil {
-			return nil, err
-		}
-		name := "stoke-environment-" + identity[:24]
-		if _, exists := logical[name]; exists {
-			return nil, fmt.Errorf("synthetic CI environment collides with task %q", name)
-		}
-		representative := consumers[0]
-		original := definitions[representative]
-		producer := workflow.Task{Coopr: original.Environment, ComponentDir: original.ComponentDir, Contexts: maps.Clone(original.Contexts), Cache: original.Cache, Needs: original.Dependencies()}
-		platform, err := original.ResolvedPlatform()
-		if err != nil {
-			return nil, err
-		}
-		if platform != "" {
-			producer.Platform = &workflow.Platform{Value: &platform}
-		}
-		filesystem := false
-		producer.Outputs = &workflow.Outputs{Filesystem: &filesystem}
-		index := len(nodes)
-		logical[name], concrete[name], definitions[name] = index, index, producer
-		nodes = append(nodes, workflow.Group{Name: name, MaxParallel: 1, FailFast: true, Jobs: []workflow.Job{{Name: name, Task: name, Definition: producer}}})
-		union.parent = append(union.parent, index)
-		p.Environments[name] = representative
-		for _, consumer := range consumers {
-			task := definitions[consumer]
-			task.Environment = nil
-			task.From = name
-			definitions[consumer] = task
-		}
-	}
 	dependencies := make([][]int, len(nodes))
 	capabilities := map[string]bool{}
 	type semanticJob struct {
@@ -297,9 +207,7 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 				}
 			}
 			semantic.ComponentDir = ""
-			if gi < len(expanded.Groups) {
-				semantics = append(semantics, semanticJob{Name: job.Name, Definition: semantic, Assets: files, MaxParallel: group.MaxParallel, FailFast: group.FailFast})
-			}
+			semantics = append(semantics, semanticJob{Name: job.Name, Definition: semantic, Assets: files, MaxParallel: group.MaxParallel, FailFast: group.FailFast})
 			platform, err := task.ResolvedPlatform()
 			if err != nil {
 				return nil, err
@@ -333,9 +241,6 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 	units, err := quotientOrder(union, dependencies)
 	if err != nil {
 		return nil, err
-	}
-	if len(units) > MaxGroups {
-		return nil, fmt.Errorf("CI generation supports at most %d provider execution units plus setup and aggregate", MaxGroups)
 	}
 	members := map[int][]int{}
 	rootIDs := map[int]string{}
@@ -374,67 +279,28 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 			group.Matrix = authored && task.Strategy != nil
 			group.MaxParallel, group.FailFast = original.MaxParallel, original.FailFast
 			for _, variant := range original.Jobs {
-				group.Jobs = append(group.Jobs, Job{ID: variant.Name, Task: group.Name, Matrix: maps.Clone(variant.Matrix), Execute: []string{variant.Name}, OutputKey: OutputKey(variant.Name)})
+				group.Jobs = append(group.Jobs, Job{ID: variant.Name, Task: group.Name, Matrix: maps.Clone(variant.Matrix), Execute: []string{variant.Name}})
 			}
 		} else {
-			id := group.ID + "--unit"
-			group.Jobs = []Job{{ID: id, Task: group.Name, Execute: execute, OutputKey: OutputKey(id)}}
-		}
-		for ji := range group.Jobs {
-			job := &group.Jobs[ji]
-			selected := map[string]bool{}
-			for _, name := range job.Execute {
-				selected[name] = true
-			}
-			for _, name := range job.Execute {
-				for _, source := range dataSources(definitions[name]) {
-					job.Data = append(job.Data, source)
-					if !selected[source] {
-						job.Imports = append(job.Imports, source)
-					}
-				}
-			}
-			job.Data = sortedUnique(job.Data)
-			job.Imports = sortedUnique(job.Imports)
+			id := group.ID
+			group.Jobs = []Job{{ID: id, Task: group.Name, Execute: execute}}
 		}
 		p.Groups = append(p.Groups, group)
 	}
-	owners := map[string]*Job{}
-	for gi := range p.Groups {
-		for ji := range p.Groups[gi].Jobs {
-			job := &p.Groups[gi].Jobs[ji]
-			for _, name := range job.Execute {
-				owners[name] = job
+	for _, consumers := range shared {
+		first := concrete[consumers[0]]
+		root := union.find(first)
+		for _, name := range consumers {
+			if union.find(concrete[name]) != root || len(members[root]) == 1 && !forced[first] && len(nodes[first].Jobs) > 1 {
+				return nil, fmt.Errorf("shared inline environment spans CI jobs; use --co-locate %s to build it in one invocation", nodes[first].Name)
 			}
 		}
 	}
-	for gi := range p.Groups {
-		for ji := range p.Groups[gi].Jobs {
-			job := &p.Groups[gi].Jobs[ji]
-			for _, name := range job.Imports {
-				owner := owners[name]
-				if owner == nil {
-					return nil, fmt.Errorf("missing exact-result producer %q", name)
-				}
-				owner.Exports = append(owner.Exports, name)
-				p.RequiresResults = true
-			}
-		}
-	}
-	for _, job := range owners {
-		job.Exports = sortedUnique(job.Exports)
-	}
+	cacheFrom, cacheTo := w.CacheRepositories(config.CacheFrom, config.CacheTo)
 	for _, group := range p.Groups {
 		for _, job := range group.Jobs {
-			selected := &workflow.ExecutionPlan{}
-			for _, name := range job.Execute {
-				selected.Groups = append(selected.Groups, workflow.Group{Jobs: []workflow.Job{{Name: name, Task: nodes[concrete[name]].Name, Definition: definitions[name]}}})
-			}
-			request := runner.CIRequest{Targets: config.Targets, RequiredOutputs: append(slices.Clone(job.Exports), job.Data...), Imports: map[string]runner.CIImport{}}
-			for _, name := range job.Imports {
-				request.Imports[name] = runner.CIImport{Kind: definitions[name].OutputKind()}
-			}
-			required, err := runner.RequiredCapabilities(selected, &request, runner.Options{Network: config.Network, CacheFrom: config.CacheFrom, CacheTo: config.CacheTo})
+			request := runner.CIRequest{Targets: config.Targets, Execute: job.Execute}
+			required, err := runner.RequiredCapabilities(w, expanded, &request, runner.Options{Network: config.Network, CacheFrom: cacheFrom, CacheTo: cacheTo})
 			if err != nil {
 				return nil, err
 			}
@@ -452,19 +318,18 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 			p.Limitations[1] = "Host-only jobs require Stoke and their declared native platform, tools and capabilities already provisioned on the runner; no Coopr executable is required. Generation installs nothing."
 		}
 	}
-	if config.JobContainerImage != "" {
-		p.Limitations[1] = "Every generated job runs in the explicitly selected tools image. The Linux Docker runner, image architecture, runner-owned file access and nested OCI security profile must be qualified separately; generation installs nothing and adds no container options implicitly."
-		p.Limitations = append(p.Limitations, "Host tasks execute inside the job container, not on the outer runner. Caller opt-in and capability attestations still apply. Image pull credentials must be available before job steps; workflow registry credentials remain separate.")
-	}
 	for capability := range capabilities {
 		p.Engine.Capabilities = append(p.Engine.Capabilities, capability)
 	}
 	slices.Sort(p.Engine.Capabilities)
-	p.WorkflowDigest, err = digestJSON(semantics)
+	p.WorkflowDigest, err = digestJSON(struct {
+		Jobs      []semanticJob `json:"jobs"`
+		CacheFrom []string      `json:"cacheFrom,omitempty"`
+		CacheTo   []string      `json:"cacheTo,omitempty"`
+	}{semantics, w.CacheFrom, w.CacheTo})
 	if err != nil {
 		return nil, err
 	}
-	freezeExecution(w, root, p)
 	p.ID, err = planDigest(p)
 	if err != nil {
 		return nil, err
@@ -476,18 +341,6 @@ func build(w, root *workflow.Workflow, config Config) (*Plan, error) {
 }
 
 func sortedInts(values []int) []int { slices.Sort(values); return slices.Compact(values) }
-
-// OutputKey is unique per concrete provider row, avoiding last-writer matrix outputs.
-func OutputKey(job string) string {
-	sum := sha256.Sum256([]byte(job))
-	return fmt.Sprintf("result_%x", sum[:])
-}
-
-// InputEnv is a bounded per-slot variable; one giant needs JSON can exceed
-// Linux's single environment-string limit even below GitHub's output budget.
-func InputEnv(outputKey string) string {
-	return "STOKE_CI_INPUT_" + strings.TrimPrefix(outputKey, "result_")
-}
 
 // partition contracts existing task groups; it does not plan execution.
 // The smallest original index is the stable representative.
@@ -611,10 +464,9 @@ func quotientOrder(p *partition, dependencies [][]int) ([]int, error) {
 	return order, nil
 }
 func unitID(members []string) string {
-	if len(members) == 1 {
-		return providerID(members[0])
-	}
-	return providerID("unit:" + strings.Join(members, "\x00"))
+	// A task belongs to exactly one execution unit. Co-located units use
+	// their first member in canonical order as their logical name.
+	return members[0]
 }
 
 func (p *Plan) FindJob(id string) (Job, bool) {
@@ -643,17 +495,11 @@ func (p *Plan) Validate() error {
 	if !bytes.Equal(before, after) {
 		return errors.New("CI plan configuration is not canonical")
 	}
-	if len(p.Groups) == 0 || len(p.Groups) > MaxGroups || !validDigest(p.WorkflowDigest) || p.Engine.APIVersion != cooprwire.Version || p.Engine.ProductionPin != nil {
+	if len(p.Groups) == 0 || len(p.Groups) > workflow.MaxJobs || !validDigest(p.WorkflowDigest) || p.Engine.APIVersion != cooprwire.Version || p.Engine.ProductionPin != nil {
 		return errors.New("invalid CI plan graph or engine contract")
 	}
-	type owner struct {
-		group int
-		job   *Job
-	}
-	providers, selections, logicalMembers, outputKeys := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
-	providerRows := map[string][]Job{}
-	owners := map[string]owner{}
-	totalOutputs := 0
+	providers, selections, logicalMembers := map[string]bool{}, map[string]bool{}, map[string]bool{}
+	owners := map[string]bool{}
 	for gi := range p.Groups {
 		group := &p.Groups[gi]
 		if len(group.Members) == 0 || !slices.Equal(group.Members, sortedUnique(group.Members)) || group.ID != unitID(group.Members) || group.Name != strings.Join(group.Members, " + ") || providers[group.ID] || len(group.Jobs) == 0 || len(group.Jobs) > workflow.MaxVariants || group.MaxParallel < 1 || group.MaxParallel > workflow.MaxVariants || group.Matrix && len(group.Members) != 1 || !group.Matrix && len(group.Jobs) != 1 {
@@ -668,28 +514,17 @@ func (p *Plan) Validate() error {
 		if !slices.Equal(group.Needs, sortedUnique(group.Needs)) {
 			return errors.New("CI prerequisites are not canonical")
 		}
-		inputSize := 4096
-		for _, dependency := range group.Needs {
-			for _, parent := range providerRows[dependency] {
-				inputSize += MaxNativeMetadataBytes + len(InputEnv(parent.OutputKey)) + 2
-			}
-		}
-		if inputSize > maxNativeInputEnvBytes {
-			return errors.New("CI native input metadata exceeds the 1 MiB environment budget; explicitly co-locate part of the fan-in")
-		}
 		for _, dependency := range group.Needs {
 			if !providers[dependency] {
 				return errors.New("CI unit prerequisites are absent or unordered")
 			}
 		}
-		outputSize := 0
 		for ji := range group.Jobs {
 			job := &group.Jobs[ji]
-			if job.ID == "" || len(job.ID) > 512 || job.Task != group.Name || selections[job.ID] || len(job.Execute) == 0 || len(job.Execute) > workflow.MaxJobs || job.OutputKey != OutputKey(job.ID) || outputKeys[job.OutputKey] {
-				return errors.New("invalid, oversized or duplicate CI selection/output key")
+			if job.ID == "" || len(job.ID) > 512 || job.Task != group.Name || selections[job.ID] || len(job.Execute) == 0 || len(job.Execute) > workflow.MaxJobs {
+				return errors.New("invalid, oversized or duplicate CI selection")
 			}
-			selections[job.ID], outputKeys[job.OutputKey] = true, true
-			outputSize += 2 * (len(job.OutputKey) + MaxNativeMetadataBytes + 4)
+			selections[job.ID] = true
 			selected := map[string]bool{}
 			for _, name := range job.Execute {
 				if name == "" || selected[name] {
@@ -699,38 +534,14 @@ func (p *Plan) Validate() error {
 					return errors.New("CI primary execution is duplicated")
 				}
 				selected[name] = true
-				owners[name] = owner{gi, job}
+				owners[name] = true
 			}
-			for _, names := range [][]string{job.Data, job.Imports, job.Exports} {
-				if !slices.Equal(names, sortedUnique(names)) {
-					return errors.New("CI data/result selections are not canonical")
-				}
-			}
-			for _, name := range job.Data {
-				if !selected[name] && !slices.Contains(job.Imports, name) {
-					return errors.New("CI data source has no exact imported result")
-				}
-			}
-			for _, name := range job.Imports {
-				if selected[name] || !slices.Contains(job.Data, name) {
-					return errors.New("invalid CI exact-result import")
-				}
-			}
-			for _, name := range job.Exports {
-				if !selected[name] {
-					return errors.New("CI result export is not executed by its owner")
-				}
-			}
+
 		}
-		if outputSize > maxNativeOutputBytes {
-			return errors.New("matrix result metadata exceeds GitHub's 1 MiB job-output bound")
-		}
-		totalOutputs += outputSize
 		providers[group.ID] = true
-		providerRows[group.ID] = group.Jobs
 	}
-	if len(owners) > workflow.MaxJobs || totalOutputs > maxWorkflowOutputBytes {
-		return errors.New("CI plan exceeds expanded-job or native output limit")
+	if len(owners) > workflow.MaxJobs {
+		return errors.New("CI plan exceeds expanded-job limit")
 	}
 	for name, requirement := range p.Host {
 		if _, exists := owners[name]; !exists || len(requirement.Tools) == 0 ||
@@ -739,45 +550,6 @@ func (p *Plan) Validate() error {
 			(requirement.Cache && requirement.Effects != "captured") {
 			return errors.New("invalid host provisioning metadata in CI plan")
 		}
-	}
-	required := false
-	consumed := map[string]bool{}
-	for gi, group := range p.Groups {
-		for _, job := range group.Jobs {
-			for _, name := range job.Imports {
-				producer, exists := owners[name]
-				if !exists || producer.group >= gi || !slices.Contains(producer.job.Exports, name) || !slices.Contains(group.Needs, p.Groups[producer.group].ID) {
-					return errors.New("CI exact-result import lacks an earlier native dependency/export")
-				}
-				required = true
-				consumed[name] = true
-			}
-		}
-	}
-	for _, producer := range owners {
-		for _, name := range producer.job.Exports {
-			if !consumed[name] {
-				return errors.New("CI result export has no consumer")
-			}
-		}
-	}
-	if p.RequiresResults != required {
-		return errors.New("CI result repository requirement does not match the graph")
-	}
-	for name, consumer := range p.Environments {
-		if !strings.HasPrefix(name, "stoke-environment-") || consumer == "" || consumer == name {
-			return errors.New("invalid synthetic CI environment")
-		}
-		producer, ok := owners[name]
-		if !ok || !slices.Contains(producer.job.Exports, name) {
-			return errors.New("synthetic CI environment has no exported producer")
-		}
-		if _, ok := owners[consumer]; !ok {
-			return errors.New("synthetic CI environment representative is absent")
-		}
-	}
-	if err := p.validateExecution(); err != nil {
-		return err
 	}
 	expected, err := planDigest(p)
 	if err != nil || !validDigest(p.ID) || p.ID != expected {
@@ -824,20 +596,6 @@ func Decode(r io.Reader) (*Plan, error) {
 }
 
 func normalizeConfig(config Config) (Config, error) {
-	if config.JobContainerImage != "" {
-		ref, err := registry.ParseReference(config.JobContainerImage)
-		if err != nil || len(config.JobContainerImage) > 512 || strings.Contains(config.JobContainerImage, "${{") || ref.ValidateReferenceAsDigest() != nil || config.JobContainerImage != ref.Registry+"/"+ref.Repository+"@"+ref.Reference {
-			return config, errors.New("job container image requires a literal digest-pinned registry reference of at most 512 bytes")
-		}
-	}
-	if config.JobContainerOptions != "" {
-		if config.JobContainerImage == "" {
-			return config, errors.New("job container options require a job container image")
-		}
-		if len(config.JobContainerOptions) > 4096 || !utf8.ValidString(config.JobContainerOptions) || strings.ContainsAny(config.JobContainerOptions, "\x00\r\n") || strings.Contains(config.JobContainerOptions, "${{") {
-			return config, errors.New("job container options must be literal single-line text of at most 4096 bytes")
-		}
-	}
 	if len(config.Network) > 4096 || !utf8.ValidString(config.Network) || strings.ContainsAny(config.Network, "\x00\r\n") {
 		return config, errors.New("network setting must be bounded printable text")
 	}
@@ -854,14 +612,6 @@ func normalizeConfig(config Config) (Config, error) {
 	}
 	config.Targets = sortedUnique(config.Targets)
 	config.CoLocate = sortedUnique(config.CoLocate)
-	if config.ResultsRepository != "" {
-		if len(config.ResultsRepository) > 512 || strings.Contains(config.ResultsRepository, "${{") {
-			return config, errors.New("results repository must be a literal bare registry repository of at most 512 bytes")
-		}
-		if err := engine.ValidateCacheRepository(config.ResultsRepository); err != nil {
-			return config, fmt.Errorf("results repository: %w", err)
-		}
-	}
 	config.Inputs = maps.Clone(config.Inputs)
 	config.CacheFrom = slices.Clone(config.CacheFrom)
 	config.CacheTo = slices.Clone(config.CacheTo)
@@ -877,21 +627,6 @@ func normalizeConfig(config Config) (Config, error) {
 				return config, fmt.Errorf("%s: %w", direction.name, err)
 			}
 		}
-	}
-	config.Runners = slices.Clone(config.Runners)
-	if len(config.Runners) == 0 {
-		config.Runners = []string{"self-hosted", "linux"}
-	}
-	for _, label := range config.Runners {
-		if label == "" || len(label) > 256 || !utf8.ValidString(label) || strings.ContainsAny(label, "\x00\r\n") || strings.Contains(label, "${{") {
-			return config, errors.New("CI runner labels must be nonempty literal strings of at most 256 bytes")
-		}
-	}
-	if config.TimeoutMinutes == 0 {
-		config.TimeoutMinutes = 45
-	}
-	if config.TimeoutMinutes < 1 || config.TimeoutMinutes > 360 {
-		return config, errors.New("CI timeout must be between 1 and 360 minutes")
 	}
 	return config, nil
 }
@@ -979,11 +714,6 @@ func componentAssets(directory string) (_ []assetDigest, retErr error) {
 		return nil
 	})
 	return files, err
-}
-
-func providerID(name string) string {
-	sum := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("stoke_%x", sum[:8])
 }
 
 func sortedUnique(values []string) []string {

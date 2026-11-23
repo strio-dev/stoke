@@ -2,6 +2,37 @@
 
 Stoke stores reusable workflow definitions as OCI artifacts. Import exact digests to reuse task templates without depending on a hosted Strio service. Optional declared files travel with their owning Stoke component. Bale carries declared images, native registry inputs and nested workflow dependencies when bundling or relocating them.
 
+## Reuse a local definition
+
+A local import can reuse the `shared.yaml` definition below without publishing it:
+
+```yaml
+version: 1
+imports:
+  checks: ./shared.yaml
+tasks:
+  test:
+    uses: checks/verify
+```
+
+Start local paths with `./`. Each path resolves relative to the YAML declaring
+it, including nested imports. All imported files must remain inside the initial
+workflow file's directory tree after symlink resolution. A nested
+`./../sibling.yaml` is allowed within that root; escaping paths, directories and
+special files are rejected. The existing cycle and import limits still apply.
+
+An imported YAML's `assets` are collected relative to that file and snapshotted
+separately, using the same ownership rules as OCI components. Neither imports
+nor their assets relocate caller/project inputs or selected export destinations;
+`--context` changes project inputs, not the import boundary. Local and OCI imports
+can coexist. An OCI workflow cannot read local imports, including through
+relocation metadata.
+
+`stoke publish` rejects any local import before accessing the registry. Publish
+each dependency to OCI first, then replace its local import with the returned
+digest-pinned reference. Stoke does not automatically bundle or publish the
+local workflow tree.
+
 ## Publish a definition
 
 Write a workflow such as `shared.yaml`:

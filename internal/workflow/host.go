@@ -119,11 +119,11 @@ func (t Task) validateHost() error {
 		return errors.New("host tasks require run steps")
 	}
 	for i, step := range t.Steps {
-		if step.Copy != nil || len(step.Run) == 0 {
-			return fmt.Errorf("host step %d requires literal run argv", i+1)
+		if !step.IsRun() {
+			return fmt.Errorf("host step %d requires run argv or a script", i+1)
 		}
-		if !tools[step.Run[0]] {
-			return fmt.Errorf("host step %d executable %q must be a declared tool", i+1, step.Run[0])
+		if !tools[step.Executable()] {
+			return fmt.Errorf("host step %d executable %q must be a declared tool", i+1, step.Executable())
 		}
 		if step.Stdout != "" && !hostPath(step.Stdout, false) {
 			return fmt.Errorf("host step %d stdout must be a normalized relative file path", i+1)

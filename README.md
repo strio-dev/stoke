@@ -4,19 +4,14 @@ Stoke is a portable workflow and build tool. Define container builds, tests and 
 
 Stoke uses a workflow-scoped Coopr executable for container execution and caching, and OCI artifacts for reusable task definitions. It does not require a Strio service or a persistent execution daemon. This first implementation runs on Linux; ready tasks and matrix variants can overlap within the invocation, with dependencies as success gates. See [running inside existing CI](docs/guides/ci.md).
 
+Install Stoke on Linux.
+
 ```sh
-curl -fsSL https://coopr.strio.dev/install.sh | sh
-coopr --version
-nix develop path:.
-go build -o /tmp/stoke ./cmd/stoke
-/tmp/stoke check -f examples/first-workflow/stoke.yaml
-/tmp/stoke plan -f examples/first-workflow/stoke.yaml artifact
-/tmp/stoke run -f examples/first-workflow/stoke.yaml --context examples/first-workflow artifact
+curl -fsSL https://stoke.strio.dev/install.sh | sh
+stoke version
 ```
 
-The installer selects the latest stable Coopr release. Stoke finds `coopr` on PATH, or you can select it with `STOKE_COOPR_BINARY` or `--coopr-binary`. See [engine selection](docs/guides/coopr-api.md).
-
-Execution requires working rootless user namespaces, subordinate UID/GID mappings, mapping helpers and an OCI runtime. Follow [getting started](docs/getting-started.md) to prepare your host and run a first workflow.
+Follow [getting started](docs/getting-started.md) to prepare container execution and run a first workflow.
 
 - [First workflow](docs/tutorials/first-workflow.md)
 - [Workflow YAML](docs/reference/workflow.md)

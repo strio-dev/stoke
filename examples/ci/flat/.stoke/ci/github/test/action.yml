@@ -1,0 +1,13 @@
+name: "test"
+description: Run the selected Stoke stage
+inputs:
+  workspace:
+    description: Path to the caller's checkout
+    default: "."
+runs:
+  using: composite
+  steps:
+    - shell: sh
+      working-directory: ${{ inputs.workspace }}
+      run: |
+        stoke run --ci test

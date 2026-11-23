@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	cooprwire "github.com/strio-dev/coopr/api"
@@ -17,20 +19,31 @@ import (
 
 // Admit every selected job before starting an engine or creating run state.
 // Matrix variants must declare distinct destinations just as separate jobs do.
-func admitFileExports(plan *workflow.ExecutionPlan, workspace string) error {
-	var destinations []struct{ job, path string }
+func admitFileExports(plan *workflow.ExecutionPlan, workspace string, prior, restore map[string]bool) error {
+	type destination struct {
+		job, path string
+		step      int
+	}
+	var destinations []destination
 	for _, group := range plan.Groups {
 		for _, job := range group.Jobs {
-			for _, export := range job.Definition.FileExports() {
+			if restore[job.Name] {
+				continue
+			}
+			for i, step := range job.Definition.Steps {
+				export := step.Export
+				if export == nil {
+					continue
+				}
 				if !filepath.IsLocal(export.Destination) || export.Destination == "." || path.Clean(export.Destination) != export.Destination {
 					return fmt.Errorf("task %q: selected file destination must be a relative workspace path", job.Name)
 				}
 				for _, previous := range destinations {
 					if overlap(previous.path, export.Destination) {
-						return fmt.Errorf("tasks %q and %q have overlapping file export destinations", previous.job, job.Name)
+						return fmt.Errorf("tasks %q and %q have overlapping file export destinations", previous.job, job.Label())
 					}
 				}
-				destinations = append(destinations, struct{ job, path string }{job.Name, export.Destination})
+				destinations = append(destinations, destination{job: job.Label(), path: export.Destination, step: i + 1})
 			}
 		}
 	}
@@ -64,8 +77,8 @@ func admitFileExports(plan *workflow.ExecutionPlan, workspace string) error {
 		return err
 	}
 	defer func() { _ = root.Close() }()
-	// Sibling staging stays outside Coopr's input context and permits a single
-	// no-replace rename. A nested mount requires an explicit different layout.
+	// Sibling staging stays outside Coopr's input context and on the same
+	// filesystem as the export destinations.
 	var stagingDevice unix.Stat_t
 	if err := unix.Stat(filepath.Dir(workspace), &stagingDevice); err != nil {
 		return err
@@ -74,11 +87,19 @@ func admitFileExports(plan *workflow.ExecutionPlan, workspace string) error {
 		return fmt.Errorf("workspace parent cannot hold private file export staging: %w", err)
 	}
 	for _, destination := range destinations {
-		if _, err := root.Lstat(destination.path); !errors.Is(err, os.ErrNotExist) {
-			if err == nil {
-				err = errors.New("destination already exists")
+		if info, err := root.Lstat(destination.path); !errors.Is(err, os.ErrNotExist) {
+			switch {
+			case err != nil:
+			case prior != nil && (info.Mode().IsRegular() || info.IsDir()):
+				prior[destination.path] = true
+			case prior != nil:
+				err = fmt.Errorf("destination is neither a regular file nor a directory: %w", os.ErrExist)
+			default:
+				err = os.ErrExist
 			}
-			return fmt.Errorf("task %q file export %q: %w", destination.job, destination.path, err)
+			if err != nil {
+				return fmt.Errorf("task %q step %d file export %q: %w", destination.job, destination.step, filepath.Join(workspace, destination.path), fileExportPathError(err))
+			}
 		}
 		parent, err := fileExportParent(root, destination.path, false)
 		if err != nil {
@@ -95,6 +116,13 @@ func admitFileExports(plan *workflow.ExecutionPlan, workspace string) error {
 		}
 	}
 	return nil
+}
+
+func fileExportPathError(err error) error {
+	if errors.Is(err, os.ErrExist) {
+		return fmt.Errorf("%w. Move the existing path aside, choose a fresh workspace, or set an unused export destination. --output does not relocate this export", err)
+	}
+	return err
 }
 
 // Return a pinned ordinary parent, or the nearest existing parent at admission.
@@ -176,7 +204,7 @@ func stageJobFileExports(job workflow.Job, workspace string) (string, []cooprwir
 	return staging, exports, nil
 }
 
-func publishJobFileExports(ctx context.Context, job workflow.Job, workspace, staging string, exports []cooprwire.FileExport, receipts []cooprwire.ExportResult, runErr error) ([]cooprwire.ExportResult, error) {
+func publishJobFileExports(ctx context.Context, job workflow.Job, workspace, staging string, exports []cooprwire.FileExport, receipts []cooprwire.ExportResult, prior map[string]bool, runErr error) ([]cooprwire.ExportResult, error) {
 	if len(exports) == 0 {
 		return nil, nil
 	}
@@ -234,17 +262,107 @@ func publishJobFileExports(ctx context.Context, job workflow.Job, workspace, sta
 		if err == nil {
 			parent, err = fileExportParent(root, destination, true)
 			if err == nil {
-				err = ctx.Err()
-				if err == nil {
-					err = unix.Renameat2(int(source.Fd()), fmt.Sprint(i), int(parent.Fd()), path.Base(destination), unix.RENAME_NOREPLACE)
-				}
+				err = placeFileExport(ctx, source, fmt.Sprint(i), parent, path.Base(destination), prior[destination])
 				err = errors.Join(err, parent.Close())
 			}
 		}
 		if err != nil {
 			results[i].Status, results[i].Error = "failed", err.Error()
-			failures = errors.Join(failures, fmt.Errorf("publish file export %q: %w", destination, err))
+			failures = errors.Join(failures, fmt.Errorf("publish file export %q: %w", destination, fileExportPathError(err)))
 		}
 	}
 	return results, failures
+}
+
+// Publish new entries by moving them from the private staging tree. An existing
+// directory is traversed through pinned descriptors, visiting incoming entries
+// only. The admission decision still protects a newly occupied export path.
+func placeFileExport(ctx context.Context, source *os.File, name string, parent *os.File, target string, merge bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	from, to := int(source.Fd()), int(parent.Fd())
+	err := unix.Renameat2(from, name, to, target, unix.RENAME_NOREPLACE)
+	if !merge || !errors.Is(err, os.ErrExist) {
+		return err
+	}
+
+	var incoming, existing unix.Stat_t
+	if err := unix.Fstatat(from, name, &incoming, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	if err := unix.Fstatat(to, target, &existing, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return err
+	}
+	kind := incoming.Mode & unix.S_IFMT
+	if existing.Mode&unix.S_IFMT != kind || (kind != unix.S_IFREG && kind != unix.S_IFDIR) {
+		return fmt.Errorf("destination must match a regular file or directory: %w", os.ErrExist)
+	}
+	if kind == unix.S_IFREG {
+		return updateExportFile(from, name, to, target, os.FileMode(incoming.Mode&0777))
+	}
+	const flags = unix.O_RDONLY | unix.O_DIRECTORY
+	children, err := openExportAt(from, name, flags)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = children.Close() }()
+	directory, err := openExportAt(to, target, flags)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = directory.Close() }()
+	names, err := children.Readdirnames(-1)
+	if err != nil {
+		return err
+	}
+	slices.Sort(names)
+	for _, child := range names {
+		if err := placeFileExport(ctx, children, child, directory, child, true); err != nil {
+			return fmt.Errorf("entry %q: %w", child, err)
+		}
+	}
+	return nil
+}
+
+func openExportAt(parent int, name string, flags int) (*os.File, error) {
+	fd, err := unix.Openat(parent, name, flags|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), name), nil
+}
+
+// Update the checked file itself. A replacement rename could remove a
+// different type if another process changes the directory entry after inspection.
+func updateExportFile(source int, name string, parent int, target string, mode os.FileMode) (retErr error) {
+	in, err := openExportAt(source, name, unix.O_RDONLY)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := openExportAt(parent, target, unix.O_WRONLY)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, out.Close()) }()
+	fd := int(out.Fd())
+	var info unix.Stat_t
+	if err := unix.Fstat(fd, &info); err != nil {
+		return err
+	}
+	if info.Mode&unix.S_IFMT != unix.S_IFREG {
+		return fmt.Errorf("destination must be a regular file: %w", os.ErrExist)
+	}
+	if info.Nlink != 1 {
+		return fmt.Errorf("destination has multiple hard links: %w", os.ErrExist)
+	}
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return fmt.Errorf("lock export destination: %w", err)
+	}
+	size, err := io.Copy(out, in)
+	if err != nil {
+		return err
+	}
+	return errors.Join(out.Truncate(size), out.Chmod(mode))
 }

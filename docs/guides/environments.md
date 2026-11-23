@@ -1,6 +1,6 @@
 # Use a Coopr definition as a task environment
 
-Use `environment` when ordinary Stoke steps need an image built from a Coopr
+Use `build` when ordinary Stoke steps need an image built from a Coopr
 definition. Coopr builds the environment image; Stoke runs the task from its
 native image identity without publishing an intermediate image to a registry.
 Coopr retains parsing, dependency planning, execution and caching.
@@ -43,8 +43,8 @@ target named `tools`:
 
 ```yaml
 test:
-  environment:
-    files: [ci.coopr]
+  build:
+    coopr: [ci.coopr]
     target: tools
     args:
       MODE: release
@@ -56,13 +56,27 @@ test:
 ```
 
 The fragment describes the fields; it is not runnable without that definition
-and its `check-project` program. `environment` accepts the native build fields
-`files`, `files-from`, `target` and `args`; `kind` may be omitted or `image`.
+and its `check-project` program. `build` accepts the native build fields
+`coopr`, `context`, `files-from`, `target` and `args`; `kind` may be omitted or `image`.
 Component artifacts are callable build artifacts, not runnable task environments,
 and `kind: component` is rejected.
 
-Files are ordered, distinct regular files relative to the caller context by
-default. `files-from: component` selects the owning component's declared assets.
+`build.coopr` lists ordered, distinct regular files. By default they resolve
+inside the caller workflow root (`--context` when supplied). To build a subtree:
+
+```yaml
+build:
+  coopr: [ci/tools.coopr]
+  context: ./service
+  target: tools
+```
+
+This reads `service/ci/tools.coopr` and scopes the native COPY/ADD inputs to
+`service`. `context` must stay inside the caller root; missing directories and
+symlink escapes fail before execution. It does not relocate later Stoke steps,
+named contexts or workspace export destinations. Omit it to keep the original
+caller context. `files-from: component` keeps definition files in the owning
+component's declared assets, independently of the selected build context.
 Stoke checks containment and availability; Coopr parses and executes the files.
 See [native builds](native-coopr.md) for file rules and native argument scope.
 
@@ -76,11 +90,11 @@ bindings do not interpolate arbitrary YAML text.
 The environment image supplies its filesystem and image configuration. Task
 `env` entries override matching inherited environment values, and task `workdir`
 overrides the inherited working directory. Omitted values keep the image's
-configuration. RUN steps use literal argv; request an explicit shell when shell
-interpretation is needed.
+configuration. RUN steps accept explicit argv or a scalar script; see the
+[step reference](../reference/workflow.md#run).
 
-A task selects exactly one of `environment`, `image`, `from`, `coopr`, `publish`
-or `uses`. Combining selectors is an error. `environment` can be combined with
+A task selects exactly one of `build`, `image`, `from`, `coopr`, `publish`,
+`host` or `uses`. Combining selectors is an error. `build` can be combined with
 ordinary `steps`, `env`, `workdir`, `contexts`, `mounts`, `needs`, `strategy`,
 `cache` and image `outputs` settings. Native mounts inside the definition remain
 Coopr's responsibility; task and step mounts apply to the ordinary RUN steps.

@@ -105,7 +105,7 @@ through a runner's preconfigured handler are separate qualification cases.
 | `from` with no `platform` | Inherits the producer's actual reported image platform. |
 | `from` with an explicit target | Must match the producer's actual image platform; a conflict fails. |
 | Native `coopr` build | Supplies a native build default; explicit platform choices in native FROM stages remain effective. |
-| Inline `environment` | Supplies the native environment build target, then constrains the consumer to the resulting image platform. |
+| Inline `build` | Supplies the native environment build target, then constrains the consumer to the resulting image platform. |
 
 An explicit native FROM can produce an image whose actual platform differs
 from the task's build default. That actual result is authoritative for a later

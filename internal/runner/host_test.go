@@ -3,7 +3,6 @@ package runner
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -46,11 +45,13 @@ tasks:
   consumer:
     platform: NATIVE
     host:
-      tools: [/bin/sh]
+      tools: [sh]
       inputs: [{from: producer, path: out, destination: input}]
       outputs: [reports]
     steps:
-      - run: [/bin/sh, -c, 'test "$(cat input/value)" = exact; printf fresh']
+      - run: |
+          test "$(cat input/value)" = exact
+          printf fresh
         stdout: reports/checked
 `)
 	options := hostRunOptions(t)
@@ -107,7 +108,12 @@ tasks:
       effects: captured
       toolchain: [/bin/sh]
     steps:
-      - run: [/bin/sh, -c, 'mkdir out; printf "executed\n"; cat source > out/value; printf "%s" "$MODE" >> out/value']
+      - run: |
+          #!/bin/sh -eu
+          mkdir out
+          printf "executed\n"
+          cat source > out/value
+          printf "%s" "$MODE" >> out/value
 `)
 	options := hostRunOptions(t)
 	var output bytes.Buffer
@@ -357,41 +363,6 @@ func TestHostCancellationAndNormalExitDrainChildren(t *testing.T) {
 	}
 }
 
-func TestHostCIImportsExactFilesWithoutEngine(t *testing.T) {
-	options := hostRunOptions(t)
-	w := hostFixture(t, `version: 1
-tasks:
-  producer:
-    platform: NATIVE
-    host: {tools: [/bin/sh], outputs: [out]}
-    steps: [{run: [/bin/sh, -c, 'mkdir out; printf exact > out/data']}]
-  test:
-    platform: NATIVE
-    host:
-      tools: [/bin/sh]
-      inputs: [{from: producer, path: out}]
-    steps: [{run: [/bin/sh, -c, 'test "$(cat out/data)" = exact']}]
-`)
-	produced, err := Run(context.Background(), w, []string{"producer"}, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result := produced.Tasks[0]
-	request := CIRequest{Execute: []string{"test"}, Imports: map[string]CIImport{"producer": {Kind: "host", OCI: result.OCI, Digest: result.Digest, Platform: result.Platform, CanonicalReference: "registry.example/results@" + result.Digest}}}
-	imported, err := RunCI(context.Background(), w, request, options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(imported.Tasks) != 1 || imported.Tasks[0].Name != "test" || imported.Status != "passed" {
-		data, _ := json.Marshal(imported)
-		t.Fatal(string(data))
-	}
-	delete(request.Imports, "producer")
-	if _, err := RunCI(context.Background(), w, request, options); err == nil || !strings.Contains(err.Error(), "exact data prerequisite") {
-		t.Fatal("missing result replayed", err)
-	}
-}
-
 func TestHostCacheBindsEffectiveLocationsAndCleansReadonlyInputs(t *testing.T) {
 	options := hostRunOptions(t)
 	if err := os.Mkdir(filepath.Join(options.ContextDir, "source"), 0700); err != nil {
@@ -465,32 +436,6 @@ tasks:
 	bad.Tasks["check"] = task
 	if err := bad.Validate(); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Fatal("ambiguous cache root accepted", err)
-	}
-}
-
-func TestHostCIImportRejectsUndeclaredCapturedRoots(t *testing.T) {
-	w := hostFixture(t, `version: 1
-tasks:
-  producer:
-    platform: NATIVE
-    host: {tools: [/bin/sh], outputs: [out]}
-    steps: [{run: [/bin/sh, -c, true]}]
-`)
-	workspace := t.TempDir()
-	if err := os.Mkdir(filepath.Join(workspace, "out"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(workspace, "extra"), []byte("undeclared"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	layout := filepath.Join(t.TempDir(), "oci")
-	identity, err := hostfiles.Capture(t.Context(), workspace, []string{"out", "extra"}, layout, runtime.GOOS+"/"+runtime.GOARCH)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = validateCIImport(t.Context(), CIImport{Kind: "host", OCI: layout, Digest: identity, Platform: runtime.GOOS + "/" + runtime.GOARCH, CanonicalReference: "registry.example/results@" + identity}, w.Tasks["producer"])
-	if err == nil || !strings.Contains(err.Error(), "captured paths") {
-		t.Fatal("undeclared output accepted", err)
 	}
 }
 

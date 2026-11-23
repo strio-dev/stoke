@@ -79,6 +79,21 @@ func TestDecodeRejectsInvalidDefinitions(t *testing.T) {
 	}
 }
 
+func TestDecodeRejectsInvalidTaskGroups(t *testing.T) {
+	for _, fields := range []string{
+		"groups: {test: [test]}",
+		"groups: {delivery: [missing]}",
+		"groups: {delivery: [test, test]}",
+		"groups: {delivery: []}",
+		"default-run: missing",
+		"default-ci: test",
+	} {
+		if _, err := Decode(strings.NewReader("version: 1\ntasks: {test: {image: scratch}}\n" + fields)); err == nil {
+			t.Fatalf("accepted %s", fields)
+		}
+	}
+}
+
 func TestDecodeLimitsAndEmpty(t *testing.T) {
 	for _, input := range []string{"", "# empty\n", strings.Repeat(" ", MaxSize+1)} {
 		if _, err := Decode(strings.NewReader(input)); err == nil {

@@ -1,13 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"regexp"
 	"slices"
+	"strings"
 
-	"github.com/strio-dev/stoke/internal/ci"
 	"github.com/strio-dev/stoke/internal/runner"
 )
 
@@ -36,7 +38,7 @@ func hostExecutionFlags(fs *flag.FlagSet, options *runner.Options) {
 	})
 	fs.Func("host-capabilities-json", "JSON array of explicitly attested provisioned host capabilities (for CI input transport)", func(raw string) error {
 		var values []string
-		if err := decodeCIJSON(raw, &values, 16<<10); err != nil {
+		if err := decodeHostJSON(raw, &values, 16<<10); err != nil {
 			return fmt.Errorf("host capabilities require one JSON string array: %w", err)
 		}
 		if values == nil {
@@ -46,14 +48,17 @@ func hostExecutionFlags(fs *flag.FlagSet, options *runner.Options) {
 	})
 }
 
-func validateCIHostAuthority(plan *ci.Plan, selected ci.Job, options runner.Options) error {
-	if options.AllowHost {
-		return nil
+func decodeHostJSON(raw string, value any, limit int) error {
+	if len(raw) > limit {
+		return errors.New("CI metadata exceeds its size limit")
 	}
-	for _, name := range selected.Execute {
-		if _, host := plan.Host[name]; host {
-			return fmt.Errorf("host task %q requires explicit --allow-host; workflows and generated plans cannot grant host authority", name)
-		}
+	d := json.NewDecoder(strings.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(value); err != nil {
+		return err
+	}
+	if err := d.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return errors.New("CI metadata requires one JSON document")
 	}
 	return nil
 }

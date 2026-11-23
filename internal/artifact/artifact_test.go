@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -13,15 +14,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/oras-project/oras-go/v3/content"
+	"github.com/oras-project/oras-go/v3/content/memory"
+	"github.com/oras-project/oras-go/v3/registry/remote/auth"
 	"github.com/strio-dev/bale"
 	"github.com/strio-dev/stoke/internal/assets"
-	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/content/memory"
 )
 
 type registryObject struct {
@@ -30,11 +33,12 @@ type registryObject struct {
 }
 
 type registryStorage struct {
-	mu          sync.Mutex
-	objects     map[string]registryObject
-	uploads     map[string][]byte
-	next        int
-	allowDelete bool
+	mu               sync.Mutex
+	objects          map[string]registryObject
+	uploads          map[string][]byte
+	next             int
+	allowDelete      bool
+	ociSubjectHeader bool
 }
 
 // registryFixture implements the OCI Distribution subset used by these tests,
@@ -216,6 +220,9 @@ func (r *registryStorage) serve(w http.ResponseWriter, q *http.Request, repo, pa
 				return
 			}
 			blobs = append([]v1.Descriptor{manifest.Config}, manifest.Layers...)
+			if r.ociSubjectHeader && manifest.Subject != nil {
+				w.Header().Set("OCI-Subject", manifest.Subject.Digest.String())
+			}
 		case v1.MediaTypeImageIndex, "application/vnd.docker.distribution.manifest.list.v2+json":
 			var index v1.Index
 			if err := json.Unmarshal(data, &index); err != nil {
@@ -263,8 +270,21 @@ func (r *registryStorage) serve(w http.ResponseWriter, q *http.Request, repo, pa
 }
 
 func TestRegistryRoundTrip(t *testing.T) {
-	server := registryFixture(t)
-	reference := strings.TrimPrefix(server.URL, "http://") + "/workflows:v1"
+	base := registryFixture(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if user, password, ok := r.BasicAuth(); !ok || user != "workflow" || password != "fixture-password" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="workflows"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		base.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(server.Close)
+	host := strings.TrimPrefix(server.URL, "http://")
+	reference := host + "/workflows:v1"
+	authFile := filepath.Join(t.TempDir(), "auth.json")
+	writeCredentialFixture(t, authFile, inlineCredentialFixture(host, "workflow"))
+	t.Setenv("REGISTRY_AUTH_FILE", authFile)
 	client := Client{PlainHTTP: true}
 	data := []byte("version: 1\ntasks: {}\n")
 	pinned, err := client.Push(context.Background(), reference, data, []string{"docker.io/library/alpine:3.22", "scratch"}, nil)
@@ -277,6 +297,89 @@ func TestRegistryRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(data, document.Data) || document.Reference != pinned {
 		t.Fatalf("unexpected document: %#v", document)
+	}
+}
+
+func TestWorkflowBearerRoundTrip(t *testing.T) {
+	for _, native := range []bool{true, false} {
+		t.Run(map[bool]string{true: "native", false: "fallback"}[native], func(t *testing.T) {
+			const repository = "team/workflow"
+			const dependency = "source.example.test/components/check:v1"
+			storage := &registryStorage{objects: map[string]registryObject{}, uploads: map[string][]byte{}, ociSubjectHeader: native}
+			var tokens atomic.Int32
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/token" {
+					user, password, ok := r.BasicAuth()
+					scope := r.URL.Query().Get("scope")
+					if r.Method != http.MethodGet || !ok || user != "workflow" || password != "fixture-password" ||
+						r.URL.Query().Get("service") != "workflow-fixture" ||
+						(scope != "repository:"+repository+":pull" && scope != "repository:"+repository+":pull,push") {
+						http.Error(w, "invalid fixture token request", http.StatusUnauthorized)
+						return
+					}
+					tokens.Add(1)
+					w.Header().Set("Content-Type", "application/json")
+					_ = json.NewEncoder(w).Encode(map[string]string{"token": scope})
+					return
+				}
+				repo, path := registryFixturePath(r.URL.Path)
+				scope := "repository:" + repository + ":pull"
+				write := r.Method == http.MethodPost || r.Method == http.MethodPut
+				if write {
+					scope += ",push"
+				}
+				if authorization := r.Header.Get("Authorization"); authorization != "Bearer "+scope &&
+					(write || authorization != "Bearer "+scope+",push") {
+					w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="https://%s/token",service="workflow-fixture",scope="%s"`, r.Host, scope))
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				if !native && strings.HasPrefix(path, "referrers/") {
+					http.NotFound(w, r)
+					return
+				}
+				storage.serve(w, r, repo, path)
+			}))
+			t.Cleanup(server.Close)
+			previous := auth.DefaultClient.Client
+			auth.DefaultClient.Client = server.Client()
+			t.Cleanup(func() { auth.DefaultClient.Client = previous })
+			name := strings.TrimPrefix(server.URL, "https://") + "/" + repository
+			authFile := filepath.Join(t.TempDir(), "auth.json")
+			writeCredentialFixture(t, authFile, inlineCredentialFixture(name, "workflow"))
+			client := Client{AuthFile: authFile}
+			data := []byte("version: 1\ntasks: {check: {image: scratch}}\n")
+			pinned, err := client.Push(t.Context(), name+":v1", data, []string{dependency}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, api, _, err := client.clients(pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			declarations, err := api.InspectDependencies(t.Context(), pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(declarations) != 1 || len(declarations[0].Declaration.Dependencies) != 1 ||
+				declarations[0].Declaration.Dependencies[0].Ref != dependency {
+				t.Fatal("published dependency declaration was not recovered through Bale")
+			}
+			doc, err := client.Pull(t.Context(), pinned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(doc.Data, data) || doc.Reference != pinned || tokens.Load() < 2 {
+				t.Fatal("workflow was not recovered through fresh authenticated requests")
+			}
+			_, subject, _ := strings.Cut(pinned, "@")
+			storage.mu.Lock()
+			_, fallback := storage.objects[repository+"/manifests/"+strings.Replace(subject, ":", "-", 1)]
+			storage.mu.Unlock()
+			if fallback == native {
+				t.Fatalf("unexpected fallback index presence: %v", fallback)
+			}
+		})
 	}
 }
 

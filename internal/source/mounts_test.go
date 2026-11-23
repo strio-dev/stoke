@@ -23,8 +23,8 @@ inputs: {version: {required: true}}
 tasks:
   base: {image: scratch}
   verify:
-    environment:
-      files: [ci.coopr]
+    build:
+      coopr: [ci.coopr]
       args: {BASE: {from: base}, VERSION: {input: version}, TOOL: {ref: "` + image + `"}}
     contexts: {fixtures: ./fixtures}
     mounts:
@@ -76,7 +76,7 @@ func TestEnvironmentAndMountRegistryInputsDeclareAndRewrite(t *testing.T) {
 	w, err := workflow.Decode(strings.NewReader(`version: 1
 tasks:
   test:
-    environment: {files: [ci.coopr], args: {TOOL: {ref: "` + image + `"}, LITERAL: "registry.test/undeclared:latest"}}
+    build: {coopr: [ci.coopr], args: {TOOL: {ref: "` + image + `"}, LITERAL: "registry.test/undeclared:latest"}}
     mounts: [{type: image, image: "` + image + `", target: /tool}]
     steps:
       - run: [check]
@@ -119,7 +119,7 @@ func TestInlineEnvironmentDefinitionFilesUseExistingResolution(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	task := workflow.Task{Environment: &workflow.CooprBuild{Files: []string{"ci.coopr"}}}
+	task := workflow.Task{Environment: &workflow.Build{Files: []string{"ci.coopr"}}}
 	files, err := DefinitionFilesForTask(task, caller)
 	if err != nil || !reflect.DeepEqual(files, []string{filepath.Join(caller, "ci.coopr")}) {
 		t.Fatalf("caller environment definitions = %v, %v", files, err)

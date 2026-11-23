@@ -7,6 +7,22 @@ import (
 	"testing"
 )
 
+func TestJobHumanLabel(t *testing.T) {
+	for _, tc := range []struct {
+		job  Job
+		want string
+	}{
+		{Job{Name: "library/build", Task: "build"}, "library/build"},
+		{Job{Name: "stable-id", Task: "test", Matrix: map[string]string{"os": "linux/arm64", "mode": "strict"}}, "test[mode=strict,os=linux/arm64]"},
+		{Job{Name: "stable-id", Task: "test", Matrix: map[string]string{"mode": "bad\nvalue,]"}}, `test[mode="bad\nvalue,]"]`},
+		{Job{Name: "fallback", Matrix: map[string]string{"mode": ""}}, `fallback[mode=""]`},
+	} {
+		if got := tc.job.Label(); got != tc.want {
+			t.Errorf("label=%q want=%q", got, tc.want)
+		}
+	}
+}
+
 func matrixWorkflow(t *testing.T, strategy string) *Workflow {
 	t.Helper()
 	w, err := Decode(strings.NewReader("version: 1\ntasks:\n  test:\n    image: scratch\n    strategy:\n" + strategy))

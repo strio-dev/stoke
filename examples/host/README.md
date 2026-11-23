@@ -24,15 +24,10 @@ service. No reusable host-result cache is enabled for these tests.
 For a reviewable GitHub Actions plan with visible native stages/matrix variants:
 
 ```sh
-stoke ci generate -f examples/host/stoke.yaml --context . \
-  --output .github/workflows/host.generated.yml \
-  --plan-output .stoke/host-plan.json
+stoke ci generate github -f examples/host/stoke.yaml --context . --co-locate prepare
 ```
 
-The generated workflow requires an explicit result repository because stages
-exchange data. Supply an authorized OCI repository from the handwritten caller;
-missing exact results fail instead of rebuilding the producer. Cache and result
-repositories serve different purposes. Generation alone publishes nothing.
+Co-location keeps captured files and fresh verification gates in one job.
 
 ## Discover Nix checks from Nix
 
@@ -97,36 +92,12 @@ own execution evidence.
 Generate the Nix workflow's native matrix after reviewing local discovery:
 
 ```sh
-stoke ci generate -f .stoke/nix-host.yaml --context . \
-  --output .github/workflows/nix-host.generated.yml \
-  --plan-output .stoke/nix-host-plan.json
+stoke ci generate github -f .stoke/nix-host.yaml --context .
 ```
 
-The handwritten caller must explicitly grant host authority:
-
-```yaml
-jobs:
-  nix-checks:
-    uses: ./.github/workflows/nix-host.generated.yml
-    with:
-      allow_host: true
-      host_capabilities: '["nix-build"]'
-```
-
-Host tasks cannot grant either input to themselves. Provision Nix, Python and
-Stoke on the native runner before the generated workflow is called. The caller
-retains its triggers, additional jobs, credentials and approvals. Host-only Nix
-checks need no Coopr image runtime. Provision Coopr `0.6.0` for mixed image
-workflows.
-
-For the captured-file pipeline, use the generated `host.generated.yml`, explicitly
-set `allow_host: true`, and supply its required `results_repository`. Prepare
-registry authentication and any package-write permission in the caller only
-after authorization. A separate cache repository can be recorded through normal
-`--cache-from`/`--cache-to` options when a workflow has a justified explicit
-host-cache contract; the fresh examples here do not skip commands using that
-cache. Exact tested producer outputs keep their run/attempt/variant identities
-independently of disposable cache hits.
+In your native workflow, call the generated action with `allow-host: "true"`
+and `host-capabilities: '["nix-build"]'`. Host-only Nix checks require Nix,
+Python and Stoke on the native runner.
 
 Hosted CI and a registry roundtrip require separate runtime evidence. These
 commands prepare reviewable files; they do not authorize a push, registry
@@ -181,66 +152,3 @@ Host cache hits restore captured files; they are not evidence of fresh producer
 execution. The example's static producer makes its particular input/effect
 contract reviewable; it does not establish that arbitrary host commands are
 hermetic or cache-safe.
-
-## Prepared manual hosted roundtrip
-
-`.github/workflows/host-dogfood.yml` is a manual-only caller prepared for later
-authorization. It has no push or pull-request trigger. Its intended sequence is:
-
-1. Check reviewed provisioned Stoke/fixture SHA256 values, Nix/Python availability,
-   the actual Nix inventory, and all checked-in generated CI pairs.
-2. Run the fixture workflow locally on the runner and seed an authorized cache.
-3. Call `host-cache.generated.yml`, preserving separate native `prepare`,
-   verification matrix and `package` jobs with exact registry-backed data edges.
-4. Return to a fresh local cache directory and report the actual hit/miss and
-   producer digest.
-5. Call `nix-host.generated.yml` with explicit host authority and `nix-build`
-   attestation; its Nix check variants remain visible native CI matrix entries.
-
-All eligible runners must already carry the reviewed development binaries and
-Docker-compatible registry credentials. `packages: write` permits use of the
-GitHub token where appropriate but does not log in or install credentials. The
-`stoke-development` label is a provisioning/trust assertion about that pool:
-preflight can validate its own machine, not inspect every other worker. The
-local warm/return jobs recheck their binaries; generated execution still relies
-on the reviewed runner pool. No Coopr executable is needed for these host-only
-workflows, and Coopr remains unpinned.
-
-Generate the cache plan with the explicit placeholder for review only:
-
-```sh
-stoke ci generate -f examples/host/cache.yaml --context . \
-  --runner self-hosted --runner linux --runner x64 --runner stoke-development \
-  --cache-from registry.invalid/stoke/host-cache \
-  --cache-to registry.invalid/stoke/host-cache \
-  --output .github/workflows/host-cache.generated.yml \
-  --plan-output .stoke/host-cache-plan.json package
-
-stoke ci generate -f .stoke/nix-host.yaml --context . \
-  --runner self-hosted --runner linux --runner x64 --runner stoke-development \
-  --output .github/workflows/nix-host.generated.yml \
-  --plan-output .stoke/nix-host-plan.json
-```
-
-The handwritten caller rejects `registry.invalid` before any registry action.
-Before an authorized push, regenerate both cache directions with the selected
-authorized cache repository and verify the generated pair. The manual caller's
-`cache_repository` input must exactly match that reviewed configuration. Its
-separate `results_repository` input selects exact run/attempt/variant results;
-disposable cache lookup does not replace native success gates or exact-result
-identity. The caller also verifies the existing `.stoke/ci-plan.json` pair and
-the fresh-only `.stoke/host-plan.json` pair; generate the latter with the same
-runner labels and the earlier `examples/host/stoke.yaml` command.
-
-For a hit across local/CI/local phases, the effective PATH, resolved static
-tool path/content, UID/groups/umask, kernel/CPU identity and canonical temporary
-execution location must match. Configure those consistently through runner
-provisioning, including the caller's `TMPDIR`; reusable workflows do not inherit
-the caller job's environment overrides. Different locations or machines may
-correctly miss and execute the producer again. The post-local job reports that
-outcome without claiming cross-hardware equivalence. Compare its producer digest
-with the visible CI producer report; a cache hit alone does not identify which
-runner originally wrote an equivalent cache entry.
-
-No hosted run, registry write, commit, push or publication has been performed by
-this preparation. The caller must remain undispatched until separately approved.

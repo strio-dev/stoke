@@ -29,7 +29,7 @@ Root invocations receive inputs from `--input NAME=VALUE`. Definition publicatio
 
 ## Image environments and mounted inputs
 
-An inline `environment` selects a Coopr image definition for ordinary task
+An inline `build` selects a Coopr image definition for ordinary task
 steps. After argument/matrix binding, Stoke lowers it to a native image producer
 and a `from` consumer. Producers with equivalent resolved inputs, policies and
 gates can be shared within the run. This reuses the existing build/dependency
@@ -65,14 +65,14 @@ For workflows with container tasks, Stoke starts one API-capable Coopr process p
 
 Literal-operation tasks become typed program requests. `coopr` tasks submit native definition image/component builds, and `publish` tasks submit explicit artifact transfers after their gates pass. Independent tasks and matrix variants use concurrent requests with shared run store roots and Coopr-coordinated cache. Dependent tasks consume successful prerequisite images/components in those stores without publishing intermediates. A parent-lifetime pipe scopes the service to its owner; shutdown cancels and drains active work. See [engine selection](../guides/coopr-api.md).
 
-Registry cache sources and destinations are invocation settings supplied through
-`--cache-from` and `--cache-to`. The API forwards them to Coopr's existing cache
+Registry cache sources and destinations resolve independently from CLI flags,
+execution environment overrides and caller-root YAML defaults. The API forwards them to Coopr's existing cache
 backend for literal and native image/component builds, and requires the engine's
 `registry-cache` capability when requested. Local cache operation remains in
 place. Coopr owns entry identity, content validation, restoration and writes;
 Stoke adds no second execution-cache format. These repositories are
 optional accelerators, separate from workflow imports, Bale dependency records
-and final artifact publication. Generated CI separately publishes immutable OCI results to preserve the exact producer output across jobs; those results are required data, not cache-hit or success evidence. See [caching](../guides/caching.md) and [visible CI results](../guides/ci-generation.md).
+and final artifact publication. Generated CI uses native success gates and groups data-connected tasks within one invocation. See [caching](../guides/caching.md) and [CI generation](../guides/ci-generation.md).
 
 Coopr `0.6.0` provides the service and the SDK revision used by Stoke. The [engine guide](../guides/coopr-api.md) records the release source and executable selection.
 

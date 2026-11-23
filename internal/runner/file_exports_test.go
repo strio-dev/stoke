@@ -26,7 +26,7 @@ func writeFileExportReceipts(options coopr.Options) ([]cooprwire.ExportResult, e
 }
 
 func TestFileExportAdmissionPrecedesSelectedTaskEffects(t *testing.T) {
-	for _, selection := range []string{"separate-jobs", "matrix", "live-input", "other-live-input", "read-only-parent", "unselected", "ci-selected"} {
+	for _, selection := range []string{"separate-jobs", "matrix", "matrix-existing", "live-input", "other-live-input", "read-only-parent", "unselected", "ci-selected"} {
 		t.Run(selection, func(t *testing.T) {
 			w := fixture(t, `version: 1
 tasks:
@@ -40,6 +40,10 @@ tasks:
     image: scratch
     strategy: {matrix: {mode: [a, b]}}
     steps: [{export: {source: /out, destination: matrix/out}}]
+  strict:
+    image: scratch
+    strategy: {matrix: {mode: [strict]}}
+    steps: [{run: [check]}, {export: {source: /out, destination: dist/out}}]
   live:
     image: scratch
     cache: false
@@ -56,6 +60,8 @@ tasks:
 			switch selection {
 			case "matrix":
 				targets = []string{"matrix"}
+			case "matrix-existing":
+				targets = []string{"strict"}
 			case "live-input":
 				targets = []string{"live"}
 			case "other-live-input":
@@ -63,8 +69,20 @@ tasks:
 			case "unselected", "read-only-parent", "ci-selected":
 				targets = []string{"a"}
 			}
-			if selection == "ci-selected" {
-				if err := os.MkdirAll(filepath.Join(options.ContextDir, "dist", "out"), 0755); err != nil {
+			kept := filepath.Join(options.ContextDir, "dist", "out", "keep")
+			if selection == "matrix-existing" {
+				kept = filepath.Join(options.ContextDir, "dist", "saved", "keep")
+			}
+			if selection == "ci-selected" || selection == "matrix-existing" {
+				if err := os.MkdirAll(filepath.Dir(kept), 0755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(kept, []byte("preserved"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if selection == "matrix-existing" {
+				if err := os.Symlink("saved", filepath.Join(options.ContextDir, "dist", "out")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -99,11 +117,93 @@ tasks:
 				if err == nil || calls != 0 || report != nil {
 					t.Fatalf("unsupported export layout reached effects: calls=%d report=%+v err=%v", calls, report, err)
 				}
+				if selection == "ci-selected" || selection == "matrix-existing" {
+					for _, text := range []string{"Move", "unused", "fresh workspace", "--output does not relocate"} {
+						if !strings.Contains(err.Error(), text) {
+							t.Fatalf("collision remedy missing %q: %v", text, err)
+						}
+					}
+					if selection == "matrix-existing" {
+						want := `task "strict[mode=strict]" step 2 file export "` + filepath.Join(options.ContextDir, "dist", "out") + `"`
+						if !strings.Contains(err.Error(), want) {
+							t.Fatalf("collision should identify its variant, step and path: %v", err)
+						}
+					}
+					data, readErr := os.ReadFile(kept)
+					if readErr != nil || string(data) != "preserved" {
+						t.Fatal("existing destination changed", readErr)
+					}
+				}
 				if _, err := os.Stat(options.StateDir); !errors.Is(err, os.ErrNotExist) {
 					t.Fatalf("collision created run state: %v", err)
 				}
 			}
 		})
+	}
+}
+
+func TestLocalFileExportsUpdateAndMerge(t *testing.T) {
+	w := fixture(t, `version: 1
+tasks:
+  build:
+    image: scratch
+    steps:
+      - export: {source: /report, destination: out/report}
+      - export: {source: /tree, destination: out/tree}
+`)
+	options := testOptions(t)
+	write := func(path, contents string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(contents), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(payload string, mismatch bool) error {
+		report, err := runLiteral(t.Context(), w, []string{"build"}, options, func(_ context.Context, _ coopr.Program, native coopr.Options) (coopr.Result, error) {
+			file, tree := native.Output.Exports[0], native.Output.Exports[1]
+			if mismatch {
+				write(filepath.Join(file.Destination, "child"), payload)
+			} else {
+				write(file.Destination, payload)
+			}
+			write(filepath.Join(tree.Destination, "nested", "result"), payload)
+			if payload == "new" {
+				write(filepath.Join(tree.Destination, "added"), "added")
+			}
+			return coopr.Result{Exports: []cooprwire.ExportResult{
+				{State: file.State, Source: file.Source, Destination: file.Destination, Status: "passed"},
+				{State: tree.State, Source: tree.Source, Destination: tree.Destination, Status: "passed"},
+			}}, nil
+		})
+		if err == nil && (report == nil || report.Tasks[0].Exports[1].Status != "passed") {
+			t.Fatalf("missing successful export receipts: %+v", report)
+		}
+		return err
+	}
+	if err := run("old longer content", false); err != nil {
+		t.Fatal(err)
+	}
+	write(filepath.Join(options.ContextDir, "out/tree/nested/keep"), "unrelated")
+	if err := run("new", false); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]string{
+		"out/report": "new", "out/tree/nested/result": "new",
+		"out/tree/nested/keep": "unrelated", "out/tree/added": "added",
+	} {
+		got, err := os.ReadFile(filepath.Join(options.ContextDir, name))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, want %q: %v", name, got, want, err)
+		}
+	}
+	if err := run("new", true); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("directory replaced a file: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(options.ContextDir, "out/report")); err != nil || string(got) != "new" {
+		t.Fatalf("type mismatch changed the file: %q %v", got, err)
 	}
 }
 
@@ -273,6 +373,9 @@ tasks:
 				t.Fatalf("unconfirmed publication succeeded: %+v %v", report, err)
 			}
 			if mode == "raced" {
+				if !errors.Is(err, os.ErrExist) || !strings.Contains(err.Error(), "--output does not relocate") {
+					t.Fatalf("racing export lost error identity or remedy: %v", err)
+				}
 				data, err := os.ReadFile(filepath.Join(options.ContextDir, "dist/report"))
 				if err != nil || string(data) != "keep\n" {
 					t.Fatalf("racing output replaced: %q %v", data, err)

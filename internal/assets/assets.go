@@ -82,15 +82,28 @@ func Collect(directory string, names []string) (_ map[string]File, retErr error)
 	if err := validateNames(names); err != nil {
 		return nil, err
 	}
-	files := make(map[string]File, len(names))
 	if len(names) == 0 {
-		return files, nil
+		return map[string]File{}, nil
 	}
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { retErr = errors.Join(retErr, root.Close()) }()
+	return collect(root, names)
+}
+
+// CollectRoot snapshots assets through an already-confined component directory.
+// The caller retains ownership of root.
+func CollectRoot(root *os.Root, names []string) (map[string]File, error) {
+	if err := validateNames(names); err != nil {
+		return nil, err
+	}
+	return collect(root, names)
+}
+
+func collect(root *os.Root, names []string) (map[string]File, error) {
+	files := make(map[string]File, len(names))
 	total := 0
 	for _, name := range names {
 		file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)

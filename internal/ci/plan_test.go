@@ -31,9 +31,9 @@ tasks:
 `
 
 func TestCIRejectsOversizedIdentityBeforeExecution(t *testing.T) {
-	w := decodeWorkflow(t, "version: 1\ntasks:\n  "+strings.Repeat("a", 513)+": {image: scratch}\n")
-	if _, err := Build(w, Config{}); err == nil || !strings.Contains(err.Error(), "identity limit") {
-		t.Fatalf("oversized producer could reach runtime publication: %v", err)
+	w := &workflow.Workflow{Version: 1, Tasks: map[string]workflow.Task{strings.Repeat("a", 256): {Image: "scratch"}}}
+	if _, err := Build(w, Config{}); err == nil || !strings.Contains(err.Error(), "255 bytes") {
+		t.Fatalf("oversized task could reach runtime: %v", err)
 	}
 }
 
@@ -162,8 +162,7 @@ func TestPlanRejectsUnsupportedPathsHostEffectsAndBounds(t *testing.T) {
 	for _, config := range []Config{
 		{Workflow: "oci://registry.test/workflow@sha256:" + strings.Repeat("a", 64)},
 		{Workflow: "/host/stoke.yaml"}, {Context: "../outside"}, {Context: "a/../b"},
-		{Workflow: "${{ secrets.FILE }}"}, {Runners: []string{"${{ secrets.RUNNER }}"}},
-		{TimeoutMinutes: -1}, {TimeoutMinutes: 361},
+		{Workflow: "${{ secrets.FILE }}"},
 	} {
 		if _, err := Build(w, config); err == nil {
 			t.Fatalf("accepted invalid configuration %#v", config)
@@ -177,12 +176,7 @@ func TestPlanRejectsUnsupportedPathsHostEffectsAndBounds(t *testing.T) {
 			t.Fatal("accepted nonportable task input")
 		}
 	}
-	for i := range MaxGroups + 1 {
-		w.Tasks["t"+strings.Repeat("a", i+1)] = workflow.Task{Image: "scratch"}
-	}
-	if _, err := Build(w, Config{}); err == nil || !strings.Contains(err.Error(), "provider execution units") {
-		t.Fatalf("provider group bound not enforced: %v", err)
-	}
+
 }
 
 func TestPlanRejectsOversizedComponentAsset(t *testing.T) {
@@ -214,7 +208,7 @@ func TestPlanDecodeRejectsTamperingUnknownFieldsVersionsAndExtraDocuments(t *tes
 	for _, bad := range [][]byte{
 		bytes.Replace(data, []byte(fmt.Sprintf(`"version": %d`, Version)), []byte(fmt.Sprintf(`"version": %d`, Version+1)), 1),
 		bytes.Replace(data, []byte(`"generatedBy": "stoke-ci"`), []byte(`"generatedBy": "handwritten"`), 1),
-		bytes.Replace(data, []byte(`"timeoutMinutes": 45`), []byte(`"timeoutMinutes": 46`), 1),
+		bytes.Replace(data, []byte(`"context": "."`), []byte(`"context": "edited"`), 1),
 		append(bytes.TrimSpace(data), []byte("\n{}\n")...),
 		append([]byte("{\"unexpected\":true,"), data[1:]...),
 		bytes.Repeat([]byte(" "), MaxPlanBytes+1),
@@ -280,14 +274,14 @@ func inlineEnvironmentContext(t *testing.T) {
 func TestUnlikeInlineEnvironmentProducersStayIndependent(t *testing.T) {
 	inlineEnvironmentContext(t)
 	for name, second := range map[string]string{
-		"files":    "environment: {files: [other.coopr]}, cache: false",
-		"cache":    "environment: {files: [image.coopr]}, cache: true",
-		"platform": "environment: {files: [image.coopr]}, cache: false, platform: linux/arm64",
-		"target":   "environment: {files: [image.coopr], target: different}, cache: false",
-		"argument": "environment: {files: [image.coopr], args: {MODE: different}}, cache: false",
-		"gates":    "environment: {files: [image.coopr]}, cache: false, needs: [gate]",
+		"files":    "build: {coopr: [other.coopr]}, cache: false",
+		"cache":    "build: {coopr: [image.coopr]}, cache: true",
+		"platform": "build: {coopr: [image.coopr]}, cache: false, platform: linux/arm64",
+		"target":   "build: {coopr: [image.coopr], target: different}, cache: false",
+		"argument": "build: {coopr: [image.coopr], args: {MODE: different}}, cache: false",
+		"gates":    "build: {coopr: [image.coopr]}, cache: false, needs: [gate]",
 	} {
-		w := decodeWorkflow(t, "version: 1\ntasks:\n  gate: {image: scratch}\n  first: {environment: {files: [image.coopr]}, cache: false}\n  second: {"+second+"}\n")
+		w := decodeWorkflow(t, "version: 1\ntasks:\n  gate: {image: scratch}\n  first: {build: {coopr: [image.coopr]}, cache: false}\n  second: {"+second+"}\n")
 		p, err := Build(w, Config{})
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -298,99 +292,21 @@ func TestUnlikeInlineEnvironmentProducersStayIndependent(t *testing.T) {
 	}
 }
 
-func TestVisibleDataStagesKeepNativeMatrixAndExactImports(t *testing.T) {
-	w := decodeWorkflow(t, `version: 1
-tasks:
-  build: {image: scratch, cache: false}
-  tests:
-    from: build
-    cache: false
-    strategy: {max-parallel: 2, fail-fast: false, matrix: {mode: [debug, release]}}
-  package:
-    image: scratch
-    needs: [tests]
-    steps: [{copy: {from: build, sources: [/out], destination: /dist}}]
-`)
-	p := buildPlanFixture(t, w, Config{})
-	build, tests, pack := groupNamed(t, p, "build"), groupNamed(t, p, "tests"), groupNamed(t, p, "package")
-	if len(p.Groups) != 3 || !p.RequiresResults || !tests.Matrix || len(tests.Jobs) != 2 || tests.FailFast || tests.MaxParallel != 2 {
-		t.Fatalf("visible stages/matrix lost: %#v", p.Groups)
-	}
-	if !slices.Equal(build.Jobs[0].Exports, []string{"build"}) || len(build.Jobs[0].Imports) != 0 {
-		t.Fatal("producer export missing")
-	}
-	for _, j := range tests.Jobs {
-		if !slices.Equal(j.Execute, []string{j.ID}) || !slices.Equal(j.Imports, []string{"build"}) || j.OutputKey != OutputKey(j.ID) {
-			t.Fatalf("matrix exact input missing: %#v", j)
-		}
-	}
-	if !slices.Equal(pack.Needs, sortedUnique([]string{build.ID, tests.ID})) || !slices.Equal(pack.Jobs[0].Imports, []string{"build"}) {
-		t.Fatal("package lost data or success gate")
-	}
-}
-
 func TestPureGatesNeedNoResultRegistryOrDataReplay(t *testing.T) {
 	p := planFixture(t)
-	if len(p.Groups) != 4 || p.RequiresResults {
+	if len(p.Groups) != 4 {
 		t.Fatal("pure gates require result transport")
 	}
 	build, lint, tests, pack := groupNamed(t, p, "build"), groupNamed(t, p, "lint"), groupNamed(t, p, "tests"), groupNamed(t, p, "package")
 	if !slices.Equal(lint.Needs, []string{build.ID}) || !slices.Equal(tests.Needs, []string{build.ID}) || !slices.Equal(pack.Needs, sortedUnique([]string{lint.ID, tests.ID})) {
 		t.Fatal("native gates changed")
 	}
-	keys := map[string]bool{}
 	for _, g := range p.Groups {
 		for _, j := range g.Jobs {
-			if len(j.Imports)+len(j.Exports)+len(j.Data) != 0 || !slices.Equal(j.Execute, []string{j.ID}) || keys[j.OutputKey] {
+			if !slices.Equal(j.Execute, []string{j.ID}) {
 				t.Fatal("pure gates became data or output slots collided")
 			}
-			keys[j.OutputKey] = true
 		}
-	}
-}
-
-func TestNativeComponentAndSingleEnvironmentImports(t *testing.T) {
-	inlineEnvironmentContext(t)
-	w := decodeWorkflow(t, `version: 1
-tasks:
-  component: {coopr: {files: [component.coopr], kind: component}}
-  native: {coopr: {files: [image.coopr], args: {TOOLS: {from: component}}}}
-  check:
-    environment: {files: [image.coopr], args: {TOOLS: {from: component}}}
-    platform: linux/arm64
-    needs: [native]
-    mounts: [{type: stage, from: native, target: /native}]
-    steps: [{run: [true]}, {export: {source: /out, destination: reports}}]
-`)
-	p := buildPlanFixture(t, w, Config{})
-	if len(p.Groups) != 3 || len(p.Environments) != 0 || !slices.Equal(groupNamed(t, p, "check").Jobs[0].Imports, []string{"component", "native"}) {
-		t.Fatal("single env leaked or exact inputs lost")
-	}
-	for _, capability := range []string{"component", "build", "execute", "run-mounts", "build-platform", "component-load", "selected-file-exports"} {
-		if !slices.Contains(p.Engine.Capabilities, capability) {
-			t.Fatalf("missing %s", capability)
-		}
-	}
-}
-
-func TestCopyAndPublishSelectSameProducerWithoutCoLocation(t *testing.T) {
-	w := decodeWorkflow(t, `version: 1
-tasks:
-  build: {image: scratch, cache: false}
-  test: {from: build, cache: false}
-  publish: {publish: {from: build, destinations: [registry.example.test/release:reviewed]}, needs: [test]}
-`)
-	p := buildPlanFixture(t, w, Config{})
-	if len(p.Groups) != 3 || !p.RequiresResults {
-		t.Fatal("fresh producer hid visible test/publish stages")
-	}
-	for _, name := range []string{"test", "publish"} {
-		if !slices.Equal(groupNamed(t, p, name).Jobs[0].Imports, []string{"build"}) {
-			t.Fatal("consumers do not select producer result")
-		}
-	}
-	if !slices.Contains(groupNamed(t, p, "publish").Needs, groupNamed(t, p, "test").ID) {
-		t.Fatal("publish bypasses test native gate")
 	}
 }
 
@@ -403,12 +319,12 @@ func TestPlanCapabilitiesFollowSelectedCIOutputs(t *testing.T) {
 		{name: "cached gate", gate: "from: build", consumer: "image: scratch, needs: [gate]", target: "done"},
 		{name: "requested rootfs", gate: "from: build, cache: false, outputs: {filesystem: true}", consumer: "image: scratch, needs: [gate]", target: "done"},
 		{name: "consumed output", gate: "from: build, cache: false", consumer: "from: gate", target: "done"},
-		{name: "terminal output", gate: "from: build, cache: false", consumer: "image: scratch, needs: [gate]", target: "gate"},
+		{name: "explicit gate keeps workflow demand", optional: true, gate: "from: build, cache: false", consumer: "image: scratch, needs: [gate]", target: "gate"},
 		{name: "named input and report", gate: "from: build, cache: false, contexts: {source: .}, mounts: [{type: context, context: source, target: /source}], steps: [{run: [true]}, {export: {source: /report, destination: report}}]", consumer: "image: scratch, needs: [gate]", target: "done", optional: true, named: true, exports: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := decodeWorkflow(t, "version: 1\ntasks:\n  build: {image: scratch}\n  gate: {"+tc.gate+"}\n  done: {"+tc.consumer+"}\n")
-			p := buildPlanFixture(t, w, Config{Targets: []string{tc.target}})
+			p := buildPlanFixture(t, w, Config{Targets: []string{tc.target}, CoLocate: []string{"gate"}})
 			if p.Engine.APIVersion != cooprwire.Version {
 				t.Fatalf("plan API version %d differs from SDK %d", p.Engine.APIVersion, cooprwire.Version)
 			}
@@ -425,44 +341,7 @@ func TestPlanCapabilitiesFollowSelectedCIOutputs(t *testing.T) {
 	}
 }
 
-func TestImportedImagePublicationDeclaresExactLayoutCapability(t *testing.T) {
-	for _, scenario := range []struct {
-		name, producer string
-		coLocate       []string
-		want           bool
-	}{
-		{name: "split literal image", producer: "image: scratch", want: true},
-		{name: "split native image", producer: "coopr: {files: [image.coopr]}", want: true},
-		{name: "co-located image", producer: "image: scratch", coLocate: []string{"build"}},
-		{name: "split component", producer: "coopr: {files: [component.coopr], kind: component}"},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			w := decodeWorkflow(t, "version: 1\ntasks:\n  build: {"+scenario.producer+"}\n  publish: {publish: {from: build, destinations: [registry.example.test/release:reviewed]}}\n")
-			p := buildPlanFixture(t, w, Config{CoLocate: scenario.coLocate})
-			if slices.Contains(p.Engine.Capabilities, "publish-oci-layout") != scenario.want {
-				t.Fatalf("exact-layout publication capability=%v, want %t", p.Engine.Capabilities, scenario.want)
-			}
-		})
-	}
-	// An explicit group can absorb a pure gate which imports an unrelated
-	// image. That import does not make an internally produced publication need
-	// exact-layout import support.
-	w := decodeWorkflow(t, `version: 1
-tasks:
-  external: {image: scratch}
-  a: {image: scratch}
-  gate: {from: external, needs: [a]}
-  consumer: {from: a, needs: [gate]}
-  publish: {publish: {from: a, destinations: [registry.example.test/release:reviewed]}, needs: [consumer]}
-`)
-	p := buildPlanFixture(t, w, Config{CoLocate: []string{"a"}})
-	unit := groupContaining(t, p, "publish")
-	if !slices.Equal(unit.Jobs[0].Imports, []string{"external"}) || slices.Contains(p.Engine.Capabilities, "publish-oci-layout") {
-		t.Fatal("unrelated image import changed an internal publication's requirement")
-	}
-}
-
-func TestExplicitCoLocationIsRequiredToContractData(t *testing.T) {
+func TestSplitDataAndExplicitCoLocation(t *testing.T) {
 	w := decodeWorkflow(t, `version: 1
 tasks:
   gate: {image: scratch, cache: false}
@@ -470,16 +349,17 @@ tasks:
   middle: {from: base, needs: [gate]}
   selected: {from: middle}
 `)
-	ordinary := buildPlanFixture(t, w, Config{})
-	if len(ordinary.Groups) != 4 || !ordinary.RequiresResults {
-		t.Fatal("default hid stages")
+	split := buildPlanFixture(t, w, Config{})
+	if len(split.Groups) != 4 || !slices.Equal(groupNamed(t, split, "selected").Needs, []string{"middle"}) ||
+		!slices.Contains(split.Engine.Capabilities, cooprwire.CapabilityCacheRequireHit) {
+		t.Fatalf("split stage lost its native gate or cache-only capability: %#v", split)
 	}
 	p := buildPlanFixture(t, w, Config{CoLocate: []string{"middle", "middle"}})
 	unit := groupContaining(t, p, "middle")
-	if len(p.Groups) != 2 || p.RequiresResults || len(unit.Jobs[0].Execute) != 3 || len(unit.Jobs[0].Imports) != 0 || !slices.Equal(unit.Needs, []string{groupNamed(t, p, "gate").ID}) {
+	if len(p.Groups) != 2 || len(unit.Jobs[0].Execute) != 3 || !slices.Equal(unit.Needs, []string{groupNamed(t, p, "gate").ID}) {
 		t.Fatalf("explicit grouping or pure gate lost: %#v", p.Groups)
 	}
-	if p.ID == ordinary.ID || p.WorkflowDigest != ordinary.WorkflowDigest || !slices.Equal(p.Config.CoLocate, []string{"middle"}) {
+	if !slices.Equal(p.Config.CoLocate, []string{"middle"}) {
 		t.Fatal("configuration/semantic identity wrong")
 	}
 	if _, err := Build(w, Config{CoLocate: []string{"not-selected"}}); err == nil {
@@ -487,12 +367,11 @@ tasks:
 	}
 }
 
-func TestCachePolicyDoesNotSilentlyHideStages(t *testing.T) {
-	for _, policy := range []string{"cache: true", "cache: false", "mounts: [{type: context, target: /src, read-only: false}], steps: [{run: ['true']} ]"} {
+func TestSplitDataRejectsIneligibleProducers(t *testing.T) {
+	for _, policy := range []string{"cache: false", "mounts: [{type: context, target: /src, read-only: false}], steps: [{run: ['true']} ]"} {
 		w := decodeWorkflow(t, "version: 1\ntasks:\n  producer: {image: scratch, "+policy+"}\n  consumer: {from: producer}\n")
-		p := buildPlanFixture(t, w, Config{})
-		if len(p.Groups) != 2 || !p.RequiresResults {
-			t.Fatal("cache/effect policy silently grouped stages")
+		if _, err := Build(w, Config{CacheFrom: []string{"registry.test/cache"}}); err == nil || !strings.Contains(err.Error(), "--co-locate") {
+			t.Fatalf("ordinary cache was accepted as guaranteed producer restore: %v", err)
 		}
 	}
 }
@@ -508,173 +387,54 @@ tasks:
   f: {from: c, needs: [e]}
 `)
 	p := buildPlanFixture(t, w, Config{CoLocate: []string{"a", "b", "c"}})
-	if len(p.Groups) != 1 || p.RequiresResults || len(p.Groups[0].Jobs[0].Execute) != 6 {
+	if len(p.Groups) != 1 || len(p.Groups[0].Jobs[0].Execute) != 6 {
 		t.Fatal("explicit gate quotient remains cyclic")
 	}
 }
 
-func TestPlanRejectsUnboundOrWrongOwnerImports(t *testing.T) {
-	w := decodeWorkflow(t, "version: 1\ntasks: {build: {image: scratch}, test: {from: build}}\n")
-	for _, mutation := range []func(*Plan){
-		func(p *Plan) { p.Groups[1].Jobs[0].Imports = nil },
-		func(p *Plan) { p.Groups[0].Jobs[0].Exports = nil },
-		func(p *Plan) { p.RequiresResults = false },
-		func(p *Plan) {
-			p.Groups[1].Jobs[0].Imports = []string{"unknown"}
-			p.Groups[1].Jobs[0].Data = []string{"unknown"}
-		},
-		func(p *Plan) { p.Groups[1].Jobs[0].OutputKey = p.Groups[0].Jobs[0].OutputKey },
-	} {
-		p, err := Build(w, Config{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		mutation(p)
-		p.ID, err = planDigest(p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if p.Validate() == nil {
-			t.Fatal("self-consistent invalid exact-result plan accepted")
-		}
-	}
-}
-
-func TestSharedInlineEnvironmentsPromoteVisibleProducer(t *testing.T) {
-	inlineEnvironmentContext(t)
-	for _, alias := range []string{"image.coopr", "./image.coopr", "alias.coopr"} {
-		w := decodeWorkflow(t, "version: 1\ntasks:\n  first: {environment: {files: [image.coopr]}, cache: false, contexts: {data: inputs}}\n  second: {environment: {files: ['"+alias+"']}, cache: false, contexts: {data: alias-inputs}}\n")
-		before, _ := json.Marshal(w)
-		p := buildPlanFixture(t, w, Config{})
-		after, _ := json.Marshal(w)
-		if !bytes.Equal(before, after) {
-			t.Fatal("caller definitions mutated")
-		}
-		if len(p.Groups) != 3 || len(p.Environments) != 1 || !p.RequiresResults {
-			t.Fatalf("shared fresh env hid authored jobs: %#v", p.Groups)
-		}
-		for id, representative := range p.Environments {
-			if representative != "first" {
-				t.Fatal("unstable representative")
-			}
-			env := groupNamed(t, p, id)
-			if !slices.Equal(env.Jobs[0].Exports, []string{id}) {
-				t.Fatal("env not exported")
-			}
-			for _, name := range []string{"first", "second"} {
-				g := groupNamed(t, p, name)
-				if !slices.Equal(g.Jobs[0].Imports, []string{id}) || !slices.Equal(g.Needs, []string{env.ID}) {
-					t.Fatal("shared env result not required")
-				}
-			}
-		}
-		joined := buildPlanFixture(t, w, Config{CoLocate: []string{"first"}})
-		if len(joined.Groups) != 1 || len(joined.Environments) != 0 || joined.RequiresResults {
-			t.Fatal("explicit shared env grouping still needs registry")
-		}
-	}
-}
-
-func TestSharedEnvironmentMatrixKeepsVisibleRows(t *testing.T) {
-	inlineEnvironmentContext(t)
-	for _, bound := range []bool{false, true} {
-		args := ""
-		if bound {
-			args = ", args: {MODE: {matrix: mode}}"
-		}
-		w := decodeWorkflow(t, "version: 1\ntasks:\n  checks:\n    environment: {files: [image.coopr]"+args+"}\n    cache: false\n    strategy: {max-parallel: 2, fail-fast: false, matrix: {mode: [one, two]}}\n")
-		p := buildPlanFixture(t, w, Config{})
-		g := groupNamed(t, p, "checks")
-		if !g.Matrix || len(g.Jobs) != 2 || g.MaxParallel != 2 || g.FailFast {
-			t.Fatal("matrix rows hidden")
-		}
-		if !bound && (len(p.Environments) != 1 || len(p.Groups) != 2) {
-			t.Fatal("shared env not promoted")
-		}
-		if bound && (len(p.Environments) != 0 || len(p.Groups) != 1) {
-			t.Fatal("different env args got merged")
-		}
-	}
-}
-
-func TestResultsRepositoryConfigurationIsExplicitAndBounded(t *testing.T) {
-	w := decodeWorkflow(t, "version: 1\ntasks: {build: {image: scratch}, test: {from: build}}\n")
-	empty, err := Build(w, Config{})
-	if err != nil || !empty.RequiresResults || empty.Config.ResultsRepository != "" {
-		t.Fatal("call-time registry configuration unavailable")
-	}
-	p, err := Build(w, Config{ResultsRepository: "results.example.test/team/run-results"})
-	if err != nil || p.ID == empty.ID {
-		t.Fatal("result destination not bound")
-	}
-	for _, bad := range []string{"https://registry.test/results", "registry.test/results:latest", "registry.test/${{secrets.RESULTS}}", "registry.test/" + strings.Repeat("a", 513)} {
-		if _, err := Build(w, Config{ResultsRepository: bad}); err == nil {
-			t.Fatalf("invalid results repo accepted %q", bad)
-		}
-	}
-}
-
-func TestNativeMetadataBudgetsAllowMatrixAndRejectHugeFanIn(t *testing.T) {
-	values := []string{}
-	for i := range 256 {
-		values = append(values, fmt.Sprint(i))
-	}
-	matrix := strings.Join(values, ",")
-	for _, count := range []int{1, 3} {
-		text := "version: 1\ntasks:\n"
-		needs := []string{}
-		for i := range count {
-			name := fmt.Sprintf("matrix%d", i)
-			needs = append(needs, name)
-			text += "  " + name + ": {image: scratch, strategy: {matrix: {axis: [" + matrix + "]}}}\n"
-		}
-		text += "  done: {image: scratch, needs: [" + strings.Join(needs, ",") + "]}\n"
-		p, err := Build(decodeWorkflow(t, text), Config{})
-		if count == 1 && (err != nil || len(groupNamed(t, p, "matrix0").Jobs) != 256) {
-			t.Fatalf("valid max matrix rejected: %v", err)
-		}
-		if count == 3 && (err == nil || !strings.Contains(err.Error(), "environment budget")) {
-			t.Fatalf("oversized native env accepted: %v", err)
-		}
-	}
-}
-
-func TestFrozenExecutionKeepsProducerMetadataWithoutSourceBodies(t *testing.T) {
+func TestSharedInlineEnvironmentRequiresOneInvocation(t *testing.T) {
 	w := decodeWorkflow(t, `version: 1
 tasks:
-  build: {coopr: {files: [private.coopr], args: {PRIVATE_BODY: secret-source-only}}, platform: linux/arm64}
-  check: {from: build, cache: false, steps: [{run: [check, '${{ literal }}']}]}
-  package:
-    image: registry.example.test/tools@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-    needs: [check]
-    steps:
-      - copy: {from: build, sources: [/tool], destination: /tool}
-      - run: [check]
-        mounts: [{type: image, image: docker://registry.example.test/tools@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb, target: /tools}]
+  checks:
+    build: {coopr: [image.coopr]}
+    strategy: {matrix: {mode: [one, two]}}
 `)
-	p, err := BuildWithSource(w, w, Config{Targets: []string{"package"}})
+	// Environment resolution uses the actual context path and recipe.
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile("image.coopr", []byte("from \"scratch\" {}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Build(w, Config{}); err == nil || !strings.Contains(err.Error(), "shared inline environment") {
+		t.Fatalf("shared environment was split: %v", err)
+	}
+	p := buildPlanFixture(t, w, Config{CoLocate: []string{"checks"}})
+	if len(p.Groups) != 1 || len(p.Groups[0].Jobs) != 1 || len(p.Groups[0].Jobs[0].Execute) != 2 {
+		t.Fatal("co-location lost variants")
+	}
+}
+
+func TestRootCachePolicyBindsPlanAndCapabilities(t *testing.T) {
+	w := decodeWorkflow(t, "version: 1\ncache-to: [registry.test/write]\ntasks: {gate: {image: scratch, cache: false}}\n")
+	p := buildPlanFixture(t, w, Config{})
+	if !slices.Contains(p.Engine.Capabilities, "registry-cache") {
+		t.Fatal("ordinary terminal output omitted write capability")
+	}
+	original := p.ID
+	w.CacheFrom = []string{"registry.test/read"}
+	changed := buildPlanFixture(t, w, Config{})
+	if changed.ID == original || changed.WorkflowDigest == p.WorkflowDigest {
+		t.Fatal("root policy drift was not bound to plan")
+	}
+	cleared := buildPlanFixture(t, w, Config{CacheFrom: []string{}, CacheTo: []string{}})
+	if slices.Contains(cleared.Engine.Capabilities, "registry-cache") {
+		t.Fatal("explicit clears did not suppress registry capability")
+	}
+	data, err := Encode(cleared)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"check", "package"} {
-		if !p.CanRunWithoutCheckout(groupNamed(t, p, name).Jobs[0]) {
-			t.Fatalf("%s unnecessarily requires source", name)
-		}
-	}
-	if p.CanRunWithoutCheckout(groupNamed(t, p, "build").Jobs[0]) || p.Execution.Tasks["build"].Coopr == nil || p.Execution.Tasks["build"].Platform.Value == nil {
-		t.Fatal("native producer lost its metadata-only type/platform boundary")
-	}
-	encoded, err := Encode(p)
-	if err != nil || bytes.Contains(encoded, []byte("private.coopr")) || bytes.Contains(encoded, []byte("secret-source-only")) {
-		t.Fatalf("source-owned body leaked: %v", err)
-	}
-	if _, err := Decode(bytes.NewReader(encoded)); err != nil {
-		t.Fatal(err)
-	}
-	root := *w
-	root.Tasks = map[string]workflow.Task{"check": {Uses: "private/check"}}
-	private, err := BuildWithSource(w, &root, Config{Targets: []string{"package"}})
-	if err != nil || private.Execution != nil {
-		t.Fatalf("imported task body became an execution snapshot: %v", err)
+	decoded, err := Decode(bytes.NewReader(data))
+	if err != nil || decoded.Config.CacheFrom == nil || decoded.Config.CacheTo == nil {
+		t.Fatal("explicit clear lost on wire", err)
 	}
 }

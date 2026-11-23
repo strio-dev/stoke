@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/strio-dev/stoke/internal/artifact"
 	"github.com/strio-dev/stoke/internal/ci"
 	"github.com/strio-dev/stoke/internal/runner"
 	"github.com/strio-dev/stoke/internal/workflow"
@@ -89,10 +88,11 @@ func TestLocalHostRunCannotUseEnvironmentAsAuthority(t *testing.T) {
 func TestCIHostPlanDoesNotGrantExecutionOrCapabilities(t *testing.T) {
 	t.Chdir(t.TempDir())
 	writeCIFile(t, "stoke.yaml", cliHostFixture)
-	if code, _, stderr := invokeCI([]string{"ci", "generate"}); code != 0 {
+	code, plan, stderr := invokeCI([]string{"ci", "plan"})
+	if code != 0 {
 		t.Fatal(stderr)
 	}
-	p, err := ci.Decode(bytes.NewReader(readCIFile(t, ".stoke/ci-plan.json")))
+	p, err := ci.Decode(strings.NewReader(plan))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,17 +100,14 @@ func TestCIHostPlanDoesNotGrantExecutionOrCapabilities(t *testing.T) {
 		t.Fatal("host declaration was lost or acquired Coopr requirements")
 	}
 	t.Setenv("STOKE_ALLOW_HOST", "true")
-	if code, _, stderr := invokeCI([]string{"ci", "run", "--job", p.Groups[0].Jobs[0].ID}); code != 1 || !strings.Contains(stderr, "--allow-host") {
+	if code, _, stderr := invokeCI([]string{"run", "--ci", p.Groups[0].Jobs[0].ID}); code != 1 || !strings.Contains(stderr, "--allow-host") {
 		t.Fatalf("generated plan or environment granted authority: exit=%d error=%s", code, stderr)
 	}
 	w, err := workflow.Decode(strings.NewReader(cliHostFixture))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runCIExchange(context.Background(), w, p, p.Groups[0].Jobs[0], runner.Options{}, artifact.Client{}, ciExchangeOptions{}); err == nil || !strings.Contains(err.Error(), "--allow-host") {
-		t.Fatalf("direct CI exchange bypassed host authority preflight: %v", err)
-	}
-	if err := validateCIHostAuthority(p, p.Groups[0].Jobs[0], runner.Options{AllowHost: true}); err != nil {
-		t.Fatal(err)
+	if _, err := runner.RunCI(context.Background(), w, runner.CIRequest{Execute: p.Groups[0].Jobs[0].Execute}, runner.Options{}); err == nil || !strings.Contains(err.Error(), "--allow-host") {
+		t.Fatalf("direct CI execution bypassed host authority preflight: %v", err)
 	}
 }

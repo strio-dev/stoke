@@ -1,0 +1,35 @@
+---
+output: github/{{.Job.ID}}/action.yml
+---
+name: {{printf "%q" .Job.ID}}
+description: Run the selected Stoke stage
+inputs:
+  workspace:
+    description: Path to the caller's checkout
+    default: "."
+{{- if .Plan.Host}}
+  allow-host:
+    description: Explicitly allow trusted host tasks
+    default: "false"
+  host-capabilities:
+    description: JSON array of already provisioned host capabilities
+    default: "[]"
+{{- end}}
+runs:
+  using: composite
+  steps:
+    - shell: sh
+      working-directory: {{"${{ inputs.workspace }}"}}
+{{- if .Plan.Host}}
+      env:
+        STOKE_STAGE_ALLOW_HOST: {{"${{ inputs.allow-host }}"}}
+        STOKE_STAGE_HOST_CAPABILITIES: {{"${{ inputs.host-capabilities }}"}}
+{{- end}}
+      run: |
+{{- if .Plan.Host}}
+        set --
+        if [ "$STOKE_STAGE_ALLOW_HOST" = true ]; then
+          set -- --allow-host --host-capabilities-json "$STOKE_STAGE_HOST_CAPABILITIES"
+        fi
+{{- end}}
+{{.Command | indent "        "}}

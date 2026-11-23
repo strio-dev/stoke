@@ -113,7 +113,7 @@ func TestCDEventsCIUsesActualAttemptAndFreshInvocation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := observer.ConfigureCI(strings.Repeat("b", 64), "unit-check", 2); err != nil {
+		if err := observer.ConfigureCI("unit-check", 2); err != nil {
 			t.Fatal(err)
 		}
 		observer.PipelineStarted("remote-workflow")
@@ -130,7 +130,7 @@ func TestCDEventsCIUsesActualAttemptAndFreshInvocation(t *testing.T) {
 		previous = observer.RunID
 		for _, event := range events {
 			facts := cdeventFacts(t, event)["ci"].(map[string]any)
-			if facts["scopeHash"] != strings.Repeat("b", 64) || facts["unit"] != "unit-check" || facts["attempt"] != float64(2) {
+			if facts["unit"] != "unit-check" || facts["attempt"] != float64(2) {
 				t.Fatalf("CI facts = %+v", facts)
 			}
 		}
@@ -265,10 +265,10 @@ func TestCDEventsValidationFailsBeforeWriting(t *testing.T) {
 		t.Fatal("validation failure was replaced or output continued")
 	}
 	for _, invalid := range []struct {
-		scope, unit string
-		attempt     int
-	}{{"bad", "unit", 1}, {strings.Repeat("a", 64), "", 1}, {strings.Repeat("a", 64), "unit", 0}} {
-		if err := observer.ConfigureCI(invalid.scope, invalid.unit, invalid.attempt); err == nil {
+		unit    string
+		attempt int
+	}{{"", 1}, {"unit", 0}} {
+		if err := observer.ConfigureCI(invalid.unit, invalid.attempt); err == nil {
 			t.Fatalf("invalid CI identity accepted: %+v", invalid)
 		}
 	}
@@ -282,7 +282,7 @@ func TestCDEventsTerminalWriteFailureUsesExistingReport(t *testing.T) {
 	}
 	observer.PipelineStarted("fixture")
 	report := &Report{Status: "passed", Directory: t.TempDir()}
-	if err := persistReport(report, nil); err != nil {
+	if err := FinalizeReport(report, nil); err != nil {
 		t.Fatal(err)
 	}
 	failure := errors.New("terminal stream failure")
@@ -351,7 +351,7 @@ func TestCDEventsWriterFailureAndConcurrentEmission(t *testing.T) {
 	disabled.TaskFinished(TaskResult{}, nil)
 	disabled.BuildStarted(workflow.Job{})
 	disabled.BuildFinished(workflow.Job{}, coopr.Result{}, nil)
-	if disabled.Err() != nil || disabled.ConfigureCI("", "", 0) != nil {
+	if disabled.Err() != nil || disabled.ConfigureCI("", 0) != nil {
 		t.Fatal("disabled observer was not inert")
 	}
 }

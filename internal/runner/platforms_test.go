@@ -116,7 +116,7 @@ func TestPlatformEnvironmentIdentitySeparatesTargetsAndNormalizesAliases(t *test
 tasks:
   test:
     platform: {matrix: target}
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     strategy: {matrix: {target: [linux/amd64, linux/arm64, linux/aarch64]}}
     steps: [{run: [check]}]
 `)
@@ -154,7 +154,7 @@ func TestNativePlatformCapabilityOnlyRequiredForSelectedNativePlatform(t *testin
 		{"native-default", "coopr: {files: [image.coopr]}", false},
 		{"native-platform", "coopr: {files: [image.coopr]}, platform: linux/arm64", true},
 		{"component-platform", "coopr: {files: [component.coopr], kind: component}, platform: linux/arm64", true},
-		{"inline-platform", "environment: {files: [image.coopr]}, platform: linux/arm64", true},
+		{"inline-platform", "build: {coopr: [image.coopr]}, platform: linux/arm64", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := fixture(t, "version: 1\ntasks:\n  test: {"+tc.task+"}\n")

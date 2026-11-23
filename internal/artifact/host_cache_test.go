@@ -53,7 +53,7 @@ func TestHostRegistryCacheRestoresBoundInputKeyAndRejectsWrongLookup(t *testing.
 	if _, hit, err := client.FetchHostCache(t.Context(), repository, missing, "linux/amd64", filepath.Join(t.TempDir(), "missing")); err != nil || hit {
 		t.Fatal("miss", hit, err)
 	}
-	repo, err := client.ciRepository(repository)
+	repo, err := client.hostCacheRepository(repository)
 	if err != nil {
 		t.Fatal(err)
 	}

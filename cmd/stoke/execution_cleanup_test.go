@@ -16,7 +16,7 @@ import (
 	"time"
 
 	cooprwire "github.com/strio-dev/coopr/api"
-	"github.com/strio-dev/stoke/internal/ci"
+	"github.com/strio-dev/stoke/internal/runner"
 )
 
 type executionCleanupRecord struct {
@@ -85,6 +85,14 @@ func TestExecutionCleanupAPIHelper(t *testing.T) {
 			return
 		}
 		code := os.Getenv("STOKE_CLEANUP_CODE")
+		if code == "success_cleanup_failure" {
+			if err := os.Chmod(filepath.Dir(marker), 0); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(cooprwire.Event{Type: "result", Result: &cooprwire.Result{ImageID: "fixture-image", Platform: "linux/amd64"}})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(cooprwire.Event{Type: "result", Error: &cooprwire.Error{Code: code, Message: "fixture terminal cleanup_failed diagnostic at " + marker}})
 	})}
 	go func() {
@@ -154,23 +162,7 @@ func TestCLIExecutionCleanupPreservesLoadedAssetsOnlyOnUnconfirmedCleanup(t *tes
 				t.Setenv("STOKE_CLEANUP_CODE", code)
 				args := []string{"run", "-f", "stoke.yaml", "--context", "caller", "--coopr-binary", engine}
 				if path == "ci" {
-					var out, diagnostics bytes.Buffer
-					if exit := run([]string{"ci", "generate", "--context", "caller", "build"}, &out, &diagnostics); exit != 0 {
-						t.Fatalf("generate exit%d: %s", exit, &diagnostics)
-					}
-					data, err := os.ReadFile(filepath.Join(".stoke", "ci-plan.json"))
-					if err != nil {
-						t.Fatal(err)
-					}
-					plan, err := ci.Decode(bytes.NewReader(data))
-					if err != nil {
-						t.Fatal(err)
-					}
-					scope, err := json.Marshal(testCIScope(plan.ID))
-					if err != nil {
-						t.Fatal(err)
-					}
-					args = []string{"ci", "run", "--plan", filepath.Join(".stoke", "ci-plan.json"), "--job", plan.Groups[0].Jobs[0].ID, "--scope", string(scope), "--attempt", "1", "--coopr-binary", engine}
+					args = []string{"run", "--ci", "-f", "stoke.yaml", "--context", "caller", "--coopr-binary", engine, "build"}
 				}
 				var out, diagnostics bytes.Buffer
 				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
@@ -210,7 +202,7 @@ func TestCLIExecutionInputCleanupWithoutExecution(t *testing.T) {
 			t.Setenv("STOKE_CLEANUP_CODE", "cleanup_failed")
 			args := []string{"check", "-f", "stoke.yaml", "--context", "caller"}
 			if command == "ci" {
-				args = []string{"ci", "generate", "--context", "caller", "build"}
+				args = []string{"ci", "generate", "github", "build", "--context", "caller"}
 			}
 			var out, diagnostics bytes.Buffer
 			if exit := run(args, &out, &diagnostics); exit != 0 {
@@ -227,5 +219,43 @@ func TestCLIExecutionInputCleanupWithoutExecution(t *testing.T) {
 				t.Fatalf("caller-owned asset source removed: %v", err)
 			}
 		})
+	}
+}
+
+// The fake backend completes a successful stage but leaves one of its own
+// fixture directories unreadable, exercising a loader cleanup error after Run.
+func TestCLILateInputCleanupFailureUpdatesJSONAndRecord(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-error fixture requires an ordinary user")
+	}
+	_, engine, recordPath := executionCleanupFixture(t)
+	t.Setenv("STOKE_CLEANUP_CODE", "success_cleanup_failure")
+	defer func() {
+		data, err := os.ReadFile(recordPath)
+		if err != nil {
+			return
+		}
+		var record executionCleanupRecord
+		if json.Unmarshal(data, &record) == nil {
+			_ = os.Chmod(filepath.Dir(record.Marker), 0700)
+			_ = os.RemoveAll(filepath.Dir(filepath.Dir(filepath.Dir(record.Marker))))
+		}
+	}()
+	var out, diagnostics bytes.Buffer
+	code := run([]string{"run", "--context", "caller", "--coopr-binary", engine}, &out, &diagnostics)
+	var report runner.Report
+	if code != 1 || json.Unmarshal(out.Bytes(), &report) != nil || report.Status != "failed" || !strings.Contains(report.Error, "permission denied") {
+		t.Fatalf("late failure returned success-shaped JSON: status=%d report=%#v stderr=%s", code, report, &diagnostics)
+	}
+	if len(report.Tasks) != 1 || report.Tasks[0].Status != "passed" {
+		t.Fatalf("successful stage was relabeled by invocation cleanup: %#v", report.Tasks)
+	}
+	data, err := os.ReadFile(filepath.Join(report.Directory, "run.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded runner.Report
+	if err := json.Unmarshal(data, &recorded); err != nil || recorded.Status != report.Status || recorded.Error != report.Error {
+		t.Fatalf("durable invocation differs from JSON: %s (%v)", data, err)
 	}
 }

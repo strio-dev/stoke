@@ -86,11 +86,14 @@ Workflow artifacts have one YAML layer and optional declared file layers. YAML-o
 
 Bale declarations cover imports, images and typed native `ref` arguments; verified delivery mappings are applied before execution. Coopr retains nested component delivery resolution. Stoke does not parse hidden KDL/ordinary-string registry references or rewrite native source. Publication destinations are outputs, never input declarations. Packaging-time named contexts are not automatically captured as invocation overrides in generated Coopr components; use native PACKAGE capture when required.
 
-`--cache-from` and `--cache-to` are runtime settings and do not enter those Bale
-declarations. Coopr owns their OCI cache representation, keys, content checks,
+Resolved cache directions (root YAML, environment or CLI) are execution settings
+and do not enter those Bale declarations. For image/component results, Coopr
+owns the OCI cache representation, keys, content checks,
 restoration and writes. Registry caches and final artifact/workflow publication
 remain separate operations. Native registry credentials and TLS settings cover
-cache access, while `--plain-http` remains scoped to workflow artifacts.
+cache access. Stoke's separate ORAS workflow and host-cache
+transports use `--plain-http`; host-cache transport does not inherit Coopr's
+`registries.conf` mirror/remap behavior.
 
 See [the runtime guide](../guides/coopr-api.md) for use and [architecture](../concepts/architecture.md) for layer responsibilities. Qualification must cover literal preservation, native image/component builds, distinct output formats, gated publication, cold/warm caching, concurrent variants, cancellation and service lifetime. Read the current validation records for actual results; schema tests alone do not establish full runtime or security qualification.
 

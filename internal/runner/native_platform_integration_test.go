@@ -87,23 +87,19 @@ tasks:
 	if output.Platform != "linux/arm64" || output.Digest == "" || output.OCI == "" {
 		t.Fatal("native FROM did not override the authored default", output)
 	}
-	input := CIImport{
-		Kind: "image", OCI: output.OCI, Digest: output.Digest, Platform: output.Platform,
-		CanonicalReference: "registry.invalid/platform-proof@" + output.Digest,
-	}
-	consumer, err := RunCI(ctx, w, CIRequest{Execute: []string{"consume"}, Imports: map[string]CIImport{"producer": input}}, options("ci-consumer"))
+	consumer, err := RunCI(ctx, w, CIRequest{Execute: []string{"producer", "consume"}}, options("ci-unit"))
 	if err != nil {
-		t.Fatal("exact native platform handoff failed", err)
+		t.Fatal("co-located native platform handoff failed", err)
 	}
-	if consumer.Status != "passed" || len(consumer.Tasks) != 1 || consumer.Tasks[0].Name != "consume" || consumer.Tasks[0].Platform != "linux/arm64" {
-		t.Fatal("consumer lost actual platform or replayed the producer", consumer)
+	if consumer.Status != "passed" || len(consumer.Tasks) != 2 || consumer.Tasks[1].Name != "consume" || consumer.Tasks[1].Platform != "linux/arm64" {
+		t.Fatal("consumer lost actual platform", consumer)
 	}
-	for _, result := range []TaskResult{output, consumer.Tasks[0]} {
+	for _, result := range []TaskResult{output, consumer.Tasks[1]} {
 		data, err := os.ReadFile(filepath.Join(result.Filesystem, "payload"))
 		if err != nil || string(data) != payload {
 			t.Fatal("exact native output bytes changed", result.Name, string(data), err)
 		}
-		if _, err := readCIImage(ctx, result.OCI, result.Digest, "linux/arm64"); err != nil {
+		if _, err := readTestImageConfig(ctx, result.OCI, result.Digest, "linux/arm64"); err != nil {
 			t.Fatal("actual OCI platform differs from reported platform", result.Name, err)
 		}
 	}

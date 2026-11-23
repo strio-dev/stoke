@@ -39,6 +39,8 @@ let
       coopr
       pkgs.bash
       pkgs.coreutils
+      pkgs.curl
+      pkgs.gawk
       pkgs.gnutar
       pkgs.gzip
       pkgs.gnugrep

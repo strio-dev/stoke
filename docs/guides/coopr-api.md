@@ -18,27 +18,19 @@ an unsupported capability fails before execution.
 | Explicit native build platform | `build-platform` |
 | Selected-file exports | `selected-file-exports` with ordered-state capture |
 | Fresh CI gates without unused image output | `optional-oci-output` |
+| CI data prerequisites restored from cache instead of executed in the selected stage | `cache-require-hit` |
 | Registry cache reads or writes | `registry-cache` |
 
 Component imports also require `component-load` and `component-load-name`.
 Requested network modes require the corresponding Coopr networking capabilities.
-Stoke selects the public SDK from immutable source
-`7daf44e90a64a7297f896c10e8342266ca5300bf` as
-`v0.0.0-20261113160645-7daf44e90a64`. Build the matching executable with Nix:
+A cache miss for one of these CI prerequisites fails the run instead of
+re-executing the prerequisite.
 
-```sh
-nix build --no-update-lock-file \
-  github:strio-dev/coopr/7daf44e90a64a7297f896c10e8342266ca5300bf#coopr \
-  --out-link result-coopr-source
-stoke run --coopr-binary "$PWD/result-coopr-source/bin/coopr" test
-```
-
-The source build uses the flake's development version label. Stoke checks API
-version and required capabilities at startup.
-
-For packaged installations, keep `coopr` with its `libexec` directory and verify
-the archive against its published `SHA256SUMS`. Select an executable that
-provides the capabilities above; a version label alone does not establish them.
+Select a Coopr executable that matches the SDK revision used to build Stoke
+(the revision in `go.mod` for a source build). Stoke checks API version and
+required capabilities at startup; a version label alone does not establish
+compatibility. For packaged installations, keep `coopr` with its `libexec`
+directory and verify the archive against its published `SHA256SUMS`.
 
 Select an executable for local workflows.
 
@@ -60,8 +52,8 @@ Selected `steps[].export` operations additionally require
 ordered checkpoints through the typed program's state selectors in one request;
 Coopr owns their execution, cache reuse and capture. See [selected outputs](native-coopr.md#choose-exported-outputs).
 
-`--cache-from` and `--cache-to` additionally require the `registry-cache`
-capability, which Coopr `0.6.0` provides.
+When the selected execution reads from or writes to a registry cache, it
+requires the `registry-cache` capability.
 API capability support does not establish registry compatibility; see the
 [current GHCR cache limitations](caching.md#share-results-through-an-oci-registry).
 Stoke rejects an unsupported request before executing tasks rather than silently
@@ -91,7 +83,7 @@ network choices in native component RUNs still apply; `none` is not a global
 offline policy and does not disable registry access. `host` and namespace-path
 choices retain native authorization and must be deliberately selected by the
 caller. This setting controls container tasks, not generic host commands, and
-does not change host configuration or isolation. `stoke ci generate --network
+does not change host configuration or isolation. `stoke ci generate github --network
 none` records it in the reviewed plan and generated jobs; CI execution rejects a
 different invocation override instead of silently changing declared semantics.
 

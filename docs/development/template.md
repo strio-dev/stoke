@@ -28,4 +28,4 @@ Historically, the initial runtime implementation replaced the dependency-free CL
 
 Documentation now follows the sibling task-oriented navigation: getting started, tutorial, guides, concepts and reference. Approved assets, palette and homepage action destinations remain unchanged.
 
-The authorized Unix API migration supersedes that embedding choice. Stoke is a standalone wire client and owns a workflow-scoped Coopr service; Coopr retains native build/runtime dependencies in its executable. Coopr `0.6.0` provides the API and the SDK revision used by Stoke. See [the boundary decision](coopr-boundary.md).
+The authorized Unix API migration supersedes that embedding choice. Stoke is a standalone wire client and owns a workflow-scoped Coopr service; Coopr retains native build/runtime dependencies in its executable. See [the boundary decision](coopr-boundary.md).

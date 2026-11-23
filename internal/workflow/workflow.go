@@ -20,11 +20,17 @@ const ComponentContext = "stoke-assets"
 
 // Workflow owns reusable imports and locally named tasks.
 type Workflow struct {
-	Version int               `yaml:"version"`
-	Imports map[string]string `yaml:"imports,omitempty"`
-	Inputs  map[string]Input  `yaml:"inputs,omitempty"`
-	Assets  []string          `yaml:"assets,omitempty"`
-	Tasks   map[string]Task   `yaml:"tasks"`
+	Version    int                 `yaml:"version"`
+	Imports    map[string]string   `yaml:"imports,omitempty"`
+	Inputs     map[string]Input    `yaml:"inputs,omitempty"`
+	Assets     []string            `yaml:"assets,omitempty"`
+	CacheFrom  []string            `yaml:"cache-from,omitempty" json:",omitempty"`
+	CacheTo    []string            `yaml:"cache-to,omitempty" json:",omitempty"`
+	Groups     map[string][]string `yaml:"groups,omitempty" json:"-"`
+	DefaultRun string              `yaml:"default-run,omitempty" json:"-"`
+	DefaultCI  string              `yaml:"default-ci,omitempty" json:"-"`
+	CITemplate string              `yaml:"ci-template,omitempty" json:"-"`
+	Tasks      map[string]Task     `yaml:"tasks"`
 }
 
 // Task selects a literal image program, native Coopr build, host program,
@@ -43,7 +49,7 @@ type Task struct {
 	Coopr       *CooprBuild       `yaml:"coopr,omitempty"`
 	Publish     *Publish          `yaml:"publish,omitempty"`
 	Outputs     *Outputs          `yaml:"outputs,omitempty"`
-	Environment *CooprBuild       `yaml:"environment,omitempty"`
+	Environment *Build            `yaml:"build,omitempty"`
 	Contexts    map[string]string `yaml:"contexts,omitempty"`
 	Mounts      []Mount           `yaml:"mounts,omitempty"`
 	Platform    *Platform         `yaml:"platform,omitempty"`
@@ -52,9 +58,11 @@ type Task struct {
 	ComponentDir string `yaml:"-"`
 }
 
-// Step contains exactly one operation. Run executes literal argv without a shell.
+// Step contains exactly one operation. Run holds argv; Script retains an
+// explicit shebang scalar for real script-file execution.
 type Step struct {
-	Run    []string    `yaml:"run,omitempty"`
+	Run    Command     `yaml:"run,omitempty"`
+	Script string      `yaml:"-" json:",omitempty"` // Retained shebang scalar; not a YAML field.
 	Copy   *Copy       `yaml:"copy,omitempty"`
 	Export *FileExport `yaml:"export,omitempty" json:",omitempty"`
 	Mounts []Mount     `yaml:"mounts,omitempty"`
@@ -68,6 +76,9 @@ type Copy struct {
 	Sources     []string `yaml:"sources"`
 	Destination string   `yaml:"destination"`
 }
+
+// MaxJobNameBytes bounds native output directory components.
+const MaxJobNameBytes = 255
 
 var namePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 var envPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -104,9 +115,6 @@ func Decode(r io.Reader) (*Workflow, error) {
 		}
 		return nil
 	}
-	if err := validateInputNodes(&node); err != nil {
-		return nil, err
-	}
 	if err := inspect(&node); err != nil {
 		return nil, err
 	}
@@ -115,6 +123,9 @@ func Decode(r io.Reader) (*Workflow, error) {
 	d.KnownFields(true)
 	if err := d.Decode(&w); err != nil {
 		return nil, fmt.Errorf("workflow YAML: %w", err)
+	}
+	if err := validateInputNodes(&node, &w); err != nil {
+		return nil, err
 	}
 	if err := w.Validate(); err != nil {
 		return nil, err
@@ -183,11 +194,17 @@ func (w *Workflow) Validate() error {
 	if w.Version != 1 {
 		return errors.New("workflow version must be 1")
 	}
+	if err := w.validateCaches(); err != nil {
+		return err
+	}
 	if err := w.validateInputs(); err != nil {
 		return err
 	}
 	if len(w.Tasks) == 0 {
 		return errors.New("workflow requires tasks")
+	}
+	if err := w.validateGroups(); err != nil {
+		return err
 	}
 	declared := map[string]assets.File{}
 	for _, name := range w.Assets {
@@ -203,14 +220,14 @@ func (w *Workflow) Validate() error {
 		if !namePattern.MatchString(alias) {
 			return fmt.Errorf("invalid import name %q", alias)
 		}
-		if !importPattern.MatchString(ref) || strings.Contains(ref, "://") {
-			return fmt.Errorf("import %q requires an OCI reference pinned with @sha256", alias)
+		if err := ValidateImportReference(ref); err != nil {
+			return fmt.Errorf("import %q: %w", alias, err)
 		}
 	}
 	for _, name := range taskNames(w.Tasks) {
 		t := w.Tasks[name]
-		if !namePattern.MatchString(name) {
-			return fmt.Errorf("invalid task name %q", name)
+		if !namePattern.MatchString(name) || len(name) > MaxJobNameBytes {
+			return fmt.Errorf("invalid task name %q: require at most %d bytes", name, MaxJobNameBytes)
 		}
 		fail := func(message string) error { return fmt.Errorf("task %q: %s", name, message) }
 		if err := t.validateStrategy(); err != nil {
@@ -234,7 +251,7 @@ func (w *Workflow) Validate() error {
 			selectors++
 		}
 		if selectors != 1 {
-			return fail("select exactly one of image, from, coopr, environment, host, publish or uses")
+			return fail("select exactly one of image, from, coopr, build, host, publish or uses")
 		}
 		if t.Uses == "" && t.With != nil {
 			return fail("with requires uses")
@@ -256,7 +273,7 @@ func (w *Workflow) Validate() error {
 				return fail("uses cannot be combined with steps")
 			}
 		}
-		for _, build := range []*CooprBuild{t.Coopr, t.Environment} {
+		for _, build := range []*CooprBuild{t.Coopr, t.Environment.Native()} {
 			if build == nil {
 				continue
 			}
@@ -274,7 +291,7 @@ func (w *Workflow) Validate() error {
 		if err := t.validateHost(); err != nil {
 			return fail(err.Error())
 		}
-		for _, build := range []*CooprBuild{t.Coopr, t.Environment} {
+		for _, build := range []*CooprBuild{t.Coopr, t.Environment.Native()} {
 			if build != nil && build.FilesFrom == "component" && len(w.Assets) == 0 && t.ComponentDir == "" {
 				return fail("component definition files require declared assets")
 			}
@@ -298,7 +315,7 @@ func (w *Workflow) Validate() error {
 		}
 		for i, s := range t.Steps {
 			operations := 0
-			for _, selected := range []bool{s.Run != nil, s.Copy != nil, s.Export != nil} {
+			for _, selected := range []bool{s.Run != nil, s.Script != "", s.Copy != nil, s.Export != nil} {
 				if selected {
 					operations++
 				}
@@ -314,6 +331,11 @@ func (w *Workflow) Validate() error {
 					if strings.ContainsRune(arg, 0) {
 						return fail("run argv contains NUL")
 					}
+				}
+			}
+			if s.Script != "" {
+				if _, err := scriptInterpreter(s.Script); err != nil {
+					return fail(fmt.Sprintf("step %d: %s", i+1, err))
 				}
 			}
 			if c := s.Copy; c != nil {

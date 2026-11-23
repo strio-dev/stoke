@@ -232,7 +232,7 @@ func (task Task) BindInputs(resolved map[string]string) (Task, error) {
 			bindings[key] = Literal(value)
 		}
 	}
-	for _, build := range []*CooprBuild{task.Coopr, task.Environment} {
+	for _, build := range []*CooprBuild{task.Coopr, task.Environment.Native()} {
 		if build == nil {
 			continue
 		}
@@ -262,9 +262,9 @@ func cloneValues(values map[string]Value) map[string]Value {
 	return cloned
 }
 
-// Null values skip custom unmarshaling in yaml.v3. Check map shapes and string
-// keys before decoding so null bindings cannot silently become empty maps.
-func validateInputNodes(document *yaml.Node) error {
+// Null values skip custom unmarshaling in yaml.v3. Check original node shapes
+// and retain shebang scalar bodies after the strict typed decode.
+func validateInputNodes(document *yaml.Node, w *Workflow) error {
 	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
 		return nil
 	}
@@ -272,6 +272,15 @@ func validateInputNodes(document *yaml.Node) error {
 	for i := 0; i < len(root.Content); i += 2 {
 		key, value := root.Content[i], root.Content[i+1]
 		switch key.Value {
+		case "cache-from", "cache-to":
+			if value.Kind != yaml.SequenceNode {
+				return fmt.Errorf("%s must be a list of registry repositories", key.Value)
+			}
+			for _, item := range value.Content {
+				if item.Kind != yaml.ScalarNode || item.Tag != "!!str" {
+					return fmt.Errorf("%s entries must be strings", key.Value)
+				}
+			}
 		case "inputs":
 			if value.Kind != yaml.MappingNode {
 				return errors.New("inputs must be a mapping")
@@ -295,6 +304,18 @@ func validateInputNodes(document *yaml.Node) error {
 				}
 				for k := 0; k < len(task.Content); k += 2 {
 					field, bindings := task.Content[k], task.Content[k+1]
+					if field.Value == "build" && bindings.Tag == "!!null" {
+						return errors.New("build must be a mapping with an ordered coopr list")
+					}
+					if field.Value == "steps" {
+						var taskName string
+						if err := value.Content[j-1].Decode(&taskName); err != nil {
+							return err
+						}
+						if err := validateStepNodes(bindings, w.Tasks[taskName].Steps); err != nil {
+							return fmt.Errorf("task %q: %w", taskName, err)
+						}
+					}
 					if field.Value == "platform" && bindings.Tag == "!!null" {
 						return errors.New("platform cannot be null; omit it to use the engine default")
 					}
@@ -320,6 +341,35 @@ func validateInputNodes(document *yaml.Node) error {
 						}
 					}
 				}
+			}
+		}
+	}
+	return nil
+}
+
+// Keep the strict typed decode for nested fields. yaml.v3 can omit a null
+// sequence entry, so verify alignment before using source indexes.
+func validateStepNodes(node *yaml.Node, steps []Step) error {
+	if node.Kind != yaml.SequenceNode {
+		return errors.New("steps must be a list of mappings")
+	}
+	if len(node.Content) != len(steps) {
+		return errors.New("steps must be a list of mappings with no null entries")
+	}
+	for index, step := range node.Content {
+		if step.Kind != yaml.MappingNode {
+			return fmt.Errorf("step %d must be a mapping", index+1)
+		}
+		for i := 0; i < len(step.Content); i += 2 {
+			key, value := step.Content[i], step.Content[i+1]
+			if key.Value != "run" {
+				continue
+			}
+			if value.Tag == "!!null" {
+				return errors.New("run cannot be null; supply argv or a shell script")
+			}
+			if value.Kind == yaml.ScalarNode && value.Tag == "!!str" && strings.HasPrefix(value.Value, "#!") {
+				steps[index].Run, steps[index].Script = nil, value.Value
 			}
 		}
 	}

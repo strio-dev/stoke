@@ -9,8 +9,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/strio-dev/stoke/internal/ci"
 )
 
 func TestCDEventsFilePreservesCLIResultsAndLogs(t *testing.T) {
@@ -104,23 +102,11 @@ func TestCDEventsCIUnitUsesActualRetryWithoutPipelineEvents(t *testing.T) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 	writeCIFile(t, "stoke.yaml", fmt.Sprintf("version: 1\ntasks:\n  opaque-name:\n    platform: %s/%s\n    host: {tools: [/bin/sh]}\n    steps: [{run: [/bin/sh, -c, true]}]\n", runtime.GOOS, runtime.GOARCH))
-	code, output, diagnostics := invokeCI([]string{"ci", "plan"})
-	var plan ci.Plan
-	if err := json.Unmarshal([]byte(output), &plan); code != 0 || err != nil {
-		t.Fatalf("plan: %d %s %v", code, diagnostics, err)
-	}
-	planPath := filepath.Join(root, "plan.json")
-	if err := os.WriteFile(planPath, []byte(output), 0600); err != nil {
-		t.Fatal(err)
-	}
-	scope, err := json.Marshal(testCIScope(plan.ID))
-	if err != nil {
-		t.Fatal(err)
-	}
 	var priorSubject string
 	for _, attempt := range []int{2, 3} {
+		t.Setenv("GITHUB_RUN_ATTEMPT", fmt.Sprint(attempt))
 		path := filepath.Join(root, fmt.Sprintf("events-%d.jsonl", attempt))
-		args := []string{"ci", "run", "--plan", planPath, "--job", plan.Groups[0].Jobs[0].ID, "--scope", string(scope), "--attempt", fmt.Sprint(attempt), "--allow-host", "--events", path}
+		args := []string{"run", "--ci", "--allow-host", "--events", path, "opaque-name"}
 		if code, _, stderr := invokeCI(args); code != 0 {
 			t.Fatalf("CI run: %d %s", code, stderr)
 		}
@@ -141,7 +127,7 @@ func TestCDEventsCIUnitUsesActualRetryWithoutPipelineEvents(t *testing.T) {
 				}
 			}
 		}
-		if err := json.Unmarshal(lines[0], &event); err != nil || event.CustomData.CI.Attempt != attempt || event.CustomData.CI.Unit != plan.Groups[0].Jobs[0].ID || event.Subject.Id == priorSubject {
+		if err := json.Unmarshal(lines[0], &event); err != nil || event.CustomData.CI.Attempt != attempt || event.CustomData.CI.Unit != "opaque-name" || event.Subject.Id == priorSubject {
 			t.Fatalf("real retry identity missing: %s (%v)", data, err)
 		}
 		priorSubject = event.Subject.Id

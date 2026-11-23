@@ -24,6 +24,14 @@ func TestCLI(t *testing.T) {
 		{"version", []string{"version"}, 0, "stoke dev"},
 		{"unknown command", []string{"unknown"}, 2, "unknown command"},
 		{"run help", []string{"run", "--help"}, 0, "signature-policy"},
+		{"run help alias", []string{"help", "run"}, 0, "Usage: stoke run [options] [targets...]"},
+		{"registry help", []string{"registry", "--help"}, 0, "stoke registry login --help"},
+		{"registry unknown command", []string{"registry", "unknown"}, 2, "stoke registry: unknown command"},
+		{"registry login help", []string{"registry", "login", "--help"}, 0, "Usage: stoke registry login [options] REGISTRY"},
+		{"registry login missing host", []string{"registry", "login"}, 2, "requires one registry host"},
+		{"registry login rejects password flag", []string{"registry", "login", "--password", "unused", "registry.example.com"}, 2, "flag provided but not defined: -password"},
+		{"top-level login rejected", []string{"login"}, 2, `unknown command "login"`},
+		{"CI help", []string{"ci", "--help"}, 0, "Render standalone stage files"},
 		{"publish missing destination", []string{"publish"}, 2, "requires one destination"},
 		{"pull missing reference", []string{"pull"}, 2, "requires one OCI"},
 	} {
@@ -37,6 +45,25 @@ func TestCLI(t *testing.T) {
 				t.Fatal("failure wrote to stdout")
 			}
 		})
+	}
+}
+
+func TestLoginKeepsConfiguredHelperPolicy(t *testing.T) {
+	const host = "registry.example.com"
+	path := filepath.Join(t.TempDir(), "auth.json")
+	for _, entry := range []struct {
+		config string
+		allow  bool
+	}{
+		{`{"credsStore":"fixture"}`, false},
+		{`{"credsStore":"fixture","credHelpers":{"registry.example.com":"registry-fixture"}}`, true},
+	} {
+		if err := os.WriteFile(path, []byte(entry.config), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := checkLoginStore(path, host); (err == nil) != entry.allow {
+			t.Fatalf("unexpected login store selection: %v", err)
+		}
 	}
 }
 
@@ -125,7 +152,7 @@ func TestCheckRejectsPackageStagingInsideContextOverride(t *testing.T) {
 func TestLocalWorkflowCLI(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "stoke.yaml")
-	data := "version: 1\ntasks:\n  build:\n    image: scratch\n  test:\n    from: build\n    cache: false\n  artifact:\n    image: scratch\n    needs: [test]\n"
+	data := "version: 1\ntasks:\n  build:\n    image: scratch\n  test:\n    from: build\n    cache: false\n  artifact:\n    image: scratch\n    needs: [test]\n    steps: [{copy: {from: build, sources: [/message.txt], destination: /message.txt}}]\n"
 	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +165,7 @@ func TestLocalWorkflowCLI(t *testing.T) {
 	if code := run([]string{"plan", "-f", path, "artifact"}, &out, &errOut); code != 0 {
 		t.Fatalf("plan code %d: %s", code, &errOut)
 	}
-	if got := out.String(); got != "build\tcache=true\tneeds=\ntest\tcache=false\tneeds=build\nartifact\tcache=true\tneeds=test\n" {
+	if got := out.String(); got != "needs: explicit success gates; data-from: consumed outputs (must also succeed)\nbuild\tcache=true\tneeds=\tdata-from=\ntest\tcache=false\tneeds=\tdata-from=build\nartifact\tcache=true\tneeds=test\tdata-from=build\n" {
 		t.Fatalf("wrong task order/cache policy: %q", got)
 	}
 	out.Reset()
@@ -164,7 +191,7 @@ func TestMatrixPlanShowsConcreteJobs(t *testing.T) {
 		t.Fatalf("plan code=%d err=%q", code, &errOut)
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
-	if len(lines) != 3 || !strings.Contains(lines[0], `matrix={"mode":"debug"}`) || !strings.Contains(lines[1], `matrix={"mode":"release"}`) || !strings.HasPrefix(lines[2], "complete\t") {
+	if len(lines) != 4 || !strings.Contains(lines[1], `matrix={"mode":"debug"}`) || !strings.Contains(lines[2], `matrix={"mode":"release"}`) || !strings.HasPrefix(lines[3], "complete\t") {
 		t.Fatalf("wrong matrix plan: %s", &out)
 	}
 }

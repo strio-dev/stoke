@@ -84,8 +84,12 @@ tasks:
 		t.Fatal(err)
 	}
 	selected := expanded.Groups[1].Jobs[1].Name
+	request, err := SelectCI(w, []string{selected})
+	if err != nil {
+		t.Fatal(err)
+	}
 	calls := []string{}
-	report, err := runCI(t.Context(), w, CIRequest{Execute: []string{selected}}, testOptions(t), fakeEngine{execute: func(_ context.Context, p coopr.Program, _ coopr.Options) (coopr.Result, error) {
+	report, err := runCI(t.Context(), w, request, testOptions(t), fakeEngine{execute: func(_ context.Context, p coopr.Program, _ coopr.Options) (coopr.Result, error) {
 		calls = append(calls, string(p.Output))
 		return coopr.Result{Platform: "linux/amd64"}, nil
 	}})
@@ -155,7 +159,7 @@ tasks:
 }
 
 func TestCIProjectionRejectsExternalDataAndInvalidSelectionsBeforeExecution(t *testing.T) {
-	for _, scenario := range []string{"cacheable", "fresh", "context-write", "no-cache", "missing", "duplicate", "empty", "partial-gate"} {
+	for _, scenario := range []string{"fresh", "context-write", "no-cache", "missing", "duplicate", "empty", "partial-gate"} {
 		t.Run(scenario, func(t *testing.T) {
 			w := fixture(t, "version: 1\ntasks:\n  producer: {image: scratch}\n  consumer: {from: producer}\n")
 			options := testOptions(t)
@@ -200,7 +204,7 @@ func TestCIProjectionRejectsExternalDataAndInvalidSelectionsBeforeExecution(t *t
 }
 
 func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
-	for _, mode := range []string{"gate", "required-value", "colocated-value", "terminal", "all-targets", "global-no-cache", "filesystem"} {
+	for _, mode := range []string{"gate", "colocated-value", "terminal", "all-targets", "global-no-cache", "filesystem"} {
 		t.Run(mode, func(t *testing.T) {
 			w := fixture(t, "version: 1\ntasks:\n  check: {image: scratch, cache: false, mounts: [{type: cache, id: checks, target: /cache}], steps: [{run: [check]}]}\n  finish: {image: scratch, needs: [check]}\n")
 			options := testOptions(t)
@@ -209,8 +213,6 @@ func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 			request := CIRequest{Targets: []string{"finish"}, Execute: []string{"check"}}
 			check := w.Tasks["check"]
 			switch mode {
-			case "required-value":
-				request.RequiredOutputs = []string{"check"}
 			case "colocated-value":
 				finish := w.Tasks["finish"]
 				finish.Image = ""
@@ -218,6 +220,7 @@ func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 				w.Tasks["finish"] = finish
 				request.Execute = append(request.Execute, "finish")
 			case "terminal":
+				delete(w.Tasks, "finish")
 				request.Targets = []string{"check"}
 			case "all-targets":
 				request.Targets = nil
@@ -243,7 +246,7 @@ func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 				}
 			}
 			report, err := runCI(t.Context(), w, request, options, fakeEngine{execute: func(_ context.Context, p coopr.Program, native coopr.Options) (coopr.Result, error) {
-				pruned := mode == "gate" && p.Output == "check"
+				pruned := (mode == "gate" || mode == "all-targets") && p.Output == "check"
 				if (native.Output.OCI == "") != pruned || (native.Cache.LocalDir == "") != pruned || (len(native.Cache.RegistryTo) == 0) != pruned {
 					t.Errorf("%s output/cache demand changed: output=%+v cache=%+v", p.Output, native.Output, native.Cache)
 				}
@@ -258,7 +261,7 @@ func TestCIProjectionPrunesOnlyUnusedFreshImageOutputs(t *testing.T) {
 				}
 				return coopr.Result{Platform: "linux/amd64", ImageID: string(p.Output) + "-image", ManifestDigest: "sha256:native", OCI: native.Output.OCI, Filesystem: native.Output.Filesystem}, nil
 			}})
-			if err != nil || report == nil || report.Status != "passed" || (report.Tasks[0].OCI == "") != (mode == "gate") {
+			if err != nil || report == nil || report.Status != "passed" || (report.Tasks[0].OCI == "") != (mode == "gate" || mode == "all-targets") {
 				t.Fatalf("CI output report: %+v %v", report, err)
 			}
 			if mode == "gate" && report.Tasks[0].Digest != "" {
@@ -302,33 +305,181 @@ func TestCIProjectionClosedUnitsPreserveFreshAndEffectPolicies(t *testing.T) {
 	}
 }
 
-func TestCIProjectionRejectsMissingTransitiveDataBeforeExecution(t *testing.T) {
-	w := fixture(t, "version: 1\ntasks:\n  base: {image: scratch}\n  middle: {from: base}\n  selected: {from: middle}\n")
-	options := testOptions(t)
-	report, err := runCI(t.Context(), w, CIRequest{Execute: []string{"middle", "selected"}}, options, fakeEngine{})
-	if err == nil || report != nil || !strings.Contains(err.Error(), "data-closed") || !strings.Contains(err.Error(), "base") {
-		t.Fatalf("partial data chain accepted: report=%#v error=%v", report, err)
-	}
-}
-
-func TestCIProjectionRejectsPartialUnpromotedSharedEnvironment(t *testing.T) {
+func TestCISplitStageRequiresCacheBeforeRunningSelectedTarget(t *testing.T) {
 	w := fixture(t, `version: 1
 tasks:
   gate: {image: scratch, cache: false}
-  checks:
-    environment: {files: [image.coopr], target: tools}
-    needs: [gate]
-    cache: false
-    strategy: {matrix: {mode: [first, second]}}
-    steps: [{run: [check]}]
+  base: {image: scratch, needs: [gate]}
+  middle: {from: base, steps: [{export: {source: /output, destination: dist/output}}]}
+  selected: {from: middle, needs: [gate], cache: false}
 `)
-	expanded, err := w.Expand(nil)
+	for _, hit := range []bool{false, true} {
+		options := testOptions(t)
+		options.CacheFrom = []string{"registry.invalid/cache/read"}
+		options.CacheTo = []string{"registry.invalid/cache/write"}
+		var calls []string
+		miss := errors.New("required cache result unavailable")
+		report, err := runCI(t.Context(), w, CIRequest{Targets: []string{"selected"}, Execute: []string{"selected"}}, options, fakeEngine{
+			execute: func(_ context.Context, p coopr.Program, opts coopr.Options) (coopr.Result, error) {
+				name := strings.TrimSuffix(string(p.Output), "-export-0")
+				calls = append(calls, name)
+				if !slices.Equal(opts.Cache.RegistryFrom, options.CacheFrom) || len(opts.Output.Exports) != 0 {
+					t.Errorf("unexpected cache sources or replay of producer exports: %#v %#v", opts.Cache, opts.Output)
+				}
+				if name == "selected" {
+					if opts.Cache.RequireHit || !opts.Cache.NoCache || !slices.Equal(opts.Cache.RegistryTo, options.CacheTo) ||
+						p.States[0].From.Image != "containers-storage:middle" {
+						t.Errorf("selected job changed policy or lost its restored source: %#v %#v", opts.Cache, p.States)
+					}
+				} else {
+					if !opts.Cache.RequireHit || opts.Cache.NoCache || len(opts.Cache.RegistryTo) != 0 || opts.Output.Filesystem != "" {
+						t.Errorf("restore can execute or publish outputs: %#v %#v", opts.Cache, opts.Output)
+					}
+					if name == "middle" && !strings.HasSuffix(string(p.Output), "-export-0") {
+						t.Error("restore discarded an authored image state boundary")
+					}
+					if !hit {
+						return coopr.Result{}, miss
+					}
+				}
+				return coopr.Result{ImageID: name, Platform: "linux/amd64"}, nil
+			},
+		})
+		if hit && (err != nil || report.Status != "passed" || !slices.Equal(calls, []string{"base", "middle", "selected"})) {
+			t.Fatalf("hit: calls=%v report=%#v err=%v", calls, report, err)
+		}
+		if !hit && (!errors.Is(err, miss) || report.Status != "failed" || !slices.Equal(calls, []string{"base"})) {
+			t.Fatalf("miss: calls=%v report=%#v err=%v", calls, report, err)
+		}
+	}
+}
+
+func TestCIRestoreWaitsForSelectedMatrixGate(t *testing.T) {
+	w := fixture(t, `version: 1
+tasks:
+  checks:
+    image: scratch
+    cache: false
+    strategy: {matrix: {mode: [first, second]}, fail-fast: false}
+  external: {image: scratch, cache: false}
+  base: {image: scratch, needs: [checks, external]}
+  selected: {from: base}
+`)
+	request, err := SelectCI(w, []string{"checks", "selected"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	report, err := runCI(t.Context(), w, CIRequest{Execute: []string{expanded.Groups[1].Jobs[0].Name}}, nativeOptions(t), fakeEngine{})
-	if err == nil || report != nil || !strings.Contains(err.Error(), "shared inline environment") {
-		t.Fatalf("unbound shared environment rebuilt: report=%#v err=%v", report, err)
+	for _, fail := range []bool{false, true} {
+		t.Run(map[bool]string{false: "all-passed", true: "one-failed"}[fail], func(t *testing.T) {
+			options := testOptions(t)
+			options.Jobs = 1
+			var calls []string
+			failure := errors.New("gate failed")
+			report, err := runCI(t.Context(), w, request, options, fakeEngine{execute: func(_ context.Context, p coopr.Program, opts coopr.Options) (coopr.Result, error) {
+				name := string(p.Output)
+				calls = append(calls, name)
+				if opts.Cache.RequireHit != (name == "base") {
+					t.Errorf("%s: unexpected cache-only policy: %+v", name, opts.Cache)
+				}
+				if fail && name == request.Execute[1] {
+					return coopr.Result{}, failure
+				}
+				if name == "selected" && p.States[0].From.Image != "containers-storage:base" {
+					t.Errorf("selected task lost its restored input: %+v", p.States[0].From)
+				}
+				return coopr.Result{ImageID: name, Platform: "linux/amd64"}, nil
+			}})
+			if fail {
+				if !errors.Is(err, failure) || report == nil || report.Status != "failed" || !slices.Equal(calls, request.Execute[:2]) {
+					t.Fatalf("failed gate admitted dependent work: calls=%v report=%+v err=%v", calls, report, err)
+				}
+			} else {
+				want := []string{request.Execute[0], request.Execute[1], "base", "selected"}
+				if err != nil || report == nil || report.Status != "passed" || !slices.Equal(calls, want) {
+					t.Fatalf("restored producer bypassed selected gates: calls=%v want=%v report=%+v err=%v", calls, want, report, err)
+				}
+			}
+		})
+	}
+	partial := CIRequest{Targets: request.Targets, Execute: []string{request.Execute[0], "selected"}}
+	if _, _, err := prepareCI(t.Context(), w, partial, testOptions(t)); err == nil || !strings.Contains(err.Error(), "only part of internal prerequisite group") {
+		t.Fatalf("partial matrix gate admitted for restore: %v", err)
+	}
+}
+
+func TestCICapabilitiesMatchRegistryCacheDispatch(t *testing.T) {
+	for _, tc := range []struct {
+		name, gate           string
+		read, restore, build bool
+	}{
+		{name: "write-only local restore", gate: "from: base", restore: true},
+		{name: "registry read on restore", gate: "from: base", read: true, restore: true},
+		{name: "write-only inline environment", gate: "build: {coopr: [image.coopr]}", build: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := fixture(t, "version: 1\ntasks:\n  base: {image: scratch}\n  gate: {"+tc.gate+", cache: false}\n  done: {image: scratch, needs: [gate]}\n")
+			options := nativeOptions(t)
+			options.CacheTo = []string{"registry.example.test/cache/write"}
+			if tc.read {
+				options.CacheFrom = []string{"registry.example.test/cache/read"}
+			}
+			request, err := SelectCI(w, []string{"gate"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			expanded, err := w.Expand(request.Targets)
+			if err != nil {
+				t.Fatal(err)
+			}
+			planned, err := RequiredCapabilities(w, expanded, &request, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan, resolved, err := prepareCI(t.Context(), w, request, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime, err := RequiredCapabilities(nil, plan, nil, resolved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{cooprwire.CapabilityExecute, cooprwire.CapabilityOptionalOCIOutput}
+			if tc.restore {
+				want = append(want, cooprwire.CapabilityCacheRequireHit)
+			}
+			if tc.build {
+				want = append(want, cooprwire.CapabilityBuild)
+			}
+			if tc.read || tc.build {
+				want = append(want, cooprwire.CapabilityRegistryCache)
+			}
+			slices.Sort(want)
+			if !slices.Equal(planned, want) || !slices.Equal(runtime, want) {
+				t.Errorf("selected plan=%v preflight=%v want=%v", planned, runtime, want)
+			}
+			report, err := runPrepared(t.Context(), w, plan, resolved, fakeEngine{
+				build: func(_ context.Context, _ cooprwire.Build, _ bool, opts coopr.Options) (coopr.Result, error) {
+					if !tc.build || opts.Output.OCI == "" || !slices.Equal(opts.Cache.RegistryTo, options.CacheTo) || len(opts.Cache.RegistryFrom) != 0 {
+						t.Errorf("inline producer lost its output/cache policy: output=%+v cache=%+v", opts.Output, opts.Cache)
+					}
+					return coopr.Result{ImageID: "base", Platform: "linux/amd64"}, nil
+				},
+				execute: func(_ context.Context, p coopr.Program, opts coopr.Options) (coopr.Result, error) {
+					restore := p.Output == "base" && tc.restore
+					if (!restore && p.Output != "gate") || opts.Cache.RequireHit != restore || (opts.Output.OCI != "") != restore ||
+						len(opts.Cache.RegistryTo) != 0 || !slices.Equal(opts.Cache.RegistryFrom, options.CacheFrom) {
+						t.Errorf("%s: output=%+v cache=%+v", p.Output, opts.Output, opts.Cache)
+					}
+					if p.Output == "gate" && p.States[0].From.Image != "containers-storage:base" {
+						t.Errorf("fresh gate lost its image binding: %+v", p.States[0].From)
+					}
+					return coopr.Result{ImageID: string(p.Output), Platform: "linux/amd64"}, nil
+				},
+			})
+			if err != nil || report == nil || report.Status != "passed" || len(report.Tasks) != 2 {
+				t.Fatalf("execution report=%+v err=%v", report, err)
+			}
+		})
 	}
 }
 
@@ -337,7 +488,7 @@ func TestCIProjectionIncludesInlineEnvironmentDataArguments(t *testing.T) {
 tasks:
   base: {image: scratch}
   checks:
-    environment: {files: [image.coopr], args: {BASE: {from: base}}}
+    build: {coopr: [image.coopr], args: {BASE: {from: base}}}
     steps: [{run: [check]}]
 `)
 	builds, executions := 0, 0
@@ -423,13 +574,13 @@ tasks:
   gb: {image: scratch, cache: false}
   p: {image: scratch}
   a:
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     needs: [ga]
     cache: false
     mounts: [{type: stage, from: p, target: /input}]
     steps: [{run: [check]}]
   b:
-    environment: {files: [image.coopr]}
+    build: {coopr: [image.coopr]}
     needs: [gb]
     cache: false
     mounts: [{type: stage, from: p, target: /input}]
@@ -480,22 +631,5 @@ tasks:
 				t.Fatalf("external gates: calls=%v", calls)
 			}
 		})
-	}
-}
-
-func TestCIProjectionDoesNotPrepareRetainedSourceInputs(t *testing.T) {
-	w := fixture(t, "version: 1\ntasks:\n  build: {coopr: {files: [unavailable.coopr]}}\n  gate: {from: build, cache: false, steps: [{run: [check]}]}\n")
-	input := ciImageFixture(t, false, "EXACT=retained")
-	input.OCI = "" // The verified immutable registry identity remains lazy.
-	calls := 0
-	report, err := runCI(t.Context(), w, CIRequest{Targets: []string{"gate"}, Execute: []string{"gate"}, Imports: map[string]CIImport{"build": input}}, testOptions(t), fakeEngine{execute: func(_ context.Context, p coopr.Program, _ coopr.Options) (coopr.Result, error) {
-		calls++
-		if p.States[0].From.Image != input.CanonicalReference {
-			t.Fatal("selected execution lost its exact producer")
-		}
-		return coopr.Result{ImageID: "gate", Platform: input.Platform}, nil
-	}})
-	if err != nil || calls != 1 || report.Status != "passed" {
-		t.Fatalf("retained producer still requires checkout inputs: calls=%d report=%v error=%v", calls, report, err)
 	}
 }

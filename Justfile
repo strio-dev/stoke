@@ -48,13 +48,13 @@ mount-integration: build
 platform-integration: build
     STOKE_BINARY="{{ justfile_directory() }}/result-stoke/bin/stoke" nix develop --no-update-lock-file path:. -c go test -count=1 -timeout=12m -v ./internal/artifact -run '^TestPlatformsWithCoopr$'
 
-# Verify checked-in GitHub Actions generation without changing handwritten CI.
+# Verify the checked-in composite actions for the handwritten CI example.
 ci-check: build
-    result-stoke/bin/stoke ci generate --check -f examples/ci/stoke.yaml --context . package
+    cd examples/ci/flat && ../../../result-stoke/bin/stoke ci generate --check
 
-# Registry-only local/CI/local reuse, input invalidation and generated job gates.
+# Ordinary registry cache reuse across independent invocations.
 ci-integration: build
-    STOKE_BINARY="{{ justfile_directory() }}/result-stoke/bin/stoke" nix develop --no-update-lock-file path:. -c go test -count=1 -timeout=15m -v ./internal/artifact -run '^TestCI(Registry|Generated|Exact)'
+    STOKE_BINARY="{{ justfile_directory() }}/result-stoke/bin/stoke" nix develop --no-update-lock-file path:. -c go test -count=1 -timeout=15m -v ./internal/artifact -run '^TestCIRegistry'
 
 docs-build:
     nix build --no-update-lock-file path:.#docs --out-link result-docs

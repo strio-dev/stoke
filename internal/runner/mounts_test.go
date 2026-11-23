@@ -2,6 +2,7 @@ package runner
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	cooprwire "github.com/strio-dev/coopr/api"
 	coopr "github.com/strio-dev/stoke/internal/engine"
+	"github.com/strio-dev/stoke/internal/workflow"
 )
 
 func TestMountSourcesLowerThroughCooprAndResolveCallerPaths(t *testing.T) {
@@ -82,6 +84,67 @@ func TestMissingMountDirectoriesFailBeforeEngineStartup(t *testing.T) {
 		if _, err := Run(t.Context(), w, nil, opts); err == nil || !strings.Contains(err.Error(), "unavailable") {
 			t.Fatalf("missing mount did not fail clearly before execution: %v", err)
 		}
+	}
+}
+
+func TestResolvedMountInputsCannotOverlapRuntimePaths(t *testing.T) {
+	for _, scenario := range []struct {
+		name  string
+		input string
+		path  string
+	}{
+		{"named-context-contains-state", "named context", "state"},
+		{"task-live-mount-inside-cache", "live host mount", "cache"},
+		{"step-live-mount-contains-output", "live host mount", "output"},
+		{"named-context-equals-cache", "named context", "cache"},
+		{"named-context-overlaps-events", "CDEvents", "events"},
+		{"step-live-mount-overlaps-events", "CDEvents", "events"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			w := fixture(t, "version: 1\ntasks: {test: {image: scratch, steps: [{run: [check]}]}}\n")
+			opts := testOptions(t)
+			input := t.TempDir()
+			alias := filepath.Join(opts.ContextDir, "inputs")
+			if err := os.Symlink(input, alias); err != nil {
+				t.Fatal(err)
+			}
+			job := w.Tasks["test"]
+			live := workflow.Mount{Type: "host", Source: "inputs", Target: "/live"}
+			switch scenario.name {
+			case "named-context-contains-state":
+				opts.StateDir = filepath.Join(alias, "future-state")
+				job.Contexts = map[string]string{"assets": "inputs"}
+			case "task-live-mount-inside-cache":
+				opts.CacheDir = input
+				if err := os.Mkdir(filepath.Join(input, "live"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				live.Source = "inputs/live"
+				job.Mounts = []workflow.Mount{live}
+			case "step-live-mount-contains-output":
+				opts.OutputDir = filepath.Join(input, "future-output")
+				job.Steps[0].Mounts = []workflow.Mount{live}
+			case "named-context-equals-cache":
+				opts.CacheDir = input
+				job.Contexts = map[string]string{"assets": "inputs"}
+			case "named-context-overlaps-events":
+				opts.EventPath = filepath.Join(input, "event.jsonl")
+				job.Contexts = map[string]string{"assets": "inputs"}
+			case "step-live-mount-overlaps-events":
+				opts.EventPath = filepath.Join(input, "event.jsonl")
+				job.Steps[0].Mounts = []workflow.Mount{live}
+			}
+			w.Tasks["test"] = job
+
+			plan, _, err := prepare(t.Context(), w, nil, opts)
+			if err == nil || plan != nil || !strings.Contains(err.Error(), scenario.input) ||
+				(scenario.path != "events" && !strings.Contains(err.Error(), "runtime "+scenario.path+" path")) {
+				t.Fatalf("input overlap was not rejected by preflight: plan=%v err=%v", plan, err)
+			}
+			if _, err := os.Stat(opts.StateDir); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("preflight created state: %v", err)
+			}
+		})
 	}
 }
 
