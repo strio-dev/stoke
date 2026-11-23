@@ -2,6 +2,8 @@ name: Stoke native runtime
 on:
   push:
     branches: [initial]
+  pull_request:
+    branches: [initial]
   workflow_dispatch:
     inputs:
       scenario:
@@ -200,6 +202,67 @@ jobs:
         run: |
           rm -f -- "$STOKE_GHCR_AUTH_DIR/auth.json"
           rmdir -- "$STOKE_GHCR_AUTH_DIR"
+  docker-registry-roundtrip:
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+    name: Packaged registry roundtrip / same-repo Docker
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          enable_kvm: false
+          set_as_trusted_user: false
+      - name: Build and load the exact packaged image into local Docker
+        env:
+          TOOLS_SYSTEM: x86_64-linux
+          DOCKER_HOST: unix:///var/run/docker.sock
+        shell: bash
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(uname -m)" = x86_64
+          nix build --impure --no-write-lock-file --max-jobs 1 --cores 2 \
+            --file nix/ci-tools.nix copyTo --out-link "$RUNNER_TEMP/stoke-copy-to"
+          "$RUNNER_TEMP/stoke-copy-to/bin/copy-to" --quiet docker-daemon:localhost/stoke-pr-tools:test
+      - name: Run the registry roundtrip inside the packaged image
+        env:
+          DOCKER_HOST: unix:///var/run/docker.sock
+        shell: bash
+        run: |
+          fixture=$(mktemp -d "$RUNNER_TEMP/stoke-registry-fixture.XXXXXXXX")
+          chmod 0755 "$fixture"
+          # The shell in the Nix environment expands the fixture path and BusyBox.
+          # shellcheck disable=SC2016
+          nix develop --no-update-lock-file --max-jobs 1 --cores 2 path:. -c bash -ec '
+            GOWORK=off CGO_ENABLED=0 GOMAXPROCS=2 GOFLAGS=-p=2 \
+              go test -mod=readonly -c -o "$1/artifact.test" ./internal/artifact
+            chmod 0555 "$1/artifact.test"
+            install -m 0555 "$STOKE_SMOKE_BUSYBOX" "$1/busybox"
+          ' bash "$fixture"
+          read -r image platform user <<< "$(docker image inspect localhost/stoke-pr-tools:test \
+            --format '{{.Id}} {{.Os}}/{{.Architecture}} {{.Config.User}}')"
+          [[ "$image" =~ ^sha256:[0-9a-f]{64}$ && "$platform" == linux/amd64 && "$user" == 1001:1001 ]]
+          printf 'Stoke tools image %s (%s, user %s)\n' "$image" "$platform" "$user"
+          log="$RUNNER_TEMP/stoke-registry-roundtrip.log"
+          docker run --rm --pull=never \
+            --security-opt seccomp=unconfined --security-opt apparmor=buildah \
+            --security-opt systempaths=unconfined --device=/dev/net/tun:/dev/net/tun:rw \
+            --mount "type=bind,source=$fixture,target=/fixture,readonly" "$image" -ec '
+              id
+              test "$(id -u):$(id -g)" = 1001:1001
+              test ! -e /var/run/docker.sock
+              test ! -e /run/podman/podman.sock
+              mkdir -p /tmp/stoke-evidence
+              export STOKE_BINARY="$(command -v stoke)"
+              export STOKE_SMOKE_BUSYBOX=/fixture/busybox
+              export STOKE_CACHE_CI_EVIDENCE_DIR=/tmp/stoke-evidence
+              exec /fixture/artifact.test -test.v -test.short=false -test.count=1 -test.timeout=12m -test.parallel=1 \
+                -test.run "^TestCIRegistryCacheRoundTripWithCoopr$"
+            ' | tee "$log"
+          grep -Fxq PASS "$log"
+          grep -Eq '^--- PASS: TestCIRegistryCacheRoundTripWithCoopr [(][0-9.]+s[)]$' "$log"
   runtime:
     if: ${{ github.event_name == 'push' }}
     strategy:
