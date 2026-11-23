@@ -256,7 +256,7 @@ jobs:
         shell: bash
         run: |
           nix build --no-update-lock-file --max-jobs 1 --cores 2 \
-            github:strio-dev/coopr/1549d40196d5313bcf5d44e47c3eedb0cdce90fb#coopr \
+            github:strio-dev/coopr/8a9a12c29263965309b10943faf417197b39698f#coopr \
             --out-link "$RUNNER_TEMP/coopr-package"
           "$RUNNER_TEMP/coopr-package/bin/coopr" --version
       - name: Build Stoke from this commit
